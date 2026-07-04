@@ -1,11 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
-
 import { NestFactory } from '@nestjs/core';
-
 import helmet from 'helmet';
-
 import * as bodyParser from 'body-parser';
-
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -19,7 +15,6 @@ async function bootstrap() {
   app.use(helmet());
 
   app.use('/api/payments/webhook', bodyParser.raw({ type: '*/*' }));
-
   app.use(bodyParser.json());
 
   app.setGlobalPrefix('api');
@@ -27,16 +22,14 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
-
       forbidNonWhitelisted: true,
-
       transform: true,
     }),
   );
 
   const PORT = process.env.PORT || 5000;
 
-  await app.listen(PORT);
+  await app.listen(PORT, '0.0.0.0');
 
   console.log(`Production server running on port ${PORT}`);
 }
