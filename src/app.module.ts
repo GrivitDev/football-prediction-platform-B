@@ -34,6 +34,7 @@ import { PredictionPurchasesModule } from './prediction-purchases/prediction-pur
 import { TelegramModule } from './telegram/telegram.module';
 import { PlanConfigModule } from './plan-config/plan-config.module';
 import { AdminGateway } from './realtime/admin.gateway';
+import { LivescoreModule } from './livescore/livescore.module';
 
 @Module({
   imports: [
@@ -77,6 +78,8 @@ import { AdminGateway } from './realtime/admin.gateway';
     UserSessionModule,
     TelegramModule,
     PlanConfigModule,
+
+    LivescoreModule,
 
     PredictionPurchasesModule,
     SportsModule,
