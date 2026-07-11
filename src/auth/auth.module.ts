@@ -15,11 +15,13 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { OtpModule } from '../otp/otp.module';
 import { EmailService } from '../notifications/email.service';
 import { TelegramModule } from 'src/telegram/telegram.module';
+import { ReferralsModule } from '../referrals/referrals.module';
 
 @Module({
   imports: [
     UsersModule,
     UserSessionModule,
+    ReferralsModule,
     OtpModule,
     TelegramModule,
 
