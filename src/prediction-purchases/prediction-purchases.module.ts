@@ -15,6 +15,7 @@ import {
 import { PredictionPurchasesController } from './prediction-purchases.controller';
 
 import { PredictionPurchasesService } from './prediction-purchases.service';
+import { ReferralsModule } from '../referrals/referrals.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { PredictionPurchasesService } from './prediction-purchases.service';
         schema: PredictionSchema,
       },
     ]),
+    ReferralsModule,
   ],
 
   controllers: [PredictionPurchasesController],
