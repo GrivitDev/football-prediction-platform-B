@@ -35,6 +35,9 @@ import { TelegramModule } from './telegram/telegram.module';
 import { PlanConfigModule } from './plan-config/plan-config.module';
 import { AdminGateway } from './realtime/admin.gateway';
 import { LivescoreModule } from './livescore/livescore.module';
+import { AdsModule } from './ads/ads.module';
+import { InternalAdsModule } from './internal-ads/internal-ads.module';
+import { ReferralsModule } from './referrals/referrals.module';
 
 @Module({
   imports: [
@@ -83,6 +86,12 @@ import { LivescoreModule } from './livescore/livescore.module';
 
     PredictionPurchasesModule,
     SportsModule,
+
+    AdsModule,
+
+    InternalAdsModule,
+
+    ReferralsModule,
   ],
   providers: [AdminGateway],
 })

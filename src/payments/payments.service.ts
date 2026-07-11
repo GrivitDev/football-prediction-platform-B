@@ -11,6 +11,7 @@ import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { PredictionPurchasesService } from '../prediction-purchases/prediction-purchases.service';
 import { TelegramService } from 'src/telegram/telegram.service';
 import { AdminGateway } from 'src/realtime/admin.gateway';
+import { ReferralsService } from 'src/referrals/referrals.service';
 
 @Injectable()
 export class PaymentsService {
@@ -23,6 +24,7 @@ export class PaymentsService {
     private predictionPurchaseService: PredictionPurchasesService,
     private telegramService: TelegramService,
     private adminGateway: AdminGateway,
+    private referralsService: ReferralsService,
   ) {}
 
   // =====================================
@@ -132,6 +134,14 @@ export class PaymentsService {
         amount: payment.amount,
         durationDays: 30,
       });
+
+      if (plan === 'regular') {
+        await this.referralsService.markRegularSubscription(payment.userId);
+      }
+
+      if (plan === 'vip') {
+        await this.referralsService.markVipSubscription(payment.userId);
+      }
     }
 
     // =====================================
@@ -145,6 +155,7 @@ export class PaymentsService {
         amount: payment.amount,
         durationDays: 30,
       });
+      await this.referralsService.markVipSubscription(payment.userId);
     }
 
     // =====================================

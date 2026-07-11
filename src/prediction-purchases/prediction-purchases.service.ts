@@ -17,12 +17,14 @@ import {
   Prediction,
   PredictionDocument,
 } from '../predictions/schemas/prediction.schema';
+import { ReferralsService } from 'src/referrals/referrals.service';
 
 @Injectable()
 export class PredictionPurchasesService {
   constructor(
     @InjectModel(PredictionPurchase.name)
     private purchaseModel: Model<PredictionPurchaseDocument>,
+    private referralsService: ReferralsService,
 
     @InjectModel(Prediction.name)
     private predictionModel: Model<PredictionDocument>,
@@ -124,7 +126,11 @@ export class PredictionPurchasesService {
       manual: true,
     };
 
-    return purchase.save();
+    await purchase.save();
+
+    await this.referralsService.markPredictionPurchased(purchase.userId);
+
+    return purchase;
   }
 
   async markAsSuccessByPredictionId(

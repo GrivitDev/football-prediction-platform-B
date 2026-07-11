@@ -17,6 +17,7 @@ import { LoginDto } from './dto/login.dto';
 import { OtpService } from '../otp/otp.service';
 import { EmailService } from '../notifications/email.service';
 import { TelegramService } from 'src/telegram/telegram.service';
+import { ReferralsService } from '../referrals/referrals.service';
 
 @Injectable()
 export class AuthService {
@@ -27,13 +28,15 @@ export class AuthService {
     private otpService: OtpService,
     private emailService: EmailService,
     private telegramService: TelegramService,
+    private referralsService: ReferralsService,
   ) {}
 
   // ======================
   // REGISTER
   // ======================
   async register(registerDto: RegisterDto) {
-    const { fullName, username, phoneNumber, email, password } = registerDto;
+    const { fullName, username, phoneNumber, email, password, referralCode } =
+      registerDto;
 
     const normalizedUsername = username.trim().toLowerCase();
 
@@ -48,14 +51,36 @@ export class AuthService {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    let referredBy: string | undefined;
 
+    if (referralCode) {
+      const referrer = await this.usersService.findByUsername(referralCode);
+
+      if (!referrer) {
+        throw new BadRequestException('Invalid referral code');
+      }
+
+      if (referrer.username === normalizedUsername) {
+        throw new BadRequestException('You cannot use your own referral code');
+      }
+
+      referredBy = referrer._id.toString();
+    }
     const user = await this.usersService.create({
       fullName,
       username: normalizedUsername,
       phoneNumber,
       email,
       password: hashedPassword,
+      referredBy,
     });
+
+    if (referredBy) {
+      await this.referralsService.createReferral(
+        referredBy,
+        user._id.toString(),
+      );
+    }
     await this.telegramService.notifyNewUser({
       fullName: user.fullName,
       username: user.username,

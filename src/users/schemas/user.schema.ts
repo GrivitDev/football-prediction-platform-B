@@ -111,6 +111,20 @@ export class User {
 
   @Prop()
   deletedBy?: string;
+
+  // ======================
+  // REFERRAL SYSTEM
+  // ======================
+
+  @Prop({
+    index: true,
+  })
+  referredBy?: string; // User ID of referrer
+
+  @Prop({
+    default: 0,
+  })
+  successfulReferrals!: number;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

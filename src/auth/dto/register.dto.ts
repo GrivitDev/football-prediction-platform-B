@@ -4,6 +4,7 @@ import {
   IsString,
   MinLength,
   Matches,
+  IsOptional,
 } from 'class-validator';
 
 export class RegisterDto {
@@ -26,4 +27,8 @@ export class RegisterDto {
   @IsString()
   @MinLength(6)
   password!: string;
+
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
 }
