@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 
 import { MongooseModule } from '@nestjs/mongoose';
 
@@ -14,9 +14,8 @@ import { PromoEngineService } from './promo-engine.service';
 
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
-import { ReferralsModule } from '../referrals/referrals.module';
-
 import { UsersModule } from '../users/users.module';
+import { ReferralsModule } from 'src/referrals/referrals.module';
 
 @Module({
   imports: [
@@ -25,14 +24,13 @@ import { UsersModule } from '../users/users.module';
         name: Promo.name,
         schema: PromoSchema,
       },
-
       {
         name: PromoReward.name,
         schema: PromoRewardSchema,
       },
     ]),
 
-    ReferralsModule,
+    forwardRef(() => ReferralsModule),
 
     SubscriptionsModule,
 
