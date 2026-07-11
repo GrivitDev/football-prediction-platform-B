@@ -5,6 +5,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { SubscriptionsController } from './subscriptions.controller';
 
 import { SubscriptionsService } from './subscriptions.service';
+import { ReferralsModule } from '../referrals/referrals.module';
 
 import {
   Subscription,
@@ -23,6 +24,7 @@ import { UsersModule } from '../users/users.module';
     ]),
 
     UsersModule,
+    ReferralsModule,
   ],
 
   controllers: [SubscriptionsController],

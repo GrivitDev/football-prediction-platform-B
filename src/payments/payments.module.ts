@@ -11,6 +11,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { PredictionPurchasesModule } from '../prediction-purchases/prediction-purchases.module'; // ✅ ADD THIS
 import { TelegramModule } from 'src/telegram/telegram.module';
 import { RealtimeModule } from 'src/realtime/realtime.module';
+import { ReferralsModule } from '../referrals/referrals.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { RealtimeModule } from 'src/realtime/realtime.module';
     PredictionPurchasesModule,
     TelegramModule,
     RealtimeModule,
+    ReferralsModule,
   ],
 
   controllers: [PaymentsController],
