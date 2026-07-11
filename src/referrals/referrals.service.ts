@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 
 import { Model } from 'mongoose';
@@ -12,8 +12,9 @@ import { PromoEngineService } from '../promos/promo-engine.service';
 export class ReferralsService {
   constructor(
     @InjectModel(Referral.name)
-    private referralModel: Model<ReferralDocument>,
+    private readonly referralModel: Model<ReferralDocument>,
 
+    @Inject(forwardRef(() => PromoEngineService))
     private readonly promoEngineService: PromoEngineService,
   ) {}
 
@@ -53,9 +54,7 @@ export class ReferralsService {
     );
 
     if (referral) {
-      await this.promoEngineService.checkUserPromos(
-        referral.referrerId,
-      );
+      await this.promoEngineService.checkUserPromos(referral.referrerId);
     }
 
     return referral;
@@ -81,9 +80,7 @@ export class ReferralsService {
     );
 
     if (referral) {
-      await this.promoEngineService.checkUserPromos(
-        referral.referrerId,
-      );
+      await this.promoEngineService.checkUserPromos(referral.referrerId);
     }
 
     return referral;
@@ -109,9 +106,7 @@ export class ReferralsService {
     );
 
     if (referral) {
-      await this.promoEngineService.checkUserPromos(
-        referral.referrerId,
-      );
+      await this.promoEngineService.checkUserPromos(referral.referrerId);
     }
 
     return referral;

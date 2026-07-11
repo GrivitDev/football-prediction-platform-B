@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/mongoose';
 
@@ -30,10 +30,13 @@ export class PromoEngineService {
     @InjectModel(PromoReward.name)
     private readonly rewardModel: Model<PromoRewardDocument>,
 
+    @Inject(forwardRef(() => ReferralsService))
     private readonly referralsService: ReferralsService,
 
+    @Inject(forwardRef(() => SubscriptionsService))
     private readonly subscriptionsService: SubscriptionsService,
 
+    @Inject(forwardRef(() => UsersService))
     private readonly usersService: UsersService,
   ) {}
 
