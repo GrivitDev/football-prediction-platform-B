@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/mongoose';
 
@@ -14,9 +10,15 @@ import { CreateAdDto } from './dto/create-ad.dto';
 
 import { UpdateAdDto } from './dto/update-ad.dto';
 
-import { AdPlacement } from './enums/ad-placement.enum';
-
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+
+import { UploadsService } from '../uploads/uploads.service';
+
+import { AdPage } from './enums/ad-page.enum';
+
+import { AdDevice } from './enums/ad-device.enum';
+
+import { ExternalAdFrequency } from './enums/external-ad-frequency.enum';
 
 @Injectable()
 export class AdsService {
@@ -25,13 +27,21 @@ export class AdsService {
     private readonly adModel: Model<AdDocument>,
 
     private readonly subscriptionsService: SubscriptionsService,
+
+    private readonly uploadsService: UploadsService,
   ) {}
 
-  async create(dto: CreateAdDto, adminId: string) {
+  // =====================================================
+  // CREATE AD
+  // =====================================================
+
+  async create(
+    dto: CreateAdDto,
+
+    adminId: string,
+  ) {
     const ad = await this.adModel.create({
       ...dto,
-
-      promo: dto.promo ? new Types.ObjectId(dto.promo) : undefined,
 
       createdBy: new Types.ObjectId(adminId),
 
@@ -43,21 +53,33 @@ export class AdsService {
     return ad;
   }
 
+  // =====================================================
+  // GET ALL ADS
+  // =====================================================
+
   async findAll() {
     return this.adModel
+
       .find()
-      .populate('promo')
+
       .populate('createdBy', 'fullName email')
+
       .sort({
         priority: -1,
+
         createdAt: -1,
       });
   }
 
+  // =====================================================
+  // GET SINGLE AD
+  // =====================================================
+
   async findOne(id: string) {
     const ad = await this.adModel
+
       .findById(id)
-      .populate('promo')
+
       .populate('createdBy', 'fullName email');
 
     if (!ad) {
@@ -66,15 +88,32 @@ export class AdsService {
 
     return ad;
   }
+  // =====================================================
+  // UPDATE AD
+  // =====================================================
 
-  async update(id: string, dto: UpdateAdDto) {
+  async update(
+    id: string,
+
+    dto: UpdateAdDto,
+  ) {
+    const existingAd = await this.adModel.findById(id);
+
+    if (!existingAd) {
+      throw new NotFoundException('Advertisement not found');
+    }
+
+    // ==========================================
+    // IMAGE REPLACEMENT
+    // ==========================================
+
+    if (dto.image && dto.image.publicId !== existingAd.image.publicId) {
+      await this.uploadsService.deleteImage(existingAd.image.publicId);
+    }
+
     const updateData: any = {
       ...dto,
     };
-
-    if (dto.promo) {
-      updateData.promo = new Types.ObjectId(dto.promo);
-    }
 
     if (dto.startDate) {
       updateData.startDate = new Date(dto.startDate);
@@ -84,28 +123,46 @@ export class AdsService {
       updateData.endDate = new Date(dto.endDate);
     }
 
-    const ad = await this.adModel.findByIdAndUpdate(id, updateData, {
-      new: true,
-    });
+    const updatedAd = await this.adModel.findByIdAndUpdate(
+      id,
 
-    if (!ad) {
-      throw new NotFoundException('Advertisement not found');
-    }
+      updateData,
 
-    return ad;
+      {
+        new: true,
+      },
+    );
+
+    return updatedAd;
   }
 
+  // =====================================================
+  // DELETE AD
+  // =====================================================
+
   async remove(id: string) {
-    const ad = await this.adModel.findByIdAndDelete(id);
+    const ad = await this.adModel.findById(id);
 
     if (!ad) {
       throw new NotFoundException('Advertisement not found');
     }
+
+    // Remove Cloudinary image
+
+    if (ad.image?.publicId) {
+      await this.uploadsService.deleteImage(ad.image.publicId);
+    }
+
+    await this.adModel.findByIdAndDelete(id);
 
     return {
       message: 'Advertisement deleted successfully',
     };
   }
+
+  // =====================================================
+  // TOGGLE ACTIVE STATUS
+  // =====================================================
 
   async toggleStatus(id: string) {
     const ad = await this.adModel.findById(id);
@@ -126,17 +183,26 @@ export class AdsService {
       isActive: ad.isActive,
     };
   }
+  // =====================================================
+  // GET ADS FOR PAGE
+  // =====================================================
 
-  async getAdsForPlacement(placement: AdPlacement) {
+  async getPageAds(
+    page: AdPage,
+
+    device: AdDevice,
+  ) {
     const now = new Date();
 
     return this.adModel
       .find({
-        placement,
-
         isActive: true,
 
         $and: [
+          // ==========================================
+          // DATE RANGE CHECK
+          // ==========================================
+
           {
             $or: [
               {
@@ -144,6 +210,7 @@ export class AdsService {
                   $exists: false,
                 },
               },
+
               {
                 startDate: {
                   $lte: now,
@@ -159,6 +226,7 @@ export class AdsService {
                   $exists: false,
                 },
               },
+
               {
                 endDate: {
                   $gte: now,
@@ -166,22 +234,53 @@ export class AdsService {
               },
             ],
           },
+
+          // ==========================================
+          // DISPLAY RULE CHECK
+          // ==========================================
+
+          {
+            displays: {
+              $elemMatch: {
+                page,
+
+                $or: [
+                  {
+                    device,
+                  },
+
+                  {
+                    device: AdDevice.ALL,
+                  },
+                ],
+              },
+            },
+          },
         ],
       })
-      .populate('promo')
+
+      .populate('createdBy', 'fullName email')
+
       .sort({
         priority: -1,
+
+        createdAt: -1,
       });
   }
+  // =====================================================
+  // RECORD IMPRESSION
+  // =====================================================
 
   async recordImpression(id: string) {
     const ad = await this.adModel.findByIdAndUpdate(
       id,
+
       {
         $inc: {
           impressions: 1,
         },
       },
+
       {
         new: true,
       },
@@ -196,14 +295,20 @@ export class AdsService {
     };
   }
 
+  // =====================================================
+  // RECORD CLICK
+  // =====================================================
+
   async recordClick(id: string) {
     const ad = await this.adModel.findByIdAndUpdate(
       id,
+
       {
         $inc: {
           clicks: 1,
         },
       },
+
       {
         new: true,
       },
@@ -217,6 +322,10 @@ export class AdsService {
       success: true,
     };
   }
+
+  // =====================================================
+  // ADS ANALYTICS
+  // =====================================================
 
   async getAnalytics() {
     const ads = await this.adModel.find();
@@ -225,9 +334,17 @@ export class AdsService {
 
     const activeAds = ads.filter((ad) => ad.isActive).length;
 
-    const impressions = ads.reduce((sum, ad) => sum + ad.impressions, 0);
+    const impressions = ads.reduce(
+      (sum, ad) => sum + ad.impressions,
 
-    const clicks = ads.reduce((sum, ad) => sum + ad.clicks, 0);
+      0,
+    );
+
+    const clicks = ads.reduce(
+      (sum, ad) => sum + ad.clicks,
+
+      0,
+    );
 
     const ctr =
       impressions > 0 ? Number(((clicks / impressions) * 100).toFixed(2)) : 0;
@@ -245,54 +362,105 @@ export class AdsService {
     };
   }
 
+  // =====================================================
+  // EXTERNAL ADS POLICY
+  // =====================================================
+
   async getPolicy(userId?: string) {
+    // ==========================================
+    // GUEST USERS
+    // ==========================================
+
     if (!userId) {
       return {
-        plan: 'free',
+        enabled: true,
 
-        showAds: true,
+        showInternalAds: true,
 
-        showPopupAds: true,
+        frequency: ExternalAdFrequency.NORMAL,
 
-        adInterval: 0,
+        aggressive: true,
+
+        refreshInterval: 60,
+
+        allowPopup: true,
+
+        allowInterstitial: true,
+
+        allowRewarded: true,
       };
     }
 
     const plan = await this.subscriptionsService.getUserPlan(userId);
 
-    switch (plan) {
-      case 'vip':
-        return {
-          plan,
+    // ==========================================
+    // VIP USERS
+    // ==========================================
 
-          showAds: false,
+    if (plan === 'vip') {
+      return {
+        enabled: false,
 
-          showPopupAds: false,
+        showInternalAds: false,
 
-          adInterval: 0,
-        };
+        frequency: ExternalAdFrequency.NONE,
 
-      case 'regular':
-        return {
-          plan,
+        aggressive: false,
 
-          showAds: true,
+        refreshInterval: 0,
 
-          showPopupAds: false,
+        allowPopup: false,
 
-          adInterval: 15,
-        };
+        allowInterstitial: false,
 
-      default:
-        return {
-          plan: 'free',
-
-          showAds: true,
-
-          showPopupAds: true,
-
-          adInterval: 0,
-        };
+        allowRewarded: false,
+      };
     }
+
+    // ==========================================
+    // REGULAR USERS
+    // ==========================================
+
+    if (plan === 'regular') {
+      return {
+        enabled: true,
+
+        showInternalAds: true,
+
+        frequency: ExternalAdFrequency.LOW,
+
+        aggressive: false,
+
+        refreshInterval: 180,
+
+        allowPopup: false,
+
+        allowInterstitial: false,
+
+        allowRewarded: true,
+      };
+    }
+
+    // ==========================================
+    // FREE USERS
+    // ==========================================
+
+    return {
+      enabled: true,
+
+      showInternalAds: true,
+
+      frequency: ExternalAdFrequency.NORMAL,
+
+      aggressive: true,
+
+      refreshInterval: 60,
+
+      allowPopup: true,
+
+      allowInterstitial: true,
+
+      allowRewarded: true,
+    };
   }
 }

@@ -25,44 +25,47 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('admin/ads')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(
+  JwtAuthGuard,
+
+  RolesGuard,
+)
 @Roles('admin')
 export class AdminAdsController {
   constructor(private readonly adsService: AdsService) {}
 
-  /**
-   * Create advertisement
-   */
+  // =====================================================
+  // CREATE AD
+  // =====================================================
+
   @Post()
   async create(
     @Body() dto: CreateAdDto,
 
     @Req() req: Request,
   ) {
-    const admin = req.user as any;
+    const user = req.user as any;
 
-    return this.adsService.create(dto, admin._id.toString());
+    return this.adsService.create(
+      dto,
+
+      user._id.toString(),
+    );
   }
 
-  /**
-   * Get all advertisements
-   */
+  // =====================================================
+  // GET ALL ADS
+  // =====================================================
+
   @Get()
   async findAll() {
     return this.adsService.findAll();
   }
 
-  /**
-   * Get advertisement analytics
-   */
-  @Get('analytics')
-  async analytics() {
-    return this.adsService.getAnalytics();
-  }
+  // =====================================================
+  // GET SINGLE AD
+  // =====================================================
 
-  /**
-   * Get single advertisement
-   */
   @Get(':id')
   async findOne(
     @Param('id')
@@ -71,39 +74,54 @@ export class AdminAdsController {
     return this.adsService.findOne(id);
   }
 
-  /**
-   * Update advertisement
-   */
+  // =====================================================
+  // UPDATE AD
+  // =====================================================
+
   @Patch(':id')
   async update(
     @Param('id')
     id: string,
 
-    @Body()
-    dto: UpdateAdDto,
+    @Body() dto: UpdateAdDto,
   ) {
-    return this.adsService.update(id, dto);
+    return this.adsService.update(
+      id,
+
+      dto,
+    );
   }
 
-  /**
-   * Activate / deactivate advertisement
-   */
-  @Patch(':id/toggle')
-  async toggle(
-    @Param('id')
-    id: string,
-  ) {
-    return this.adsService.toggleStatus(id);
-  }
+  // =====================================================
+  // DELETE AD
+  // =====================================================
 
-  /**
-   * Delete advertisement
-   */
   @Delete(':id')
   async remove(
     @Param('id')
     id: string,
   ) {
     return this.adsService.remove(id);
+  }
+
+  // =====================================================
+  // TOGGLE ACTIVE STATUS
+  // =====================================================
+
+  @Patch(':id/status')
+  async toggleStatus(
+    @Param('id')
+    id: string,
+  ) {
+    return this.adsService.toggleStatus(id);
+  }
+
+  // =====================================================
+  // ANALYTICS
+  // =====================================================
+
+  @Get('analytics/overview')
+  async analytics() {
+    return this.adsService.getAnalytics();
   }
 }

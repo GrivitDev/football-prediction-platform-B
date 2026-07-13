@@ -24,9 +24,10 @@ import { imageFileFilter } from './validators/image-file.validator';
 export class UploadsController {
   constructor(private readonly uploadsService: UploadsService) {}
 
-  // ==================================
-  // USER PAYMENT PROOF UPLOAD
-  // ==================================
+  // ======================================================
+  // USER PAYMENT PROOF
+  // ======================================================
+
   @UseGuards(JwtAuthGuard)
   @Post('payment-proof')
   @UseInterceptors(
@@ -44,24 +45,22 @@ export class UploadsController {
     @UploadedFile()
     file: Express.Multer.File,
   ) {
-    const uploadedImage = await this.uploadsService.uploadPaymentProof(file);
+    const image = await this.uploadsService.uploadPaymentProof(file);
 
     return {
       message: 'Payment proof uploaded successfully',
 
-      url: uploadedImage.secure_url,
-
-      publicId: uploadedImage.public_id,
+      data: image,
     };
   }
 
-  // ==================================
-  // ADMIN IMAGE UPLOAD
-  // (Prediction images, banners, etc.)
-  // ==================================
+  // ======================================================
+  // ADMIN AD IMAGE
+  // ======================================================
+
   @Roles('admin')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Post('image')
+  @Post('ads')
   @UseInterceptors(
     FileInterceptor('image', {
       storage: memoryStorage(),
@@ -73,16 +72,108 @@ export class UploadsController {
       fileFilter: imageFileFilter,
     }),
   )
-  async uploadImage(
+  async uploadAdImage(
     @UploadedFile()
     file: Express.Multer.File,
   ) {
-    const uploadedImage = await this.uploadsService.uploadImage(file);
+    const image = await this.uploadsService.uploadAdImage(file);
 
     return {
-      message: 'Image uploaded successfully',
+      message: 'Advertisement image uploaded successfully',
 
-      data: uploadedImage,
+      data: image,
+    };
+  }
+
+  // ======================================================
+  // ADMIN ARTICLE IMAGE
+  // ======================================================
+
+  @Roles('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Post('articles')
+  @UseInterceptors(
+    FileInterceptor('image', {
+      storage: memoryStorage(),
+
+      limits: {
+        fileSize: 5 * 1024 * 1024,
+      },
+
+      fileFilter: imageFileFilter,
+    }),
+  )
+  async uploadArticleImage(
+    @UploadedFile()
+    file: Express.Multer.File,
+  ) {
+    const image = await this.uploadsService.uploadArticleImage(file);
+
+    return {
+      message: 'Article image uploaded successfully',
+
+      data: image,
+    };
+  }
+
+  // ======================================================
+  // ADMIN PREDICTION IMAGE
+  // ======================================================
+
+  @Roles('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Post('predictions')
+  @UseInterceptors(
+    FileInterceptor('image', {
+      storage: memoryStorage(),
+
+      limits: {
+        fileSize: 5 * 1024 * 1024,
+      },
+
+      fileFilter: imageFileFilter,
+    }),
+  )
+  async uploadPredictionImage(
+    @UploadedFile()
+    file: Express.Multer.File,
+  ) {
+    const image = await this.uploadsService.uploadPredictionImage(file);
+
+    return {
+      message: 'Prediction image uploaded successfully',
+
+      data: image,
+    };
+  }
+
+  // ======================================================
+  // USER AVATAR
+  // ======================================================
+
+  @UseGuards(JwtAuthGuard)
+  @Post('avatar')
+  @UseInterceptors(
+    FileInterceptor('image', {
+      storage: memoryStorage(),
+
+      limits: {
+        fileSize: 3 * 1024 * 1024,
+      },
+
+      fileFilter: imageFileFilter,
+    }),
+  )
+  async uploadAvatar(
+    @UploadedFile()
+    file: Express.Multer.File,
+  ) {
+    const image = await this.uploadsService.uploadUserAvatar(file);
+
+    return {
+      message: 'Avatar uploaded successfully',
+
+      data: image,
     };
   }
 }

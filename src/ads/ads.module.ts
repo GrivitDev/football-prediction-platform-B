@@ -12,16 +12,21 @@ import { Ad, AdSchema } from './schemas/ad.schema';
 
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
+import { UploadsModule } from '../uploads/uploads.module';
+
 @Module({
   imports: [
     MongooseModule.forFeature([
       {
         name: Ad.name,
+
         schema: AdSchema,
       },
     ]),
 
     SubscriptionsModule,
+
+    UploadsModule,
   ],
 
   controllers: [AdsController, AdminAdsController],

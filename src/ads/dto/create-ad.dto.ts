@@ -1,19 +1,22 @@
 import {
+  ArrayMinSize,
+  IsArray,
   IsBoolean,
   IsDateString,
-  IsEnum,
   IsInt,
-  IsMongoId,
   IsOptional,
   IsString,
-  IsUrl,
+  Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 import { Type } from 'class-transformer';
 
-import { AdPlacement } from '../enums/ad-placement.enum';
+import { CreateAdActionDto } from './create-ad-action.dto';
+import { CreateAdDisplayDto } from './create-ad-display.dto';
+import { CreateAdImageDto } from './create-ad-image.dto';
 
 export class CreateAdDto {
   @IsString()
@@ -22,33 +25,49 @@ export class CreateAdDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(1000)
+  @MaxLength(150)
+  subTitle?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
   description?: string;
 
-  @IsString()
-  @IsUrl()
-  imageUrl!: string;
+  @IsOptional()
+  @IsArray()
+  @IsString({
+    each: true,
+  })
+  instructions?: string[];
+
+  @ValidateNested()
+  @Type(() => CreateAdImageDto)
+  image!: CreateAdImageDto;
+
+  @IsArray()
+  @ValidateNested({
+    each: true,
+  })
+  @Type(() => CreateAdActionDto)
+  actions: CreateAdActionDto[] = [];
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({
+    each: true,
+  })
+  @Type(() => CreateAdDisplayDto)
+  displays!: CreateAdDisplayDto[];
 
   @IsOptional()
-  @IsUrl()
-  targetUrl?: string;
-
-  @IsOptional()
-  @IsMongoId()
-  promo?: string;
-
-  @IsEnum(AdPlacement)
-  placement: AdPlacement = AdPlacement.HOME_TOP;
-
-  @IsOptional()
-  @Type(() => Number)
   @IsInt()
-  @Min(0)
-  priority?: number = 0;
+  @Min(1)
+  @Max(10)
+  priority: number = 5;
 
   @IsOptional()
   @IsBoolean()
-  isActive?: boolean = true;
+  isActive: boolean = true;
 
   @IsOptional()
   @IsDateString()

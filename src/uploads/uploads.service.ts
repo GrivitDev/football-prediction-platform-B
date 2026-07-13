@@ -2,18 +2,23 @@ import { Injectable } from '@nestjs/common';
 
 import cloudinary from './config/cloudinary.config';
 
+import { UploadFolder } from './enums/upload-folder.enum';
+
 @Injectable()
 export class UploadsService {
-  // ==================================
-  // ADMIN IMAGES
-  // Prediction images, banners, etc.
-  // ==================================
-  async uploadImage(file: Express.Multer.File) {
-    return new Promise<any>((resolve, reject) => {
+  private async upload(file: Express.Multer.File, folder: UploadFolder) {
+    return new Promise<{
+      url: string;
+      publicId: string;
+      width: number;
+      height: number;
+      format: string;
+      bytes: number;
+    }>((resolve, reject) => {
       cloudinary.uploader
         .upload_stream(
           {
-            folder: 'football-predictions',
+            folder,
 
             resource_type: 'image',
 
@@ -28,48 +33,50 @@ export class UploadsService {
           },
 
           (error, result) => {
-            if (error) {
-              reject(error);
-            } else {
-              resolve(result);
+            if (error || !result) {
+              return reject(error);
             }
+
+            resolve({
+              url: result.secure_url,
+
+              publicId: result.public_id,
+
+              width: result.width,
+
+              height: result.height,
+
+              format: result.format,
+
+              bytes: result.bytes,
+            });
           },
         )
         .end(file.buffer);
     });
   }
 
-  // ==================================
-  // PAYMENT PROOFS
-  // ==================================
+  async uploadAdImage(file: Express.Multer.File) {
+    return this.upload(file, UploadFolder.ADS);
+  }
+
+  async uploadPredictionImage(file: Express.Multer.File) {
+    return this.upload(file, UploadFolder.PREDICTIONS);
+  }
+
+  async uploadArticleImage(file: Express.Multer.File) {
+    return this.upload(file, UploadFolder.ARTICLES);
+  }
+
   async uploadPaymentProof(file: Express.Multer.File) {
-    return new Promise<any>((resolve, reject) => {
-      cloudinary.uploader
-        .upload_stream(
-          {
-            folder: 'football-predictions/payment-proofs',
+    return this.upload(file, UploadFolder.PAYMENT_PROOFS);
+  }
 
-            resource_type: 'image',
+  async uploadUserAvatar(file: Express.Multer.File) {
+    return this.upload(file, UploadFolder.USERS);
+  }
 
-            transformation: [
-              {
-                width: 1200,
-                crop: 'limit',
-                quality: 'auto',
-                fetch_format: 'auto',
-              },
-            ],
-          },
-
-          (error, result) => {
-            if (error) {
-              reject(error);
-            } else {
-              resolve(result);
-            }
-          },
-        )
-        .end(file.buffer);
-    });
+  async deleteImage(publicId: string) {
+    return cloudinary.uploader.destroy(publicId);
   }
 }

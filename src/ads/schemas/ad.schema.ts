@@ -1,7 +1,9 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
-import { AdPlacement } from '../enums/ad-placement.enum';
+import { AdAction, AdActionSchema } from './ad-action.schema';
+import { AdDisplay, AdDisplaySchema } from './ad-display.schema';
+import { AdImage, AdImageSchema } from './ad-image.schema';
 
 export type AdDocument = HydratedDocument<Ad>;
 
@@ -19,36 +21,41 @@ export class Ad {
     trim: true,
     default: '',
   })
-  description?: string;
-
-  @Prop({
-    required: true,
-    trim: true,
-  })
-  imageUrl!: string;
+  subTitle?: string;
 
   @Prop({
     trim: true,
     default: '',
   })
-  targetUrl?: string;
+  description?: string;
 
   @Prop({
-    type: Types.ObjectId,
-    ref: 'Promo',
-    default: null,
+    type: [String],
+    default: [],
   })
-  promo?: Types.ObjectId;
+  instructions!: string[];
 
   @Prop({
+    type: AdImageSchema,
+  })
+  image!: AdImage;
+
+  @Prop({
+    type: [AdActionSchema],
+    default: [],
+  })
+  actions!: AdAction[];
+
+  @Prop({
+    type: [AdDisplaySchema],
     required: true,
-    enum: AdPlacement,
   })
-  placement!: AdPlacement;
+  displays!: AdDisplay[];
 
   @Prop({
-    default: 0,
-    min: 0,
+    min: 1,
+    max: 10,
+    default: 5,
   })
   priority!: number;
 
@@ -78,19 +85,18 @@ export class Ad {
   @Prop({
     type: Types.ObjectId,
     ref: 'User',
-    default: null,
   })
-  createdBy?: Types.ObjectId;
+  createdBy!: Types.ObjectId;
 }
 
 export const AdSchema = SchemaFactory.createForClass(Ad);
 
-AdSchema.index({ placement: 1, isActive: 1 });
+AdSchema.index({
+  isActive: 1,
+  priority: -1,
+});
 
-AdSchema.index({ startDate: 1 });
-
-AdSchema.index({ endDate: 1 });
-
-AdSchema.index({ priority: -1 });
-
-AdSchema.index({ promo: 1 });
+AdSchema.index({
+  startDate: 1,
+  endDate: 1,
+});

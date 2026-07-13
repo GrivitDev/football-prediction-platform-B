@@ -1,0 +1,15 @@
+export enum AdPage {
+  HOME = 'HOME',
+
+  DASHBOARD = 'DASHBOARD',
+
+  LIVE_SCORES = 'LIVE_SCORES',
+
+  PREDICTIONS = 'PREDICTIONS',
+
+  ARTICLES = 'ARTICLES',
+
+  ABOUT = 'ABOUT',
+
+  VIP = 'VIP',
+}

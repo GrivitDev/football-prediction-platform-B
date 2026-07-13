@@ -1,5 +1,7 @@
 export enum ExternalAdFrequency {
-  NONE = 'none',
-  LOW = 'low',
-  NORMAL = 'normal',
+  NONE = 'NONE',
+
+  LOW = 'LOW',
+
+  NORMAL = 'NORMAL',
 }
