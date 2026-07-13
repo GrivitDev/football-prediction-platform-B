@@ -37,8 +37,9 @@ export class Ad {
 
   @Prop({
     type: AdImageSchema,
+    required: false,
   })
-  image!: AdImage;
+  image?: AdImage;
 
   @Prop({
     type: [AdActionSchema],

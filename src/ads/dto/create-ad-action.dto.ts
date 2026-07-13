@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, IsUrl, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsString, Matches, MaxLength } from 'class-validator';
 
 export class CreateAdActionDto {
   @IsString()
@@ -8,9 +8,13 @@ export class CreateAdActionDto {
 
   @IsString()
   @IsNotEmpty()
-  @IsUrl({
-    require_tld: false,
-  })
   @MaxLength(500)
+  @Matches(
+    /^(\/[a-zA-Z0-9\-_/]*|https?:\/\/.+)$/,
+
+    {
+      message: 'URL must be an internal route or valid external URL',
+    },
+  )
   url!: string;
 }

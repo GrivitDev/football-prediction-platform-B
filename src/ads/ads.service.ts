@@ -107,7 +107,11 @@ export class AdsService {
     // IMAGE REPLACEMENT
     // ==========================================
 
-    if (dto.image && dto.image.publicId !== existingAd.image.publicId) {
+    if (
+      dto.image &&
+      existingAd.image &&
+      dto.image.publicId !== existingAd.image.publicId
+    ) {
       await this.uploadsService.deleteImage(existingAd.image.publicId);
     }
 

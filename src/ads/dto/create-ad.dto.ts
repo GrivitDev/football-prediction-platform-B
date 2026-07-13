@@ -42,14 +42,14 @@ export class CreateAdDto {
 
   @ValidateNested()
   @Type(() => CreateAdImageDto)
-  image!: CreateAdImageDto;
+  image?: CreateAdImageDto;
 
   @IsArray()
   @ValidateNested({
     each: true,
   })
   @Type(() => CreateAdActionDto)
-  actions: CreateAdActionDto[] = [];
+  actions?: CreateAdActionDto[] = [];
 
   @IsArray()
   @ArrayMinSize(1)

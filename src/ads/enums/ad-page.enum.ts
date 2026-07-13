@@ -11,5 +11,5 @@ export enum AdPage {
 
   ABOUT = 'ABOUT',
 
-  VIP = 'VIP',
+  PAYMENTS = 'PAYMENTS',
 }
