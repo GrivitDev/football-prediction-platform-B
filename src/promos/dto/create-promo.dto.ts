@@ -10,10 +10,17 @@ import {
 
 import { PromoRequirement } from '../constants/promo-requirements';
 import { RewardType } from '../constants/reward-types';
+import { PromoCampaignType } from '../constants/promo-campaign-type';
 
 export class CreatePromoDto {
   @IsString()
   name!: string;
+
+  @IsEnum(PromoCampaignType)
+  campaignType!: PromoCampaignType;
+
+  @IsString()
+  promoCode!: string;
 
   @IsOptional()
   @IsString()

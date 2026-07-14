@@ -25,7 +25,13 @@ export class PromosService {
     if (dto.endDate <= dto.startDate) {
       throw new BadRequestException('End date must be after start date');
     }
+    const existingPromo = await this.promoModel.findOne({
+      promoCode: dto.promoCode.toUpperCase(),
+    });
 
+    if (existingPromo) {
+      throw new BadRequestException('Promo code already exists');
+    }
     return this.promoModel.create({
       ...dto,
 

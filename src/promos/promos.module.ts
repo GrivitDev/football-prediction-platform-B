@@ -16,6 +16,10 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 import { UsersModule } from '../users/users.module';
 import { ReferralsModule } from 'src/referrals/referrals.module';
+import {
+  PromoParticipant,
+  PromoParticipantSchema,
+} from './schemas/promo-participant.schema';
 
 @Module({
   imports: [
@@ -27,6 +31,11 @@ import { ReferralsModule } from 'src/referrals/referrals.module';
       {
         name: PromoReward.name,
         schema: PromoRewardSchema,
+      },
+
+      {
+        name: PromoParticipant.name,
+        schema: PromoParticipantSchema,
       },
     ]),
 

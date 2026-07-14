@@ -20,6 +20,12 @@ import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 import { UsersService } from '../users/users.service';
+import {
+  PromoParticipant,
+  PromoParticipantDocument,
+} from './schemas/promo-participant.schema';
+import { PromoCampaignType } from './constants/promo-campaign-type';
+import { PromoRequirement } from './constants/promo-requirements';
 
 @Injectable()
 export class PromoEngineService {
@@ -38,6 +44,9 @@ export class PromoEngineService {
 
     @Inject(forwardRef(() => UsersService))
     private readonly usersService: UsersService,
+
+    @InjectModel(PromoParticipant.name)
+    private readonly participantModel: Model<PromoParticipantDocument>,
   ) {}
 
   // ==============================
@@ -47,15 +56,75 @@ export class PromoEngineService {
   async checkUserPromos(userId: string) {
     const now = new Date();
 
-    const promos = await this.promoModel.find({
+    // Direct campaigns are available to everyone
+    const directPromos = await this.promoModel.find({
+      campaignType: PromoCampaignType.DIRECT,
       isActive: true,
       startDate: { $lte: now },
       endDate: { $gte: now },
     });
 
+    // Referral campaigns only if user joined them
+    const joined = await this.participantModel.find({
+      userId,
+    });
+
+    const promoIds = joined.map((x) => x.promoId);
+
+    const referralPromos =
+      promoIds.length === 0
+        ? []
+        : await this.promoModel.find({
+            _id: { $in: promoIds },
+            campaignType: PromoCampaignType.REFERRAL,
+            isActive: true,
+            startDate: { $lte: now },
+            endDate: { $gte: now },
+          });
+
+    const promos = [...directPromos, ...referralPromos];
+
     for (const promo of promos) {
       await this.processPromo(promo, userId);
     }
+  }
+
+  async joinCampaign(promoCode: string, userId: string) {
+    const now = new Date();
+
+    const promo = await this.promoModel.findOne({
+      promoCode: promoCode.toUpperCase(),
+      isActive: true,
+      startDate: {
+        $lte: now,
+      },
+      endDate: {
+        $gte: now,
+      },
+    });
+
+    if (!promo) {
+      return null;
+    }
+
+    const exists = await this.participantModel.findOne({
+      promoId: promo._id.toString(),
+      userId,
+    });
+
+    if (exists) {
+      return exists;
+    }
+
+    if (promo.campaignType === PromoCampaignType.DIRECT) {
+      await this.processPromo(promo, userId);
+      return promo;
+    }
+
+    return this.participantModel.create({
+      promoId: promo._id.toString(),
+      userId,
+    });
   }
 
   // ==============================
@@ -63,6 +132,29 @@ export class PromoEngineService {
   // ==============================
 
   private async processPromo(promo: PromoDocument, userId: string) {
+    // ==============================
+    // DIRECT REGISTER CAMPAIGN
+    // ==============================
+
+    if (
+      promo.campaignType === PromoCampaignType.DIRECT &&
+      promo.requirement === PromoRequirement.REGISTER
+    ) {
+      const claims = await this.rewardModel.countDocuments({
+        promoId: promo._id.toString(),
+        userId,
+      });
+
+      if (promo.maxClaims > 0 && claims >= promo.maxClaims) {
+        return;
+      }
+
+      if (claims === 0) {
+        await this.grantReward(promo, userId, 1);
+      }
+
+      return;
+    }
     const qualified = await this.referralsService.countQualifiedReferrals(
       userId,
       promo.requirement,
@@ -199,17 +291,31 @@ export class PromoEngineService {
   async getUserPromoProgress(userId: string) {
     const now = new Date();
 
-    const promos = await this.promoModel.find({
+    const directPromos = await this.promoModel.find({
+      campaignType: PromoCampaignType.DIRECT,
       isActive: true,
-
-      startDate: {
-        $lte: now,
-      },
-
-      endDate: {
-        $gte: now,
-      },
+      startDate: { $lte: now },
+      endDate: { $gte: now },
     });
+
+    const joined = await this.participantModel.find({
+      userId,
+    });
+
+    const promoIds = joined.map((x) => x.promoId);
+
+    const referralPromos =
+      promoIds.length === 0
+        ? []
+        : await this.promoModel.find({
+            _id: { $in: promoIds },
+            campaignType: PromoCampaignType.REFERRAL,
+            isActive: true,
+            startDate: { $lte: now },
+            endDate: { $gte: now },
+          });
+
+    const promos = [...directPromos, ...referralPromos];
 
     const result: any[] = [];
 

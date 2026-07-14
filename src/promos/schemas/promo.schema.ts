@@ -4,6 +4,7 @@ import { HydratedDocument } from 'mongoose';
 
 import { PromoRequirement } from '../constants/promo-requirements';
 import { RewardType } from '../constants/reward-types';
+import { PromoCampaignType } from '../constants/promo-campaign-type';
 
 export type PromoDocument = HydratedDocument<Promo>;
 
@@ -29,6 +30,28 @@ export class Promo {
   // ======================
   // PROMO STATUS
   // ======================
+
+  // ======================
+  // PROMO CODE
+  // ======================
+
+  @Prop({
+    unique: true,
+    sparse: true,
+    uppercase: true,
+    trim: true,
+  })
+  promoCode!: string;
+
+  // ======================
+  // CAMPAIGN TYPE
+  // ======================
+
+  @Prop({
+    enum: PromoCampaignType,
+    required: true,
+  })
+  campaignType!: PromoCampaignType;
 
   @Prop({
     default: true,
