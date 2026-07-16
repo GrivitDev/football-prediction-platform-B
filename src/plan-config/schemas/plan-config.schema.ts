@@ -3,18 +3,26 @@ import { HydratedDocument } from 'mongoose';
 
 export type PlanConfigDocument = HydratedDocument<PlanConfig>;
 
-@Schema({ timestamps: true })
+@Schema({
+  timestamps: true,
+})
 export class PlanConfig {
-  @Prop({ default: 1000 })
+  @Prop({
+    default: 1000,
+    min: 0,
+  })
   regularPrice!: number;
 
-  @Prop({ default: 5000 })
+  @Prop({
+    default: 5000,
+    min: 0,
+  })
   vipPrice!: number;
 
-  @Prop({ default: 0 })
-  predictionPrice!: number;
-
-  @Prop({ default: 30 })
+  @Prop({
+    default: 30,
+    min: 1,
+  })
   subscriptionDurationDays!: number;
 
   @Prop({
@@ -26,7 +34,12 @@ export class PlanConfig {
       instructions: '',
     },
   })
-  bankDetails!: Record<string, string>;
+  bankDetails!: {
+    bankName: string;
+    accountName: string;
+    accountNumber: string;
+    instructions: string;
+  };
 
   @Prop({
     type: Object,
@@ -36,7 +49,11 @@ export class PlanConfig {
       vip: 'VIP Plan',
     },
   })
-  planLabels!: Record<string, string>;
+  planLabels!: {
+    free: string;
+    regular: string;
+    vip: string;
+  };
 }
 
 export const PlanConfigSchema = SchemaFactory.createForClass(PlanConfig);

@@ -38,6 +38,13 @@ export class PredictionPurchase {
   @Prop({ type: Date, default: null })
   paidAt!: Date | null;
 
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Payment',
+    default: null,
+  })
+  paymentId!: string | null;
+
   @Prop({ type: Object, default: null })
   gatewayResponse!: Record<string, any> | null;
 
@@ -48,5 +55,13 @@ export class PredictionPurchase {
 export const PredictionPurchaseSchema =
   SchemaFactory.createForClass(PredictionPurchase);
 
-PredictionPurchaseSchema.index({ userId: 1, predictionId: 1 });
+PredictionPurchaseSchema.index(
+  {
+    userId: 1,
+    predictionId: 1,
+  },
+  {
+    unique: true,
+  },
+);
 PredictionPurchaseSchema.index({ reference: 1 }, { unique: true });

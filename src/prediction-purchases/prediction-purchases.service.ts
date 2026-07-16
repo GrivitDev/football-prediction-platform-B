@@ -44,6 +44,10 @@ export class PredictionPurchasesService {
       throw new BadRequestException('Prediction is free');
     }
 
+    if (prediction.kickoffTimestamp <= Date.now()) {
+      throw new BadRequestException('Prediction is no longer available.');
+    }
+
     // already purchased
     const existing = await this.purchaseModel.findOne({
       userId,
@@ -80,7 +84,7 @@ export class PredictionPurchasesService {
       userId,
       predictionId,
 
-      amount: prediction.price ?? 0,
+      amount: Number(prediction.price),
 
       reference,
 
@@ -133,14 +137,13 @@ export class PredictionPurchasesService {
     return purchase;
   }
 
-  async markAsSuccessByPredictionId(
-    userId: string,
-    predictionId: string,
+  async markAsSuccessByReference(
+    reference: string,
+    paymentId?: string,
     gatewayResponse?: any,
   ) {
     const purchase = await this.purchaseModel.findOne({
-      userId,
-      predictionId,
+      reference,
     });
 
     if (!purchase) {
@@ -153,9 +156,16 @@ export class PredictionPurchasesService {
 
     purchase.status = 'success';
     purchase.paidAt = new Date();
-    purchase.gatewayResponse = gatewayResponse || { manual: true };
+    purchase.paymentId = paymentId || null;
+    purchase.gatewayResponse = gatewayResponse || {
+      manual: true,
+    };
 
-    return purchase.save();
+    await purchase.save();
+
+    await this.referralsService.markPredictionPurchased(purchase.userId);
+
+    return purchase;
   }
   // =====================================
   // ACCESS CHECK

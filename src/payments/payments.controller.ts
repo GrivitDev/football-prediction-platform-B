@@ -29,8 +29,6 @@ export class PaymentsController {
 
       target: string;
 
-      amount: number;
-
       transferReference?: string;
 
       proofImageUrl?: string;
@@ -46,8 +44,6 @@ export class PaymentsController {
 
       type: body.type,
       target: body.target,
-
-      amount: body.amount,
 
       transferReference: body.transferReference,
 

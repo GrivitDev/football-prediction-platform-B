@@ -12,6 +12,7 @@ import { PredictionPurchasesModule } from '../prediction-purchases/prediction-pu
 import { TelegramModule } from 'src/telegram/telegram.module';
 import { RealtimeModule } from 'src/realtime/realtime.module';
 import { ReferralsModule } from '../referrals/referrals.module';
+import { PlanConfigModule } from 'src/plan-config/plan-config.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { ReferralsModule } from '../referrals/referrals.module';
     TelegramModule,
     RealtimeModule,
     ReferralsModule,
+    PlanConfigModule,
   ],
 
   controllers: [PaymentsController],

@@ -12,6 +12,7 @@ import { PredictionPurchasesService } from '../prediction-purchases/prediction-p
 import { TelegramService } from 'src/telegram/telegram.service';
 import { AdminGateway } from 'src/realtime/admin.gateway';
 import { ReferralsService } from 'src/referrals/referrals.service';
+import { PlanConfigService } from 'src/plan-config/plan-config.service';
 
 @Injectable()
 export class PaymentsService {
@@ -25,6 +26,7 @@ export class PaymentsService {
     private telegramService: TelegramService,
     private adminGateway: AdminGateway,
     private referralsService: ReferralsService,
+    private readonly planConfigService: PlanConfigService,
   ) {}
 
   // =====================================
@@ -33,7 +35,6 @@ export class PaymentsService {
   async createPayment(dto: {
     userId: string;
     email: string;
-    amount: number;
     type: 'subscription' | 'prediction' | 'vip_upgrade';
     target: string;
 
@@ -45,6 +46,7 @@ export class PaymentsService {
     const existingPending = await this.paymentModel.findOne({
       userId: dto.userId,
       type: dto.type,
+      target: dto.target,
       status: 'pending',
     });
 
@@ -54,12 +56,56 @@ export class PaymentsService {
       );
     }
 
+    const existingPayment = await this.paymentModel.findOne({
+      type: 'prediction',
+      target: dto.target,
+      status: 'pending',
+    });
+    if (existingPayment) {
+      throw new BadRequestException('Payment already pending');
+    }
+
+    const config = await this.planConfigService.get();
+
+    let amount = 0;
+
+    if (dto.type === 'subscription' || dto.type === 'vip_upgrade') {
+      if (dto.target === 'regular') {
+        amount = config.regularPrice;
+      } else if (dto.target === 'vip') {
+        amount = config.vipPrice;
+      } else {
+        throw new BadRequestException('Invalid subscription plan.');
+      }
+    }
+
+    if (dto.type === 'prediction') {
+      const purchase = await this.predictionPurchaseService.getByReference(
+        dto.target,
+      );
+
+      if (!purchase) {
+        throw new BadRequestException('Purchase not found.');
+      }
+
+      // Additional validation
+      if (purchase.userId.toString() !== dto.userId) {
+        throw new BadRequestException('Purchase does not belong to this user.');
+      }
+
+      if (purchase.status === 'success') {
+        throw new BadRequestException('Prediction already purchased.');
+      }
+
+      amount = purchase.amount;
+    }
+
     const reference = randomUUID();
 
     const payment = await this.paymentModel.create({
       userId: dto.userId,
       email: dto.email,
-      amount: dto.amount,
+      amount,
 
       type: dto.type,
       target: dto.target,
@@ -81,8 +127,9 @@ export class PaymentsService {
       fullName: dto.email,
       email: dto.email,
 
+      amount,
+
       type: dto.type,
-      amount: dto.amount,
 
       target: dto.target,
 
@@ -117,6 +164,8 @@ export class PaymentsService {
 
     await payment.save();
 
+    const config = await this.planConfigService.get();
+
     // =====================================
     // SUBSCRIPTION FLOW
     // =====================================
@@ -132,7 +181,7 @@ export class PaymentsService {
         email: payment.email,
         plan,
         amount: payment.amount,
-        durationDays: 30,
+        durationDays: config.subscriptionDurationDays,
       });
 
       if (plan === 'regular') {
@@ -153,7 +202,7 @@ export class PaymentsService {
         email: payment.email,
         plan: 'vip',
         amount: payment.amount,
-        durationDays: 30,
+        durationDays: config.subscriptionDurationDays,
       });
       await this.referralsService.markVipSubscription(payment.userId);
     }
@@ -162,12 +211,18 @@ export class PaymentsService {
     // PREDICTION FLOW (FIXED)
     // =====================================
     if (payment.type === 'prediction') {
-      await this.predictionPurchaseService.markAsSuccessByPredictionId(
-        payment.userId,
+      const purchase = await this.predictionPurchaseService.getByReference(
         payment.target,
+      );
+
+      if (!purchase) {
+        throw new BadRequestException('Prediction purchase not found');
+      }
+      await this.predictionPurchaseService.markAsSuccessByReference(
+        payment.target,
+        payment._id.toString(),
         {
           source: 'manual_admin',
-          paymentId: payment._id,
         },
       );
     }
