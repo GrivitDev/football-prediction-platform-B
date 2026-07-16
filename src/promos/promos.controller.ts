@@ -167,4 +167,26 @@ export class PromosController {
   getMyRewards(@Req() req: any) {
     return this.promoEngineService.getUserRewards(req.user._id.toString());
   }
+
+  // ==========================
+  // ADMIN - ALL CLAIMED REWARDS
+  // ==========================
+
+  @Get('admin/claimed-rewards')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  getAllClaimedRewards() {
+    return this.promoEngineService.getAllClaimedRewards();
+  }
+
+  // ==========================
+  // ADMIN - CASH PAYOUT QUEUE
+  // ==========================
+
+  @Get('admin/pending-cash')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  getPendingCashRewards() {
+    return this.promoEngineService.getPendingCashRewards();
+  }
 }

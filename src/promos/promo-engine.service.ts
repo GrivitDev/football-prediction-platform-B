@@ -603,4 +603,32 @@ export class PromoEngineService {
       rewards: formattedRewards,
     };
   }
+  async getAllClaimedRewards() {
+    return this.rewardModel
+      .find()
+      .populate('userId', 'fullName username email')
+      .populate(
+        'promoId',
+        'name campaignType rewardType rewardPlan rewardAmount rewardDurationDays',
+      )
+      .sort({
+        createdAt: -1,
+      });
+  }
+
+  async getPendingCashRewards() {
+    return this.rewardModel
+      .find({
+        type: RewardType.CASH,
+        status: PromoRewardStatus.PENDING,
+        accountNumber: {
+          $exists: true,
+        },
+      })
+      .populate('userId', 'fullName username email')
+      .populate('promoId', 'name')
+      .sort({
+        createdAt: -1,
+      });
+  }
 }
