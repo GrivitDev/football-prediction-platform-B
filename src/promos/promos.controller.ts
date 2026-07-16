@@ -118,4 +118,25 @@ export class PromosController {
   getReferralPromos() {
     return this.promosService.getActiveReferralPromos();
   }
+
+  // ==========================
+  // ADMIN - PROMO REWARDS
+  // ==========================
+
+  @Get(':promoId/rewards')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  getPromoRewards(@Param('promoId') promoId: string) {
+    return this.promoEngineService.getPromoRewards(promoId);
+  }
+
+  // ==========================
+  // MY REWARDS
+  // ==========================
+
+  @Get('my-rewards')
+  @UseGuards(AuthGuard('jwt'))
+  getMyRewards(@Req() req: any) {
+    return this.promoEngineService.getUserRewards(req.user._id.toString());
+  }
 }

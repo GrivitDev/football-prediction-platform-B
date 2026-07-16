@@ -1,5 +1,8 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+
 import { HydratedDocument } from 'mongoose';
+
+import mongoose from 'mongoose';
 
 export type ReferralDocument = HydratedDocument<Referral>;
 
@@ -7,20 +10,37 @@ export type ReferralDocument = HydratedDocument<Referral>;
   timestamps: true,
 })
 export class Referral {
-  // The user who shared the referral code
-  @Prop({
-    required: true,
-    index: true,
-  })
-  referrerId!: string;
+  // ======================
+  // REFERRER
+  // ======================
 
-  // The new user who used the referral code
   @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+
+    ref: 'User',
+
     required: true,
-    unique: true,
+
     index: true,
   })
-  referredUserId!: string;
+  referrerId!: mongoose.Types.ObjectId;
+
+  // ======================
+  // REFERRED USER
+  // ======================
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+
+    ref: 'User',
+
+    required: true,
+
+    unique: true,
+
+    index: true,
+  })
+  referredUserId!: mongoose.Types.ObjectId;
 
   // ======================
   // TRACKED ACTIONS

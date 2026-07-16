@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 
-import { HydratedDocument } from 'mongoose';
+import mongoose, { HydratedDocument } from 'mongoose';
 
 import { RewardType } from '../constants/reward-types';
 import { PromoRewardStatus } from '../constants/promo-reward-status';
@@ -18,10 +18,12 @@ export class PromoReward {
   promoId!: string;
 
   @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
     required: true,
     index: true,
   })
-  userId!: string;
+  userId!: mongoose.Types.ObjectId;
 
   // ======================
   // CLAIM INFORMATION

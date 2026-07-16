@@ -61,7 +61,9 @@ export class ReferralsService {
 
     await referral.save();
 
-    await this.promoEngineService.checkUserPromos(referral.referrerId);
+    await this.promoEngineService.checkUserPromos(
+      referral.referrerId.toString(),
+    );
 
     return referral;
   }
@@ -87,7 +89,9 @@ export class ReferralsService {
 
     await referral.save();
 
-    await this.promoEngineService.checkUserPromos(referral.referrerId);
+    await this.promoEngineService.checkUserPromos(
+      referral.referrerId.toString(),
+    );
 
     return referral;
   }
@@ -113,7 +117,9 @@ export class ReferralsService {
 
     await referral.save();
 
-    await this.promoEngineService.checkUserPromos(referral.referrerId);
+    await this.promoEngineService.checkUserPromos(
+      referral.referrerId.toString(),
+    );
 
     return referral;
   }
@@ -196,5 +202,62 @@ export class ReferralsService {
       default:
         return 0;
     }
+  }
+
+  // ======================
+  // ADMIN - ALL REFERRALS
+  // ======================
+
+  async getAdminReferrals() {
+    return this.referralModel
+      .find()
+      .populate('referrerId', 'username email')
+      .populate('referredUserId', 'username email')
+      .sort({
+        createdAt: -1,
+      });
+  }
+
+  // ======================
+  // ADMIN - REFERRAL STATS
+  // ======================
+
+  async getAdminReferralStats() {
+    const total = await this.referralModel.countDocuments();
+
+    const registered = await this.referralModel.countDocuments({
+      registered: true,
+    });
+
+    const regularSubscribers = await this.referralModel.countDocuments({
+      regularSubscription: true,
+    });
+
+    const vipSubscribers = await this.referralModel.countDocuments({
+      vipSubscription: true,
+    });
+
+    const predictionPurchases = await this.referralModel.countDocuments({
+      predictionPurchased: true,
+    });
+
+    const totalReferrers = await this.referralModel.distinct('referrerId');
+
+    return {
+      total,
+
+      totalReferrers: totalReferrers.length,
+
+      registered,
+
+      regularSubscribers,
+
+      vipSubscribers,
+
+      predictionPurchases,
+
+      conversionRate:
+        total === 0 ? 0 : Math.round((vipSubscribers / total) * 100),
+    };
   }
 }

@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument } from 'mongoose';
+import mongoose, { HydratedDocument } from 'mongoose';
 
 export type PromoParticipantDocument = HydratedDocument<PromoParticipant>;
 
@@ -14,10 +14,12 @@ export class PromoParticipant {
   promoId!: string;
 
   @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
     required: true,
     index: true,
   })
-  userId!: string;
+  userId!: mongoose.Types.ObjectId;
 
   @Prop({
     default: Date.now,

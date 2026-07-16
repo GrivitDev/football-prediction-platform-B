@@ -397,4 +397,34 @@ export class PromoEngineService {
 
     return result;
   }
+
+  // ==============================
+  // ADMIN - PROMO REWARDS
+  // ==============================
+
+  async getPromoRewards(promoId: string) {
+    return this.rewardModel
+      .find({
+        promoId,
+      })
+      .populate('userId', 'username email')
+      .sort({
+        createdAt: -1,
+      });
+  }
+
+  // ==============================
+  // USER REWARD HISTORY
+  // ==============================
+
+  async getUserRewards(userId: string) {
+    return this.rewardModel
+      .find({
+        userId,
+      })
+      .populate('promoId', 'name description')
+      .sort({
+        createdAt: -1,
+      });
+  }
 }

@@ -6,6 +6,10 @@ import { ReferralsService } from './referrals.service';
 
 import { UsersService } from '../users/users.service';
 
+import { Roles } from '../common/decorators/roles.decorator';
+
+import { RolesGuard } from '../common/guards/roles.guard';
+
 @Controller('referrals')
 export class ReferralsController {
   constructor(
@@ -86,6 +90,28 @@ export class ReferralsController {
 
       predictionPurchases: predictions,
     };
+  }
+
+  // =====================================
+  // ADMIN - ALL REFERRALS
+  // =====================================
+
+  @Get('admin/all')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  async getAdminReferrals() {
+    return this.referralsService.getAdminReferrals();
+  }
+
+  // =====================================
+  // ADMIN - REFERRAL STATS
+  // =====================================
+
+  @Get('admin/stats')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  async getAdminReferralStats() {
+    return this.referralsService.getAdminReferralStats();
   }
 
   // =====================================
