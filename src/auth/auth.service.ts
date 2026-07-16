@@ -213,6 +213,33 @@ export class AuthService {
       },
     };
   }
+
+  // ======================
+  // REQUEST PASSWORD RESET
+  // ======================
+  async requestPasswordReset(email: string) {
+    const user = await this.usersService.findByEmailWithPassword(email);
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+
+    const hashedToken = await bcrypt.hash(rawToken, 10);
+
+    user.passwordResetToken = hashedToken;
+    user.passwordResetExpires = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+
+    await user.save();
+
+    await this.emailService.sendPasswordResetEmail(user.email, rawToken);
+
+    return {
+      message: 'Password reset email sent.',
+    };
+  }
+
   // ======================
   // PASSWORD RESET
   // ======================

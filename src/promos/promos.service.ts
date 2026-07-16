@@ -101,13 +101,12 @@ export class PromosService {
       endDate: new Date(dto.endDate),
     });
 
-    const response = promo.toObject();
-
-    if (promoCode) {
-      response.registrationUrl = this.buildRegistrationUrl(promoCode);
-    }
-
-    return response;
+    return {
+      ...promo.toObject(),
+      registrationUrl: promoCode
+        ? this.buildRegistrationUrl(promoCode)
+        : undefined,
+    };
   }
   // ==========================
   // GET ACTIVE PROMOS

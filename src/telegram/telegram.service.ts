@@ -51,6 +51,15 @@ export class TelegramService {
     username: string;
     email: string;
     phoneNumber: string;
+
+    referred: boolean;
+
+    referredBy?: {
+      id: string;
+      fullName: string;
+      username: string;
+      email: string;
+    };
   }) {
     const message = this.userHandler.buildNewUserMessage(data);
 

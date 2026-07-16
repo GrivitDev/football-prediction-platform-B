@@ -1,4 +1,9 @@
-import { Inject, Injectable, forwardRef } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  forwardRef,
+} from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/mongoose';
 
@@ -138,6 +143,10 @@ export class PromoEngineService {
     });
 
     const user = await this.usersService.findById(userId);
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
 
     return {
       message: 'Campaign joined successfully.',
