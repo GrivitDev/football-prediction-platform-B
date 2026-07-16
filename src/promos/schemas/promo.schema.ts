@@ -41,7 +41,7 @@ export class Promo {
     uppercase: true,
     trim: true,
   })
-  promoCode!: string;
+  promoCode?: string;
 
   // ======================
   // CAMPAIGN TYPE

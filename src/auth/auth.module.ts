@@ -16,6 +16,7 @@ import { OtpModule } from '../otp/otp.module';
 import { EmailService } from '../notifications/email.service';
 import { TelegramModule } from 'src/telegram/telegram.module';
 import { ReferralsModule } from '../referrals/referrals.module';
+import { PromosModule } from '../promos/promos.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { ReferralsModule } from '../referrals/referrals.module';
     ReferralsModule,
     OtpModule,
     TelegramModule,
+    PromosModule,
 
     PassportModule.register({
       defaultStrategy: 'jwt',

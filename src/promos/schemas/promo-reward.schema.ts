@@ -95,3 +95,16 @@ export class PromoReward {
 }
 
 export const PromoRewardSchema = SchemaFactory.createForClass(PromoReward);
+
+PromoRewardSchema.index(
+  {
+    promoId: 1,
+
+    userId: 1,
+
+    claimNumber: 1,
+  },
+  {
+    unique: true,
+  },
+);

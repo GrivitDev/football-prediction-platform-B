@@ -22,11 +22,17 @@ export class UserSession {
   @Prop({ default: true })
   isActive!: boolean;
 
-  @Prop()
+  @Prop({
+    default: Date.now,
+  })
   lastActiveAt!: Date;
 
-  @Prop()
+  @Prop({
+    required: true,
+    index: true,
+  })
   expiresAt!: Date;
 }
 
 export const UserSessionSchema = SchemaFactory.createForClass(UserSession);
+UserSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

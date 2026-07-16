@@ -18,6 +18,8 @@ import { CreatePromoDto } from './dto/create-promo.dto';
 import { UpdatePromoDto } from './dto/update-promo.dto';
 
 import { PromoEngineService } from './promo-engine.service';
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { RolesGuard } from 'src/common/guards/roles.guard';
 
 @Controller('promos')
 export class PromosController {
@@ -32,10 +34,11 @@ export class PromosController {
   // ==========================
 
   @Post()
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
   create(@Body() dto: CreatePromoDto) {
     return this.promosService.createPromo(dto);
   }
-
   // ==========================
   // GET ALL PROMOS
   // ==========================
@@ -58,10 +61,28 @@ export class PromosController {
   // USER PROMO PROGRESS
   // ==========================
 
+  @Get(':promoId/status')
+  @UseGuards(AuthGuard('jwt'))
+  async getJoinStatus(@Param('promoId') promoId: string, @Req() req: any) {
+    return this.promoEngineService.getJoinStatus(
+      promoId,
+      req.user._id.toString(),
+    );
+  }
+
   @Get('my-progress')
   @UseGuards(AuthGuard('jwt'))
   getMyProgress(@Req() req: any) {
     return this.promoEngineService.getUserPromoProgress(
+      req.user._id.toString(),
+    );
+  }
+
+  @Post(':promoId/join')
+  @UseGuards(AuthGuard('jwt'))
+  joinReferralCampaign(@Param('promoId') promoId: string, @Req() req: any) {
+    return this.promoEngineService.joinReferralCampaign(
+      promoId,
       req.user._id.toString(),
     );
   }
@@ -71,11 +92,9 @@ export class PromosController {
   // ==========================
 
   @Patch(':id')
-  update(
-    @Param('id') id: string,
-
-    @Body() dto: UpdatePromoDto,
-  ) {
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  update(@Param('id') id: string, @Body() dto: UpdatePromoDto) {
     return this.promosService.updatePromo(id, dto);
   }
 
@@ -84,7 +103,19 @@ export class PromosController {
   // ==========================
 
   @Patch(':id/deactivate')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
   deactivate(@Param('id') id: string) {
     return this.promosService.deactivatePromo(id);
+  }
+
+  @Get('active/direct')
+  getDirectPromos() {
+    return this.promosService.getActiveDirectPromos();
+  }
+
+  @Get('active/referral')
+  getReferralPromos() {
+    return this.promosService.getActiveReferralPromos();
   }
 }

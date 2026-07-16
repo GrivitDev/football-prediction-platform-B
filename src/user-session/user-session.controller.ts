@@ -33,6 +33,6 @@ export class UserSessionController {
   // =========================
   @Patch('user/:userId/revoke-all')
   revokeAll(@Param('userId') userId: string) {
-    return this.sessionService.revokeAllUserSessions(userId);
+    return this.sessionService.deactivateAllUserSessions(userId);
   }
 }

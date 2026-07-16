@@ -20,10 +20,21 @@ export class PromoParticipant {
   userId!: string;
 
   @Prop({
-    default: false,
+    default: Date.now,
   })
-  completed!: boolean;
+  joinedAt!: Date;
 }
 
 export const PromoParticipantSchema =
   SchemaFactory.createForClass(PromoParticipant);
+
+PromoParticipantSchema.index(
+  {
+    promoId: 1,
+
+    userId: 1,
+  },
+  {
+    unique: true,
+  },
+);

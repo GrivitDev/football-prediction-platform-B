@@ -3,6 +3,15 @@ export interface TelegramUserNotification {
   username: string;
   email: string;
   phoneNumber: string;
+
+  referred: boolean;
+
+  referredBy?: {
+    id: string;
+    fullName: string;
+    username: string;
+    email: string;
+  };
 }
 
 export interface TelegramPaymentNotification {

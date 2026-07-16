@@ -7,6 +7,13 @@ export class UserHandler {
     username: string;
     email: string;
     phoneNumber: string;
+
+    referred: boolean;
+
+    referredBy?: {
+      fullName: string;
+      username: string;
+    };
   }) {
     return `
 👤 NEW USER REGISTERED
@@ -15,6 +22,16 @@ Name: ${data.fullName}
 Username: ${data.username}
 Email: ${data.email}
 Phone: ${data.phoneNumber}
+
+Referral: ${data.referred ? '✅ Yes' : '❌ No'}${
+      data.referredBy
+        ? `
+
+Referrer:
+Name: ${data.referredBy.fullName}
+Username: ${data.referredBy.username}`
+        : ''
+    }
 `;
   }
 }

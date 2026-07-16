@@ -19,23 +19,72 @@ export class UserSessionService {
   }
 
   async findSessionById(sessionId: string) {
-    return this.sessionModel.findById(sessionId);
+    const session = await this.sessionModel.findById(sessionId);
+
+    if (!session) {
+      return null;
+    }
+
+    if (
+      session.isActive &&
+      session.expiresAt &&
+      session.expiresAt <= new Date()
+    ) {
+      await this.sessionModel.findByIdAndUpdate(sessionId, {
+        $set: {
+          isActive: false,
+        },
+      });
+
+      session.isActive = false;
+    }
+
+    return session;
   }
 
   async revokeSession(sessionId: string) {
-    return this.sessionModel.findByIdAndUpdate(sessionId, {
-      isActive: false,
-    });
+    return this.sessionModel.findOneAndUpdate(
+      {
+        _id: sessionId,
+        isActive: true,
+      },
+      {
+        $set: {
+          isActive: false,
+        },
+      },
+    );
   }
 
-  async revokeAllUserSessions(userId: string) {
-    return this.sessionModel.updateMany({ userId }, { isActive: false });
+  async deactivateAllUserSessions(userId: string) {
+    await this.sessionModel.updateMany(
+      {
+        userId,
+        isActive: true,
+      },
+      {
+        $set: {
+          isActive: false,
+        },
+      },
+    );
   }
 
   async updateActivity(sessionId: string) {
-    return this.sessionModel.findByIdAndUpdate(sessionId, {
-      lastActiveAt: new Date(),
-    });
+    return this.sessionModel.findOneAndUpdate(
+      {
+        _id: sessionId,
+        isActive: true,
+        expiresAt: {
+          $gt: new Date(),
+        },
+      },
+      {
+        $set: {
+          lastActiveAt: new Date(),
+        },
+      },
+    );
   }
   // =====================================
   // ADMIN SUMMARY
@@ -45,7 +94,11 @@ export class UserSessionService {
       .find({ userId })
       .sort({ lastActiveAt: -1 });
 
-    const activeSessions = sessions.filter((session) => session.isActive);
+    const now = new Date();
+
+    const activeSessions = sessions.filter(
+      (session) => session.isActive && session.expiresAt > now,
+    );
 
     return {
       sessions,
@@ -63,6 +116,35 @@ export class UserSessionService {
   }
 
   async getUserSessions(userId: string) {
-    return this.sessionModel.find({ userId }).sort({ lastActiveAt: -1 });
+    const now = new Date();
+
+    const sessions = await this.sessionModel.find({ userId }).sort({
+      lastActiveAt: -1,
+    });
+
+    return sessions.map((session) => ({
+      ...session.toObject(),
+
+      expired: session.expiresAt <= now,
+
+      active: session.isActive && session.expiresAt > now,
+    }));
+  }
+
+  async cleanupUserSessions(userId: string) {
+    return this.sessionModel.updateMany(
+      {
+        userId,
+        expiresAt: {
+          $lte: new Date(),
+        },
+        isActive: true,
+      },
+      {
+        $set: {
+          isActive: false,
+        },
+      },
+    );
   }
 }

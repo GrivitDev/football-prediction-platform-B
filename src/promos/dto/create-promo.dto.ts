@@ -19,9 +19,6 @@ export class CreatePromoDto {
   @IsEnum(PromoCampaignType)
   campaignType!: PromoCampaignType;
 
-  @IsString()
-  promoCode!: string;
-
   @IsOptional()
   @IsString()
   description?: string;

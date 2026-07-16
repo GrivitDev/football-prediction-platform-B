@@ -38,22 +38,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Account not active');
     }
 
-    // 3. SESSION CHECK (SAFE VERSION)
+    // 3. SESSION CHECK
     if (payload.sessionId) {
       const session = await this.userSessionService.findSessionById(
         payload.sessionId,
       );
 
-      // IMPORTANT: DO NOT CRASH LOGIN FOR EDGE CASES
       if (!session || !session.isActive) {
         throw new UnauthorizedException('Session expired');
       }
 
-      // update activity (non-blocking safety)
       this.userSessionService.updateActivity(payload.sessionId).catch(() => {});
     }
 
-    // 4. Return user context
+    // 4. Return authenticated user
     return {
       _id: user._id,
       fullName: user.fullName,

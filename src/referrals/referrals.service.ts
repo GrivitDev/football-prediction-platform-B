@@ -23,6 +23,11 @@ export class ReferralsService {
   // ======================
 
   async createReferral(referrerId: string, referredUserId: string) {
+    // Prevent self referral
+    if (referrerId === referredUserId) {
+      return null;
+    }
+
     const referral = await this.referralModel.create({
       referrerId,
       referredUserId,
@@ -39,79 +44,79 @@ export class ReferralsService {
   // ======================
 
   async markRegularSubscription(userId: string) {
-    const referral = await this.referralModel.findOneAndUpdate(
-      {
-        referredUserId: userId,
-      },
-      {
-        $set: {
-          regularSubscription: true,
-        },
-      },
-      {
-        returnDocument: 'after',
-      },
-    );
+    const referral = await this.referralModel.findOne({
+      referredUserId: userId,
+    });
 
-    if (referral) {
-      await this.promoEngineService.checkUserPromos(referral.referrerId);
+    if (!referral) {
+      return null;
     }
+
+    // Already processed
+    if (referral.regularSubscription) {
+      return referral;
+    }
+
+    referral.regularSubscription = true;
+
+    await referral.save();
+
+    await this.promoEngineService.checkUserPromos(referral.referrerId);
 
     return referral;
   }
-
   // ======================
   // MARK VIP SUB
   // ======================
 
   async markVipSubscription(userId: string) {
-    const referral = await this.referralModel.findOneAndUpdate(
-      {
-        referredUserId: userId,
-      },
-      {
-        $set: {
-          vipSubscription: true,
-        },
-      },
-      {
-        returnDocument: 'after',
-      },
-    );
+    const referral = await this.referralModel.findOne({
+      referredUserId: userId,
+    });
 
-    if (referral) {
-      await this.promoEngineService.checkUserPromos(referral.referrerId);
+    if (!referral) {
+      return null;
     }
+
+    // Already processed
+    if (referral.vipSubscription) {
+      return referral;
+    }
+
+    referral.vipSubscription = true;
+
+    await referral.save();
+
+    await this.promoEngineService.checkUserPromos(referral.referrerId);
 
     return referral;
   }
-
   // ======================
   // MARK PREDICTION PURCHASE
   // ======================
 
   async markPredictionPurchased(userId: string) {
-    const referral = await this.referralModel.findOneAndUpdate(
-      {
-        referredUserId: userId,
-      },
-      {
-        $set: {
-          predictionPurchased: true,
-        },
-      },
-      {
-        returnDocument: 'after',
-      },
-    );
+    const referral = await this.referralModel.findOne({
+      referredUserId: userId,
+    });
 
-    if (referral) {
-      await this.promoEngineService.checkUserPromos(referral.referrerId);
+    if (!referral) {
+      return null;
     }
+
+    // Already processed
+    if (referral.predictionPurchased) {
+      return referral;
+    }
+
+    referral.predictionPurchased = true;
+
+    await referral.save();
+
+    await this.promoEngineService.checkUserPromos(referral.referrerId);
 
     return referral;
   }
-
   // ======================
   // FIND REFERRAL BY USER
   // ======================

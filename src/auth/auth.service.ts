@@ -18,6 +18,9 @@ import { OtpService } from '../otp/otp.service';
 import { EmailService } from '../notifications/email.service';
 import { TelegramService } from 'src/telegram/telegram.service';
 import { ReferralsService } from '../referrals/referrals.service';
+import { PromosService } from 'src/promos/promos.service';
+import { PromoEngineService } from 'src/promos/promo-engine.service';
+import { UserStatus } from 'src/users/schemas/user.schema';
 
 @Injectable()
 export class AuthService {
@@ -29,14 +32,23 @@ export class AuthService {
     private emailService: EmailService,
     private telegramService: TelegramService,
     private referralsService: ReferralsService,
+    private promosService: PromosService,
+    private promoEngineService: PromoEngineService,
   ) {}
 
   // ======================
   // REGISTER
   // ======================
   async register(registerDto: RegisterDto) {
-    const { fullName, username, phoneNumber, email, password, referralCode } =
-      registerDto;
+    const {
+      fullName,
+      username,
+      phoneNumber,
+      email,
+      password,
+      referralCode,
+      promoCode,
+    } = registerDto;
 
     const normalizedUsername = username.trim().toLowerCase();
 
@@ -52,9 +64,12 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     let referredBy: string | undefined;
+    let referrer: any = null;
 
     if (referralCode) {
-      const referrer = await this.usersService.findByUsername(referralCode);
+      const normalizedReferralCode = referralCode.trim().toLowerCase();
+
+      referrer = await this.usersService.findByUsername(normalizedReferralCode);
 
       if (!referrer) {
         throw new BadRequestException('Invalid referral code');
@@ -65,6 +80,13 @@ export class AuthService {
       }
 
       referredBy = referrer._id.toString();
+    }
+    if (promoCode) {
+      const promo = await this.promosService.findActivePromoByCode(promoCode);
+
+      if (!promo) {
+        throw new BadRequestException('Invalid or expired promo code');
+      }
     }
     const user = await this.usersService.create({
       fullName,
@@ -81,14 +103,33 @@ export class AuthService {
         user._id.toString(),
       );
     }
+
+    if (promoCode) {
+      await this.promoEngineService.joinDirectCampaign(
+        promoCode,
+        user._id.toString(),
+      );
+    }
+
     await this.telegramService.notifyNewUser({
       fullName: user.fullName,
       username: user.username,
       email: user.email,
       phoneNumber: user.phoneNumber,
-    });
-    await this.otpService.createOtp(user.email);
 
+      referred: !!referredBy,
+
+      referredBy: referrer
+        ? {
+            id: referrer._id.toString(),
+            fullName: referrer.fullName,
+            username: referrer.username,
+            email: referrer.email,
+          }
+        : undefined,
+    });
+
+    await this.otpService.createOtp(user.email);
     return {
       message: 'Registration successful. OTP sent to email.',
     };
@@ -121,7 +162,7 @@ export class AuthService {
       throw new UnauthorizedException('Account has been deleted');
     }
 
-    if (user.status !== 'active') {
+    if (user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException('Account is not active');
     }
 
@@ -129,14 +170,26 @@ export class AuthService {
       throw new UnauthorizedException('Account is temporarily banned');
     }
 
+    if (user.bannedUntil && user.bannedUntil > new Date()) {
+      throw new UnauthorizedException('Account temporarily banned');
+    }
+
     // UPDATE LOGIN INFO
     await this.usersService.updateLoginInfo(user._id.toString());
 
-    // CREATE SESSION (IMPORTANT)
+    // CLEAN OLD EXPIRED SESSIONS
+
+    await this.userSessionService.cleanupUserSessions(user._id.toString());
+
+    // CREATE NEW SESSION
+
     const session = await this.userSessionService.createSession({
       userId: user._id,
+
       userAgent: userAgent || 'unknown',
+
       ipAddress: ip || 'unknown',
+
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
 
@@ -163,29 +216,6 @@ export class AuthService {
   // ======================
   // PASSWORD RESET
   // ======================
-  async requestPasswordReset(email: string) {
-    const user = await this.usersService.findByEmailWithPassword(email);
-
-    const message = {
-      message: 'If the email exists, a reset link has been sent',
-    };
-
-    if (!user) return message;
-
-    const token = crypto.randomBytes(32).toString('hex');
-
-    user.passwordResetToken = await bcrypt.hash(token, 10);
-    user.passwordResetExpires = new Date(Date.now() + 15 * 60 * 1000);
-
-    await user.save();
-
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password?email=${user.email}&token=${token}`;
-
-    await this.emailService.sendPasswordResetEmail(user.email, resetLink);
-
-    return message;
-  }
-
   async resetPassword(email: string, token: string, newPassword: string) {
     const user = await this.usersService.findByEmailWithPassword(email);
 
@@ -210,7 +240,14 @@ export class AuthService {
 
     await user.save();
 
-    return { message: 'Password reset successful' };
+    // Logout every device
+    await this.userSessionService.deactivateAllUserSessions(
+      user._id.toString(),
+    );
+
+    return {
+      message: 'Password reset successful. Please login again on all devices.',
+    };
   }
 
   async changePassword(
@@ -228,21 +265,41 @@ export class AuthService {
       user.email,
     );
 
+    if (!userWithPassword) {
+      throw new UnauthorizedException();
+    }
+
     const valid = await bcrypt.compare(
       currentPassword,
-      userWithPassword!.password,
+      userWithPassword.password,
     );
 
     if (!valid) {
       throw new BadRequestException('Current password is incorrect');
     }
 
-    userWithPassword!.password = await bcrypt.hash(newPassword, 10);
+    // Prevent using same password
+    const samePassword = await bcrypt.compare(
+      newPassword,
+      userWithPassword.password,
+    );
 
-    await userWithPassword!.save();
+    if (samePassword) {
+      throw new BadRequestException(
+        'New password must be different from current password',
+      );
+    }
+
+    userWithPassword.password = await bcrypt.hash(newPassword, 10);
+
+    await userWithPassword.save();
+
+    // Logout all devices
+    await this.userSessionService.deactivateAllUserSessions(userId);
 
     return {
-      message: 'Password changed successfully',
+      message:
+        'Password changed successfully. Please login again on all devices.',
     };
   }
 }
