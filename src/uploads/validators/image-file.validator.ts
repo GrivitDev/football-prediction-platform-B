@@ -5,10 +5,10 @@ export function imageFileFilter(
   file: Express.Multer.File,
   callback: (error: Error | null, acceptFile: boolean) => void,
 ) {
-  if (!file.originalname.match(/\.(jpg|jpeg|png|webp)$/i)) {
+  if (!file.originalname.match(/\.(jpg|jpeg|png|webp|pdf)$/i)) {
     return callback(
       new BadRequestException(
-        'Only JPG, JPEG, PNG and WEBP images are allowed.',
+        'Only JPG, JPEG, PNG, WEBP images and PDF files are allowed.',
       ),
       false,
     );

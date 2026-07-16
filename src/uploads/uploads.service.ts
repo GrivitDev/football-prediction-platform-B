@@ -20,7 +20,7 @@ export class UploadsService {
           {
             folder,
 
-            resource_type: 'image',
+            resource_type: 'auto',
 
             transformation: [
               {
