@@ -12,10 +12,12 @@ export type PromoRewardDocument = HydratedDocument<PromoReward>;
 })
 export class PromoReward {
   @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Promo',
     required: true,
     index: true,
   })
-  promoId!: string;
+  promoId!: mongoose.Types.ObjectId;
 
   @Prop({
     type: mongoose.Schema.Types.ObjectId,
