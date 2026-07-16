@@ -88,6 +88,34 @@ export class PromosController {
   }
 
   // ==========================
+  // ADMIN - ALL AWARDED REWARDS
+  // ==========================
+
+  @Get('admin/rewards')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  getAllAwardedRewards() {
+    return this.promoEngineService.getAllAwardedRewards();
+  }
+
+  @Patch('rewards/:id/pay')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  markCashRewardPaid(@Param('id') id: string) {
+    return this.promoEngineService.markCashRewardPaid(id);
+  }
+  // ==========================
+  // GET SINGLE PROMO
+  // ==========================
+
+  @Get(':id')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  findOne(@Param('id') id: string) {
+    return this.promosService.findOne(id);
+  }
+
+  // ==========================
   // UPDATE PROMO
   // ==========================
 

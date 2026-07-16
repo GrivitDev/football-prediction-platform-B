@@ -32,6 +32,7 @@ import {
 import { PromoCampaignType } from './constants/promo-campaign-type';
 import { PromoRequirement } from './constants/promo-requirements';
 import { PromosService } from './promos.service';
+import { TelegramService } from 'src/telegram/telegram.service';
 
 @Injectable()
 export class PromoEngineService {
@@ -52,6 +53,7 @@ export class PromoEngineService {
     private readonly usersService: UsersService,
 
     private readonly promosService: PromosService,
+    private readonly telegramService: TelegramService,
 
     @InjectModel(PromoParticipant.name)
     private readonly participantModel: Model<PromoParticipantDocument>,
@@ -323,6 +325,67 @@ export class PromoEngineService {
     });
   }
 
+  async submitCashRewardDetails(rewardId: string, userId: string, data: any) {
+    const reward = await this.rewardModel.findOne({
+      _id: rewardId,
+      userId,
+      type: RewardType.CASH,
+      status: PromoRewardStatus.PENDING,
+    });
+
+    if (!reward) {
+      throw new BadRequestException('Cash reward not available');
+    }
+
+    reward.bankName = data.bankName;
+
+    reward.accountName = data.accountName;
+
+    reward.accountNumber = data.accountNumber;
+
+    reward.claimedAt = new Date();
+
+    await reward.save();
+
+    const user = await this.usersService.findById(userId);
+
+    const promo = await this.promoModel.findById(reward.promoId);
+
+    await this.telegramService.notifyCashRewardRequest({
+      fullName: user?.fullName || user?.username || '',
+
+      email: user?.email || '',
+
+      campaign: promo?.name || '',
+
+      amount: reward.amount || 0,
+
+      bankName: reward.bankName || '',
+      accountName: reward.accountName || '',
+      accountNumber: reward.accountNumber || '',
+    });
+
+    return reward;
+  }
+
+  async markCashRewardPaid(rewardId: string) {
+    const reward = await this.rewardModel.findOne({
+      _id: rewardId,
+      type: RewardType.CASH,
+      status: PromoRewardStatus.PENDING,
+    });
+
+    if (!reward) {
+      throw new BadRequestException('Reward not found');
+    }
+
+    reward.status = PromoRewardStatus.PAID;
+
+    reward.paidAt = new Date();
+
+    return reward.save();
+  }
+
   // ==============================
   // USER PROMO PROGRESS
   // ==============================
@@ -435,5 +498,109 @@ export class PromoEngineService {
       .sort({
         createdAt: -1,
       });
+  }
+
+  // ==============================
+  // ADMIN - ALL PAID REWARDS
+  // ==============================
+
+  async getAllAwardedRewards() {
+    const rewards = await this.rewardModel
+      .find({
+        status: {
+          $in: [PromoRewardStatus.PENDING, PromoRewardStatus.PAID],
+        },
+      })
+      .populate('userId', 'fullName username email')
+      .populate(
+        'promoId',
+        `
+      name
+      campaignType
+      requirement
+      rewardType
+      rewardPlan
+      rewardAmount
+      rewardDurationDays
+      targetCount
+      `,
+      )
+      .sort({
+        paidAt: -1,
+      });
+
+    const formattedRewards = rewards.map((reward: any) => {
+      const promo = reward.promoId;
+
+      let activity = '';
+
+      switch (promo?.requirement) {
+        case PromoRequirement.REGISTER:
+          activity = 'Registered a new account';
+          break;
+
+        case PromoRequirement.REGULAR_SUBSCRIPTION:
+          activity = `Referred ${promo.targetCount} Regular Subscribers`;
+          break;
+
+        case PromoRequirement.VIP_SUBSCRIPTION:
+          activity = `Referred ${promo.targetCount} VIP Subscribers`;
+          break;
+
+        case PromoRequirement.ANY_SUBSCRIPTION:
+          activity = `Referred ${promo.targetCount} Paying Subscribers`;
+          break;
+
+        case PromoRequirement.PREDICTION_PURCHASE:
+          activity = `Referred ${promo.targetCount} Prediction Purchases`;
+          break;
+
+        default:
+          activity = 'Completed campaign requirement';
+      }
+
+      return {
+        id: reward._id,
+
+        rewardTitle:
+          promo?.rewardType === RewardType.SUBSCRIPTION
+            ? `${promo.rewardPlan} Subscription (${promo.rewardDurationDays} Days)`
+            : `Cash Reward ₦${promo.rewardAmount}`,
+
+        rewardType: reward.type,
+
+        dateReceived: reward.paidAt || reward.createdAt,
+
+        campaignType: promo?.campaignType,
+
+        userName: reward.userId?.fullName || reward.userId?.username,
+
+        email: reward.userId?.email,
+
+        activity,
+
+        claimNumber: reward.claimNumber,
+      };
+    });
+
+    return {
+      summary: {
+        totalRewardsAwarded: formattedRewards.length,
+
+        subscriptionRewards: formattedRewards.filter(
+          (r) => r.rewardType === RewardType.SUBSCRIPTION,
+        ).length,
+
+        cashRewards: formattedRewards.filter(
+          (r) => r.rewardType === RewardType.CASH,
+        ).length,
+
+        totalCashAwarded: formattedRewards
+          .filter((r) => r.rewardType === RewardType.CASH)
+          .reduce((sum, r: any) => sum + (r.amount || 0), 0),
+      },
+
+      rewards: formattedRewards,
+    };
   }
 }

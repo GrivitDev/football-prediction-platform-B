@@ -20,6 +20,7 @@ import {
   PromoParticipant,
   PromoParticipantSchema,
 } from './schemas/promo-participant.schema';
+import { TelegramModule } from 'src/telegram/telegram.module';
 
 @Module({
   imports: [
@@ -44,6 +45,8 @@ import {
     SubscriptionsModule,
 
     UsersModule,
+
+    TelegramModule,
   ],
 
   controllers: [PromosController],

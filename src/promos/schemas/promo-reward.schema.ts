@@ -94,6 +94,9 @@ export class PromoReward {
 
   @Prop()
   paidAt?: Date;
+
+  @Prop()
+  claimedAt?: Date;
 }
 
 export const PromoRewardSchema = SchemaFactory.createForClass(PromoReward);

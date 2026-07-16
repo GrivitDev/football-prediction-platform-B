@@ -1,8 +1,12 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/mongoose';
 
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 
 import { Promo, PromoDocument } from './schemas/promo.schema';
 
@@ -203,6 +207,20 @@ export class PromosService {
         ? this.buildRegistrationUrl(promo.promoCode)
         : undefined,
     };
+  }
+
+  async findOne(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid promo id');
+    }
+
+    const promo = await this.promoModel.findById(id);
+
+    if (!promo) {
+      throw new NotFoundException('Promo not found');
+    }
+
+    return promo;
   }
 
   // ==========================

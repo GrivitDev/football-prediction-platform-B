@@ -5,6 +5,7 @@ import { Telegraf } from 'telegraf';
 
 import { UserHandler } from './handlers/user.handler';
 import { PaymentHandler } from './handlers/payment.handler';
+import { RewardHandler } from './handlers/reward.handler';
 
 @Injectable()
 export class TelegramService {
@@ -19,6 +20,7 @@ export class TelegramService {
 
     private userHandler: UserHandler,
     private paymentHandler: PaymentHandler,
+    private rewardHandler: RewardHandler,
   ) {
     const token = this.config.get<string>('TELEGRAM_BOT_TOKEN');
 
@@ -84,5 +86,22 @@ export class TelegramService {
     }
 
     return this.sendMessage(message);
+  }
+
+  async notifyCashRewardRequest(data: {
+    fullName: string;
+    email: string;
+
+    campaign: string;
+
+    amount: number;
+
+    bankName: string;
+    accountName: string;
+    accountNumber: string;
+  }) {
+    const message = this.rewardHandler.buildCashRewardMessage(data);
+
+    await this.sendMessage(message);
   }
 }
