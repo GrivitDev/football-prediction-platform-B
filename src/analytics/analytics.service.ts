@@ -1,57 +1,44 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { UsersService } from '../users/users.service';
-import { PaymentsService } from '../payments/payments.service';
-import { PredictionsService } from '../predictions/predictions.service';
-import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { Injectable } from '@nestjs/common';
+
+import { AnalyticsOverviewService } from './analytics-overview.service';
+import { AnalyticsRevenueService } from './analytics-revenue.service';
+import { AnalyticsLeaderboardService } from './analytics-leaderboard.service';
 
 @Injectable()
 export class AnalyticsService {
-  private readonly logger = new Logger(AnalyticsService.name);
-
   constructor(
-    private usersService: UsersService,
-    private paymentsService: PaymentsService,
-    private predictionsService: PredictionsService,
-    private subscriptionsService: SubscriptionsService,
+    private readonly overviewService: AnalyticsOverviewService,
+
+    private readonly revenueService: AnalyticsRevenueService,
+
+    private readonly leaderboardService: AnalyticsLeaderboardService,
   ) {}
 
-  async getDashboardStats() {
-    try {
-      const [
-        totalUsers,
-        vipUsers,
-        totalPredictions,
-        totalRevenue,
-        totalPayments,
-      ] = await Promise.all([
-        this.usersService.countUsers(),
+  async getDashboard() {
+    const [overview, revenue, leaderboards] = await Promise.all([
+      this.overviewService.getOverview(),
 
-        // ✅ FIXED: VIP comes from subscriptions
-        this.subscriptionsService.getVipUsers().then((v) => v.length),
+      this.revenueService.getRevenue(),
 
-        this.predictionsService.countPredictions(),
-        this.paymentsService.getTotalRevenue(),
-        this.paymentsService.countPayments(),
-      ]);
+      this.leaderboardService.getLeaderboards(),
+    ]);
 
-      return {
-        totalUsers,
-        vipUsers,
-        totalPredictions,
-        totalRevenue,
-        totalPayments,
-      };
-    } catch (error) {
-      this.logger.error('Dashboard stats failed', error);
-      throw error;
-    }
-  }
+    return {
+      users: overview.users,
 
-  async getRecentPayments(limit = 10) {
-    return this.paymentsService.getRecentPayments(limit);
-  }
+      revenue,
 
-  async getRecentUsers(limit = 10) {
-    return this.usersService.getRecentUsers(limit);
+      subscriptions: overview.subscriptions,
+
+      predictions: overview.predictions,
+
+      ads: overview.ads,
+
+      promos: overview.promos,
+
+      referrals: overview.referrals,
+
+      leaderboards,
+    };
   }
 }

@@ -1,21 +1,89 @@
 import { Module } from '@nestjs/common';
 
+import { MongooseModule } from '@nestjs/mongoose';
+
 import { AnalyticsController } from './analytics.controller';
+
 import { AnalyticsService } from './analytics.service';
 
-import { UsersModule } from '../users/users.module';
-import { PaymentsModule } from '../payments/payments.module';
-import { PredictionsModule } from '../predictions/predictions.module';
-import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { AnalyticsOverviewService } from './analytics-overview.service';
+
+import { AnalyticsRevenueService } from './analytics-revenue.service';
+
+import { AnalyticsLeaderboardService } from './analytics-leaderboard.service';
+
+import { User, UserSchema } from '../users/schemas/user.schema';
+
+import { Payment, PaymentSchema } from '../payments/schemas/payment.schema';
+
+import {
+  Subscription,
+  SubscriptionSchema,
+} from '../subscriptions/schemas/subscription.schema';
+
+import {
+  Prediction,
+  PredictionSchema,
+} from '../predictions/schemas/prediction.schema';
+
+import { Referral, ReferralSchema } from '../referrals/schemas/referral.schema';
+
+import { Promo, PromoSchema } from '../promos/schemas/promo.schema';
+
+import { Ad, AdSchema } from '../ads/schemas/ad.schema';
 
 @Module({
   imports: [
-    UsersModule,
-    PaymentsModule,
-    PredictionsModule,
-    SubscriptionsModule,
+    MongooseModule.forFeature([
+      {
+        name: User.name,
+        schema: UserSchema,
+      },
+
+      {
+        name: Payment.name,
+        schema: PaymentSchema,
+      },
+
+      {
+        name: Subscription.name,
+        schema: SubscriptionSchema,
+      },
+
+      {
+        name: Prediction.name,
+        schema: PredictionSchema,
+      },
+
+      {
+        name: Referral.name,
+        schema: ReferralSchema,
+      },
+
+      {
+        name: Promo.name,
+        schema: PromoSchema,
+      },
+
+      {
+        name: Ad.name,
+        schema: AdSchema,
+      },
+    ]),
   ],
+
   controllers: [AnalyticsController],
-  providers: [AnalyticsService],
+
+  providers: [
+    AnalyticsService,
+
+    AnalyticsOverviewService,
+
+    AnalyticsRevenueService,
+
+    AnalyticsLeaderboardService,
+  ],
+
+  exports: [AnalyticsService],
 })
 export class AnalyticsModule {}
