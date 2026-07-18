@@ -170,12 +170,7 @@ export class PredictionsService {
     return this.predictionModel.findByIdAndUpdate(
       id,
       {
-        $set: {
-          ...dto,
-          ...(dto.markets && {
-            markets: dto.markets,
-          }),
-        },
+        $set: updateData,
       },
       {
         new: true,
