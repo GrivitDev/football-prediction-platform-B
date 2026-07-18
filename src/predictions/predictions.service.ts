@@ -7,6 +7,8 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Prediction, PredictionDocument } from './schemas/prediction.schema';
+import { CreatePredictionDto } from './dto/create-prediction.dto';
+import { UpdatePredictionDto } from './dto/update-prediction.dto';
 
 @Injectable()
 export class PredictionsService {
@@ -18,7 +20,13 @@ export class PredictionsService {
   // =========================
   // PROBABILITY VALIDATION
   // =========================
-  private validateProbabilities(dto: any) {
+  private validateProbabilities(dto: {
+    probabilities?: {
+      home: number;
+      draw: number;
+      away: number;
+    };
+  }) {
     if (!dto.probabilities) return;
 
     const total =
@@ -58,7 +66,17 @@ export class PredictionsService {
   // =========================
   // CREATE PREDICTION
   // =========================
-  async create(dto: any) {
+  async create(dto: CreatePredictionDto) {
+    const existingPrediction = await this.predictionModel.findOne({
+      matchId: dto.matchId,
+      deleted: false,
+    });
+
+    if (existingPrediction) {
+      throw new BadRequestException(
+        'A prediction already exists for this match',
+      );
+    }
     this.validateProbabilities(dto);
 
     const prediction = this.getPredictionFromProbabilities(
@@ -67,12 +85,35 @@ export class PredictionsService {
       dto.probabilities.away,
     );
 
-    const markets = this.normalizeMarkets(dto.markets);
-
     return this.predictionModel.create({
-      ...dto,
+      matchId: dto.matchId,
+
+      leagueCode: dto.leagueCode,
+
+      league: dto.league,
+
+      homeTeam: dto.homeTeam,
+
+      awayTeam: dto.awayTeam,
+
+      homeTeamBadge: dto.homeTeamBadge,
+
+      awayTeamBadge: dto.awayTeamBadge,
+
       prediction,
-      markets,
+
+      probabilities: dto.probabilities,
+
+      markets: this.normalizeMarkets(dto.markets),
+
+      confidence: dto.confidence,
+
+      accessType: dto.accessType,
+
+      price: dto.price ?? 0,
+
+      matchDate: dto.matchDate,
+
       kickoffTimestamp: new Date(dto.matchDate).getTime(),
     });
   }
@@ -101,7 +142,7 @@ export class PredictionsService {
   // =========================
   // UPDATE PREDICTION
   // =========================
-  async update(id: string, dto: any) {
+  async update(id: string, dto: UpdatePredictionDto) {
     const prediction = await this.findOne(id);
 
     if (prediction.settled) {
@@ -110,8 +151,12 @@ export class PredictionsService {
 
     this.validateProbabilities(dto);
 
+    const updateData: any = {
+      ...dto,
+    };
+
     if (dto.probabilities) {
-      dto.prediction = this.getPredictionFromProbabilities(
+      updateData.prediction = this.getPredictionFromProbabilities(
         dto.probabilities.home,
         dto.probabilities.draw,
         dto.probabilities.away,

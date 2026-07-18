@@ -103,3 +103,12 @@ export class Prediction {
 }
 
 export const PredictionSchema = SchemaFactory.createForClass(Prediction);
+
+PredictionSchema.index(
+  {
+    matchId: 1,
+  },
+  {
+    unique: true,
+  },
+);

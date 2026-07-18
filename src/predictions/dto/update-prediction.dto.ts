@@ -6,8 +6,8 @@ import {
   IsEnum,
   Min,
   Max,
-  IsString,
   ValidateNested,
+  IsString,
 } from 'class-validator';
 
 import { Type } from 'class-transformer';
