@@ -13,7 +13,7 @@ export class EmailService {
   async sendOtpEmail(email: string, otp: string) {
     try {
       const response = await this.resend.emails.send({
-        from: 'Football Prediction <onboarding@resend.dev>',
+        from: 'Honest Predict <register@honestpredict.com>',
 
         to: email,
 
@@ -57,7 +57,7 @@ export class EmailService {
   }
   async sendPasswordResetEmail(email: string, link: string) {
     await this.resend.emails.send({
-      from: 'Football Prediction <onboarding@resend.dev>',
+      from: 'Honest Predict <passwordreset@honestpredict.com>',
       to: email,
       subject: 'Reset Your Password',
       html: `

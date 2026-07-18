@@ -17,7 +17,6 @@ async function bootstrap() {
         'https://www.honestpredict.com',
         'https://honestpredict.com',
         'http://localhost:3000',
-        'https://football-prediction-platform-nu.vercel.app',
       ].filter(Boolean);
 
       if (!origin || allowedOrigins.includes(origin)) {
