@@ -1,19 +1,42 @@
 // src/predictions/dto/update-prediction.dto.ts
 
-import { IsOptional, IsNumber, IsEnum, Min, Max } from 'class-validator';
+import {
+  IsOptional,
+  IsNumber,
+  IsEnum,
+  Min,
+  Max,
+  IsString,
+  ValidateNested,
+} from 'class-validator';
+
+import { Type } from 'class-transformer';
 
 class MarketDto {
+  @IsString()
   market!: string;
+
+  @IsOptional()
+  @IsString()
   selection?: string;
+}
+
+class ProbabilitiesDto {
+  @IsNumber()
+  home!: number;
+
+  @IsNumber()
+  draw!: number;
+
+  @IsNumber()
+  away!: number;
 }
 
 export class UpdatePredictionDto {
   @IsOptional()
-  probabilities?: {
-    home: number;
-    draw: number;
-    away: number;
-  };
+  @ValidateNested()
+  @Type(() => ProbabilitiesDto)
+  probabilities?: ProbabilitiesDto;
 
   @IsOptional()
   @IsNumber()
@@ -30,8 +53,13 @@ export class UpdatePredictionDto {
   price?: number;
 
   @IsOptional()
+  @IsString()
   matchDate?: string;
 
   @IsOptional()
+  @ValidateNested({
+    each: true,
+  })
+  @Type(() => MarketDto)
   markets?: MarketDto[];
 }

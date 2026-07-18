@@ -21,6 +21,8 @@ export class Prediction {
       country: String,
       emblem: String,
     },
+
+    _id: false,
   })
   league?: {
     code: string;
@@ -52,6 +54,7 @@ export class Prediction {
       away: Number,
     },
     required: true,
+    _id: false,
   })
   probabilities!: {
     home: number;

@@ -12,6 +12,21 @@ import {
 
 import { Type } from 'class-transformer';
 
+class LeagueDto {
+  @IsString()
+  code!: string;
+
+  @IsString()
+  name!: string;
+
+  @IsString()
+  country!: string;
+
+  @IsOptional()
+  @IsString()
+  emblem?: string;
+}
+
 class ProbabilitiesDto {
   @IsNumber()
   home!: number;
@@ -39,12 +54,26 @@ export class CreatePredictionDto {
   @IsString()
   leagueCode!: string;
 
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => LeagueDto)
+  league?: LeagueDto;
+
   @IsString()
   homeTeam!: string;
 
   @IsString()
   awayTeam!: string;
 
+  @IsOptional()
+  @IsString()
+  homeTeamBadge?: string;
+
+  @IsOptional()
+  @IsString()
+  awayTeamBadge?: string;
+
+  @ValidateNested()
   @ValidateNested()
   @Type(() => ProbabilitiesDto)
   probabilities!: ProbabilitiesDto;
@@ -65,7 +94,9 @@ export class CreatePredictionDto {
   matchDate!: string;
 
   @IsOptional()
-  @ValidateNested({ each: true })
+  @ValidateNested({
+    each: true,
+  })
   @Type(() => MarketDto)
   markets?: MarketDto[];
 }
