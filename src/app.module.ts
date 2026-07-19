@@ -38,6 +38,7 @@ import { LivescoreModule } from './livescore/livescore.module';
 import { AdsModule } from './ads/ads.module';
 import { InternalAdsModule } from './internal-ads/internal-ads.module';
 import { ReferralsModule } from './referrals/referrals.module';
+import { EmailModule } from './notifications/email.module';
 
 @Module({
   imports: [
@@ -88,7 +89,7 @@ import { ReferralsModule } from './referrals/referrals.module';
     SportsModule,
 
     AdsModule,
-
+    EmailModule,
     InternalAdsModule,
 
     ReferralsModule,

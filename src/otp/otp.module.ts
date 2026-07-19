@@ -11,6 +11,7 @@ import { Otp, OtpSchema } from './schemas/otp.schema';
 import { UsersModule } from '../users/users.module';
 
 import { EmailService } from '../notifications/email.service';
+import { EmailModule } from 'src/notifications/email.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { EmailService } from '../notifications/email.service';
     ]),
 
     UsersModule,
+    EmailModule,
   ],
 
   controllers: [OtpController],

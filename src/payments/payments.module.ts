@@ -13,6 +13,7 @@ import { TelegramModule } from 'src/telegram/telegram.module';
 import { RealtimeModule } from 'src/realtime/realtime.module';
 import { ReferralsModule } from '../referrals/referrals.module';
 import { PlanConfigModule } from 'src/plan-config/plan-config.module';
+import { EmailModule } from 'src/notifications/email.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { PlanConfigModule } from 'src/plan-config/plan-config.module';
     RealtimeModule,
     ReferralsModule,
     PlanConfigModule,
+    EmailModule,
   ],
 
   controllers: [PaymentsController],
