@@ -98,7 +98,7 @@ export class EmailService {
 <td>
 
 <img
-  src="https://www.honestpredict.com/images/football1.png"
+  src="https://www.honestpredict.com/banner.png"
   alt="Football Predictions"
   width="600"
   style="
@@ -375,7 +375,7 @@ www.honestpredict.com
 <td>
 
 <img
-  src="https://www.honestpredict.com/images/football1.png"
+  src="https://www.honestpredict.com/banner.png"
   alt="Football"
   width="600"
   style="
