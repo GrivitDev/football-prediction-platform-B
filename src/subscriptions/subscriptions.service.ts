@@ -5,12 +5,14 @@ import {
   Subscription,
   SubscriptionDocument,
 } from './schemas/subscription.schema';
+import { EmailService } from '../notifications/email.service';
 
 @Injectable()
 export class SubscriptionsService {
   constructor(
     @InjectModel(Subscription.name)
     private subscriptionModel: Model<SubscriptionDocument>,
+    private emailService: EmailService,
   ) {}
 
   // =====================================
@@ -92,6 +94,8 @@ export class SubscriptionsService {
       startDate: now,
       expiryDate: newExpiry,
       isActive: true,
+      expiringReminderSent: false,
+      expiredNotificationSent: false,
     });
   }
 
@@ -196,5 +200,88 @@ export class SubscriptionsService {
       isActive: true,
       expiryDate: { $gt: new Date() },
     });
+  }
+
+  // =====================================
+  // FIND SUBSCRIPTIONS EXPIRING IN 3 DAYS
+  // =====================================
+  async getExpiringSubscriptions() {
+    const today = new Date();
+
+    const targetDate = new Date();
+
+    targetDate.setDate(today.getDate() + 3);
+
+    const start = new Date(targetDate);
+
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(targetDate);
+
+    end.setHours(23, 59, 59, 999);
+
+    return this.subscriptionModel.find({
+      isActive: true,
+
+      expiringReminderSent: false,
+
+      expiryDate: {
+        $gte: start,
+        $lte: end,
+      },
+    });
+  }
+
+  // =====================================
+  // FIND EXPIRED SUBSCRIPTIONS
+  // =====================================
+  async getSubscriptionsExpired() {
+    return this.subscriptionModel.find({
+      isActive: true,
+
+      expiredNotificationSent: false,
+
+      expiryDate: {
+        $lt: new Date(),
+      },
+    });
+  }
+
+  // =====================================
+  // SEND EXPIRING EMAIL
+  // =====================================
+  async sendExpiringEmail(subscription: any) {
+    await this.emailService.sendSubscriptionExpiringEmail({
+      email: subscription.email,
+
+      plan: subscription.plan,
+
+      expiryDate: subscription.expiryDate,
+
+      daysRemaining: 3,
+    });
+
+    subscription.expiringReminderSent = true;
+
+    await subscription.save();
+  }
+
+  // =====================================
+  // SEND EXPIRED EMAIL
+  // =====================================
+  async sendExpiredEmail(subscription: any) {
+    await this.emailService.sendSubscriptionExpiredEmail({
+      email: subscription.email,
+
+      plan: subscription.plan,
+
+      expiryDate: subscription.expiryDate,
+    });
+
+    subscription.expiredNotificationSent = true;
+
+    subscription.isActive = false;
+
+    await subscription.save();
   }
 }

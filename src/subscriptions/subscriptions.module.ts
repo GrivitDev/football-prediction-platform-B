@@ -12,6 +12,7 @@ import {
 } from './schemas/subscription.schema';
 
 import { UsersModule } from '../users/users.module';
+import { SubscriptionsScheduler } from './subscriptions.scheduler';
 
 @Module({
   imports: [
@@ -29,6 +30,6 @@ import { UsersModule } from '../users/users.module';
 
   providers: [SubscriptionsService],
 
-  exports: [SubscriptionsService],
+  exports: [SubscriptionsService, SubscriptionsScheduler],
 })
 export class SubscriptionsModule {}

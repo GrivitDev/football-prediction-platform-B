@@ -13,6 +13,7 @@ import { TelegramService } from 'src/telegram/telegram.service';
 import { AdminGateway } from 'src/realtime/admin.gateway';
 import { ReferralsService } from 'src/referrals/referrals.service';
 import { PlanConfigService } from 'src/plan-config/plan-config.service';
+import { EmailService } from 'src/notifications/email.service';
 
 @Injectable()
 export class PaymentsService {
@@ -27,6 +28,7 @@ export class PaymentsService {
     private adminGateway: AdminGateway,
     private referralsService: ReferralsService,
     private readonly planConfigService: PlanConfigService,
+    private emailService: EmailService,
   ) {}
 
   // =====================================
@@ -123,6 +125,22 @@ export class PaymentsService {
       processedBy: undefined,
       adminNote: '',
     });
+
+    await this.emailService.sendPaymentReceivedEmail({
+      email: payment.email,
+
+      amount: payment.amount,
+
+      paymentType:
+        payment.type === 'subscription'
+          ? `${payment.target.toUpperCase()} Subscription`
+          : payment.type === 'vip_upgrade'
+            ? 'VIP Upgrade'
+            : 'Prediction Purchase',
+
+      reference: payment.reference,
+    });
+
     await this.telegramService.notifyNewPayment({
       fullName: dto.email,
       email: dto.email,
@@ -176,12 +194,24 @@ export class PaymentsService {
         throw new BadRequestException('Invalid subscription plan');
       }
 
-      await this.subscriptionsService.activatePlan({
+      const subscription = await this.subscriptionsService.activatePlan({
         userId: payment.userId,
         email: payment.email,
         plan,
         amount: payment.amount,
         durationDays: config.subscriptionDurationDays,
+      });
+
+      await this.emailService.sendSubscriptionActivatedEmail({
+        email: payment.email,
+
+        plan: subscription.plan,
+
+        amount: payment.amount,
+
+        activatedDate: subscription.startDate,
+
+        expiryDate: subscription.expiryDate,
       });
 
       if (plan === 'regular') {
@@ -197,12 +227,24 @@ export class PaymentsService {
     // VIP UPGRADE FLOW
     // =====================================
     if (payment.type === 'vip_upgrade') {
-      await this.subscriptionsService.activatePlan({
+      const subscription = await this.subscriptionsService.activatePlan({
         userId: payment.userId,
         email: payment.email,
         plan: 'vip',
         amount: payment.amount,
         durationDays: config.subscriptionDurationDays,
+      });
+
+      await this.emailService.sendSubscriptionActivatedEmail({
+        email: payment.email,
+
+        plan: subscription.plan,
+
+        amount: payment.amount,
+
+        activatedDate: subscription.startDate,
+
+        expiryDate: subscription.expiryDate,
       });
       await this.referralsService.markVipSubscription(payment.userId);
     }
@@ -261,6 +303,20 @@ export class PaymentsService {
     payment.adminNote = adminNote || '';
 
     await payment.save();
+    await this.emailService.sendPaymentRejectedEmail({
+      email: payment.email,
+
+      paymentType:
+        payment.type === 'subscription'
+          ? `${payment.target.toUpperCase()} Subscription`
+          : payment.type === 'vip_upgrade'
+            ? 'VIP Upgrade'
+            : 'Prediction Purchase',
+
+      amount: payment.amount,
+
+      reason: payment.adminNote,
+    });
 
     return payment;
   }

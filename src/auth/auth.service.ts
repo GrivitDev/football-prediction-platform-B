@@ -233,8 +233,15 @@ export class AuthService {
 
     await user.save();
 
-    await this.emailService.sendPasswordResetEmail(user.email, rawToken);
+    const frontendUrl =
+      process.env.FRONTEND_URL || 'https://www.honestpredict.com';
 
+    const resetLink =
+      `${frontendUrl}/reset-password` +
+      `?email=${encodeURIComponent(user.email)}` +
+      `&token=${encodeURIComponent(rawToken)}`;
+
+    await this.emailService.sendPasswordResetEmail(user.email, resetLink);
     return {
       message: 'Password reset email sent.',
     };

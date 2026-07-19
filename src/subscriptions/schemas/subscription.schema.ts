@@ -30,6 +30,16 @@ export class Subscription {
 
   @Prop({ default: true })
   isActive!: boolean;
+
+  @Prop({
+    default: false,
+  })
+  expiringReminderSent: boolean;
+
+  @Prop({
+    default: false,
+  })
+  expiredNotificationSent: boolean;
 }
 
 export const SubscriptionSchema = SchemaFactory.createForClass(Subscription);
