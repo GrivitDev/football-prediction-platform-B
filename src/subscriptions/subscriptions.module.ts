@@ -28,8 +28,8 @@ import { SubscriptionsScheduler } from './subscriptions.scheduler';
 
   controllers: [SubscriptionsController],
 
-  providers: [SubscriptionsService],
+  providers: [SubscriptionsService, SubscriptionsScheduler],
 
-  exports: [SubscriptionsService, SubscriptionsScheduler],
+  exports: [SubscriptionsService],
 })
 export class SubscriptionsModule {}
