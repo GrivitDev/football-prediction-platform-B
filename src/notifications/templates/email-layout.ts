@@ -103,7 +103,7 @@ ${preheader}
 <td>
 
 <img
-  src="https://www.honestpredict.com/images/football1.png"
+  src="https://www.honestpredict.com/banner.png"
   alt="Football Predictions"
   width="600"
   style="
