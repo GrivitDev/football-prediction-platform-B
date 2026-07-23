@@ -31,6 +31,30 @@ export class UserSession {
   device!: string;
 
   @Prop({
+    type: Object,
+    default: undefined,
+  })
+  location?: {
+    country?: string;
+
+    countryCode?: string;
+
+    region?: string;
+
+    city?: string;
+
+    timezone?: string;
+
+    isp?: string;
+
+    organization?: string;
+
+    latitude?: number;
+
+    longitude?: number;
+  };
+
+  @Prop({
     default: true,
     index: true,
   })
@@ -43,7 +67,6 @@ export class UserSession {
 
   @Prop({
     required: true,
-    index: true,
   })
   expiresAt!: Date;
 

@@ -5,6 +5,7 @@ import { UserSession, UserSessionSchema } from './schemas/user-session.schema';
 
 import { UserSessionService } from './user-session.service';
 import { UserSessionController } from './user-session.controller';
+import { CommonModule } from 'src/common/common.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { UserSessionController } from './user-session.controller';
         schema: UserSessionSchema,
       },
     ]),
+    CommonModule,
   ],
   providers: [UserSessionService],
   controllers: [UserSessionController],

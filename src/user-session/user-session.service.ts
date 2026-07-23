@@ -1,19 +1,32 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { UserSession } from './schemas/user-session.schema';
+import { Model, Types } from 'mongoose';
+import {
+  UserSession,
+  UserSessionDocument,
+} from './schemas/user-session.schema';
 import { parseDevice } from '../common/utils/device-parser';
+import { GeoLocationService } from 'src/common/services/geo-location.service';
 
 @Injectable()
 export class UserSessionService {
   constructor(
     @InjectModel(UserSession.name)
     private sessionModel: Model<UserSession>,
+    private geoLocationService: GeoLocationService,
   ) {}
 
-  async createSession(data: Partial<UserSession>) {
-    return this.sessionModel.create({
+  async createSession(
+    data: Partial<UserSession>,
+  ): Promise<UserSessionDocument> {
+    const location = data.ipAddress
+      ? ((await this.geoLocationService.lookup(data.ipAddress)) ?? undefined)
+      : undefined;
+
+    const session = await this.sessionModel.create({
       ...data,
+
+      location,
 
       device: data.userAgent ? parseDevice(data.userAgent) : 'Unknown Device',
 
@@ -21,6 +34,10 @@ export class UserSessionService {
 
       isActive: true,
     });
+
+    console.log('SESSION LOCATION', location);
+
+    return session;
   }
 
   async findSessionById(sessionId: string) {
@@ -116,19 +133,15 @@ export class UserSessionService {
     const now = new Date();
 
     const sessions = await this.sessionModel
-      .find({ userId })
-      .sort({ lastActiveAt: -1 });
+      .find({
+        userId: new Types.ObjectId(userId),
+      })
+      .sort({
+        lastActiveAt: -1,
+      });
 
     return sessions.map((session) => ({
-      _id: session._id,
-
-      device: session.device || 'Unknown Device',
-
-      ipAddress: session.ipAddress,
-
-      lastActiveAt: session.lastActiveAt,
-
-      createdAt: session.createdAt,
+      ...session.toObject(),
 
       isActive: session.isActive && session.expiresAt > now,
 
