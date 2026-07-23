@@ -123,11 +123,17 @@ export class UserSessionService {
     });
 
     return sessions.map((session) => ({
-      ...session.toObject(),
+      _id: session._id,
 
-      expired: session.expiresAt <= now,
+      device: session.device || 'Unknown Device',
+
+      lastActiveAt: session.lastActiveAt,
+
+      createdAt: session.createdAt,
 
       active: session.isActive && session.expiresAt > now,
+
+      expired: session.expiresAt <= now,
     }));
   }
 

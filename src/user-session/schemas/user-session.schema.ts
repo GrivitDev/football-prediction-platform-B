@@ -32,6 +32,10 @@ export class UserSession {
     index: true,
   })
   expiresAt!: Date;
+
+  createdAt!: Date;
+
+  updatedAt!: Date;
 }
 
 export const UserSessionSchema = SchemaFactory.createForClass(UserSession);

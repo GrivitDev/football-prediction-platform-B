@@ -196,8 +196,15 @@ export class AuthService {
     // CREATE JWT
     const token = this.jwtService.sign({
       userId: user._id.toString(),
+
+      fullName: user.fullName,
+
+      username: user.username,
+
       email: user.email,
+
       role: user.role,
+
       sessionId: session._id.toString(),
     });
 
