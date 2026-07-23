@@ -193,6 +193,9 @@ export class AuthService {
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
 
+    console.log('SESSION CREATED');
+    console.log(session);
+
     // CREATE JWT
     const token = this.jwtService.sign({
       userId: user._id.toString(),
