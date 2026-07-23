@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { UserSession } from './schemas/user-session.schema';
+import { parseDevice } from '../common/utils/device-parser';
 
 @Injectable()
 export class UserSessionService {
@@ -13,7 +14,11 @@ export class UserSessionService {
   async createSession(data: Partial<UserSession>) {
     return this.sessionModel.create({
       ...data,
+
+      device: data.userAgent ? parseDevice(data.userAgent) : 'Unknown Device',
+
       lastActiveAt: new Date(),
+
       isActive: true,
     });
   }
@@ -90,48 +95,42 @@ export class UserSessionService {
   // ADMIN SUMMARY
   // =====================================
   async getSessionSummary(userId: string) {
-    const sessions = await this.sessionModel
-      .find({ userId })
-      .sort({ lastActiveAt: -1 });
+    const sessions = await this.getUserSessions(userId);
 
-    const now = new Date();
-
-    const activeSessions = sessions.filter(
-      (session) => session.isActive && session.expiresAt > now,
-    );
+    const activeSessions = sessions.filter((session) => session.isActive);
 
     return {
-      sessions,
-
       latestSessions: sessions.slice(0, 10),
 
       totalSessions: sessions.length,
 
       activeSessions: activeSessions.length,
 
-      lastLogin: sessions.length > 0 ? sessions[0].lastActiveAt : null,
+      lastLogin: sessions.length ? sessions[0].lastActiveAt : null,
 
-      currentSession: activeSessions.length > 0 ? activeSessions[0] : null,
+      currentSession: activeSessions.length ? activeSessions[0] : null,
     };
   }
 
   async getUserSessions(userId: string) {
     const now = new Date();
 
-    const sessions = await this.sessionModel.find({ userId }).sort({
-      lastActiveAt: -1,
-    });
+    const sessions = await this.sessionModel
+      .find({ userId })
+      .sort({ lastActiveAt: -1 });
 
     return sessions.map((session) => ({
       _id: session._id,
 
       device: session.device || 'Unknown Device',
 
+      ipAddress: session.ipAddress,
+
       lastActiveAt: session.lastActiveAt,
 
       createdAt: session.createdAt,
 
-      active: session.isActive && session.expiresAt > now,
+      isActive: session.isActive && session.expiresAt > now,
 
       expired: session.expiresAt <= now,
     }));

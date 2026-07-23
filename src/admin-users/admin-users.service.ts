@@ -76,4 +76,12 @@ export class AdminUsersService {
   async logoutAll(userId: string) {
     return this.sessionsService.deactivateAllUserSessions(userId);
   }
+
+  async getUserSessions(userId: string) {
+    return this.sessionsService.getUserSessions(userId);
+  }
+
+  async revokeSession(sessionId: string) {
+    return this.sessionsService.revokeSession(sessionId);
+  }
 }

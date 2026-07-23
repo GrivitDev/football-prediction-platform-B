@@ -67,4 +67,14 @@ export class AdminUsersController {
   logoutAll(@Param('id') id: string) {
     return this.adminUsersService.logoutAll(id);
   }
+
+  @Get(':id/sessions')
+  getUserSessions(@Param('id') id: string) {
+    return this.adminUsersService.getUserSessions(id);
+  }
+
+  @Patch(':id/sessions/:sessionId/revoke')
+  revokeSession(@Param('sessionId') sessionId: string) {
+    return this.adminUsersService.revokeSession(sessionId);
+  }
 }

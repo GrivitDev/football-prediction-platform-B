@@ -1,9 +1,8 @@
-import { Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, UseGuards } from '@nestjs/common';
 
 import { UserSessionService } from './user-session.service';
 
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-
 import { GetUser } from '../common/decorators/get-user.decorator';
 
 @Controller('sessions')
@@ -12,7 +11,7 @@ export class UserSessionController {
   constructor(private readonly sessionService: UserSessionService) {}
 
   // =========================
-  // USER SESSIONS
+  // MY SESSIONS
   // =========================
 
   @Get('me')
@@ -40,7 +39,7 @@ export class UserSessionController {
   }
 
   // =========================
-  // LOGOUT ALL DEVICES
+  // LOGOUT ALL MY DEVICES
   // =========================
 
   @Patch('logout-all')
@@ -48,27 +47,7 @@ export class UserSessionController {
     await this.sessionService.deactivateAllUserSessions(user._id);
 
     return {
-      message: 'All sessions logged out',
+      message: 'All sessions logged out successfully',
     };
-  }
-
-  // =========================
-  // ADMIN SESSION VIEW
-  // =========================
-
-  @Get('user/:userId')
-  getUserSessions(
-    @Param('userId')
-    userId: string,
-  ) {
-    return this.sessionService.getUserSessions(userId);
-  }
-
-  @Patch(':sessionId/revoke')
-  revokeSession(
-    @Param('sessionId')
-    sessionId: string,
-  ) {
-    return this.sessionService.revokeSession(sessionId);
   }
 }

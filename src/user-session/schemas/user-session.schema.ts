@@ -7,19 +7,33 @@ export type UserSessionDocument = HydratedDocument<UserSession>;
   timestamps: true,
 })
 export class UserSession {
-  @Prop({ type: Types.ObjectId, ref: 'User', index: true })
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'User',
+    index: true,
+    required: true,
+  })
   userId!: Types.ObjectId;
 
-  @Prop()
+  @Prop({
+    required: true,
+  })
   ipAddress!: string;
 
-  @Prop()
+  @Prop({
+    required: true,
+  })
   userAgent!: string;
 
-  @Prop()
-  device?: string;
+  @Prop({
+    default: 'Unknown Device',
+  })
+  device!: string;
 
-  @Prop({ default: true })
+  @Prop({
+    default: true,
+    index: true,
+  })
   isActive!: boolean;
 
   @Prop({
@@ -39,4 +53,17 @@ export class UserSession {
 }
 
 export const UserSessionSchema = SchemaFactory.createForClass(UserSession);
-UserSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+UserSessionSchema.index({
+  userId: 1,
+  isActive: 1,
+});
+
+UserSessionSchema.index(
+  {
+    expiresAt: 1,
+  },
+  {
+    expireAfterSeconds: 0,
+  },
+);
