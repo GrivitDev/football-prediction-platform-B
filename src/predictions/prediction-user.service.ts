@@ -9,7 +9,20 @@ import { AccessService } from './access/access.service';
 
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
-import { PredictionPurchasesService } from '../prediction-purchases/prediction-purchases.service';
+interface User {
+  _id: string;
+}
+
+interface AccessResult {
+  allowed: boolean;
+  state: string;
+  released: boolean;
+  releaseAt: number;
+  purchased: boolean;
+  message?: string | null;
+  showProbabilities: boolean;
+  allowedMarkets: readonly string[];
+}
 
 @Injectable()
 export class PredictionUserService {
@@ -19,8 +32,6 @@ export class PredictionUserService {
 
     private readonly accessService: AccessService,
 
-    private readonly purchaseService: PredictionPurchasesService,
-
     private readonly subscriptionService: SubscriptionsService,
   ) {}
 
@@ -28,8 +39,8 @@ export class PredictionUserService {
   // GET ALL USER PREDICTIONS
   // =====================================
 
-  async getUserPredictions(user: any, league?: string) {
-    const query: any = {
+  async getUserPredictions(user: User | null, league?: string) {
+    const query: Record<string, any> = {
       deleted: false,
     };
 
@@ -50,8 +61,11 @@ export class PredictionUserService {
   // FORMAT RESPONSE
   // =====================================
 
-  private async formatPrediction(user: any, prediction: PredictionDocument) {
-    const access = await this.accessService.canAccessPrediction(
+  private async formatPrediction(
+    user: User | null,
+    prediction: PredictionDocument,
+  ) {
+    const access: AccessResult = await this.accessService.canAccessPrediction(
       user,
       prediction,
     );
@@ -60,15 +74,10 @@ export class PredictionUserService {
       ? await this.subscriptionService.getUserPlan(user._id.toString())
       : 'free';
 
-    const purchased = user
-      ? await this.purchaseService.hasPurchased(
-          user._id.toString(),
-          prediction._id.toString(),
-        )
-      : false;
-
     const base = {
       id: prediction._id,
+
+      matchId: prediction.matchId,
 
       homeTeam: prediction.homeTeam,
 
@@ -78,11 +87,13 @@ export class PredictionUserService {
 
       awayTeamBadge: prediction.awayTeamBadge,
 
-      league: prediction.league,
-
       leagueCode: prediction.leagueCode,
 
+      league: prediction.league,
+
       matchDate: prediction.matchDate,
+
+      kickoffTimestamp: prediction.kickoffTimestamp,
 
       status: prediction.status,
 
@@ -90,11 +101,7 @@ export class PredictionUserService {
 
       price: prediction.price,
 
-      preview: {
-        prediction: prediction.prediction,
-
-        confidence: prediction.confidence,
-      },
+      confidence: prediction.confidence,
     };
 
     // =====================================
@@ -110,21 +117,26 @@ export class PredictionUserService {
 
           state: access.state,
 
-          purchased,
+          purchased: access.purchased ?? false,
 
           plan: userPlan,
+
+          released: access.released,
+
+          releaseAt: access.releaseAt,
 
           message: null,
         },
 
         data: {
+          prediction: prediction.prediction,
           probabilities: access.showProbabilities
             ? prediction.probabilities
             : null,
 
           markets: this.filterMarkets(
             prediction.markets,
-            access.allowedMarkets,
+            access.allowedMarkets || [],
           ),
         },
       };
@@ -142,9 +154,13 @@ export class PredictionUserService {
 
         state: access.state,
 
-        purchased,
+        purchased: access.purchased ?? false,
 
         plan: userPlan,
+
+        released: access.released,
+
+        releaseAt: access.releaseAt,
 
         message: access.message,
       },
@@ -159,7 +175,10 @@ export class PredictionUserService {
   // FILTER MARKETS
   // =====================================
 
-  private filterMarkets(markets: any[], allowedMarkets: string[]) {
+  private filterMarkets(
+    markets: Array<{ market: string; [key: string]: unknown }>,
+    allowedMarkets: readonly string[],
+  ): Array<{ market: string; [key: string]: unknown }> {
     if (!allowedMarkets?.length) {
       return [];
     }
@@ -171,7 +190,7 @@ export class PredictionUserService {
   // SINGLE PREDICTION
   // =====================================
 
-  async getUserPredictionById(user: any, id: string) {
+  async getUserPredictionById(user: User | null, id: string) {
     const prediction = await this.predictionModel.findById(id);
 
     if (!prediction || prediction.deleted) {

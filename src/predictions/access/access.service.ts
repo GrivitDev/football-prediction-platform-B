@@ -1,14 +1,21 @@
 import { Injectable } from '@nestjs/common';
 
 import { SubscriptionsService } from '../../subscriptions/subscriptions.service';
-
 import { PredictionPurchasesService } from '../../prediction-purchases/prediction-purchases.service';
 
 import { PlanLevels } from '../constants/plan-levels';
-
 import { PredictionAccessRules } from '../constants/access-rules';
-
 import { PredictionMarkets } from '../constants/prediction-markets';
+
+interface User {
+  _id: { toString(): string };
+}
+
+interface Prediction {
+  accessType: string;
+  kickoffTimestamp: number;
+  _id: { toString(): string };
+}
 
 @Injectable()
 export class AccessService {
@@ -22,11 +29,50 @@ export class AccessService {
     return (kickoffTimestamp - Date.now()) / (1000 * 60 * 60);
   }
 
-  async canAccessPrediction(user: any, prediction: any) {
+  private getReleaseData(
+    kickoffTimestamp: number,
+    releaseHoursBeforeKickoff: number,
+  ) {
+    const releaseAt =
+      kickoffTimestamp - releaseHoursBeforeKickoff * 60 * 60 * 1000;
+
+    return {
+      releaseAt,
+      released: Date.now() >= releaseAt,
+    };
+  }
+
+  async canAccessPrediction(user: User | null, prediction: Prediction) {
+    const rule = PredictionAccessRules[prediction.accessType] as NonNullable<
+      (typeof PredictionAccessRules)[keyof typeof PredictionAccessRules]
+    >;
+
+    const release = this.getReleaseData(
+      prediction.kickoffTimestamp,
+      rule.releaseHoursBeforeKickoff,
+    );
+
+    const hoursLeft = this.getHoursLeft(prediction.kickoffTimestamp);
+
+    // ==========================
+    // LOGIN REQUIRED
+    // ==========================
+
     if (!user) {
       return {
         allowed: false,
+
         state: 'login_required',
+
+        purchased: false,
+
+        ...release,
+
+        showProbabilities: false,
+
+        allowedMarkets: [],
+
+        message: 'Login required',
       };
     }
 
@@ -47,6 +93,8 @@ export class AccessService {
 
         purchased: true,
 
+        ...release,
+
         showProbabilities: true,
 
         allowedMarkets: Object.values(PredictionMarkets),
@@ -61,15 +109,24 @@ export class AccessService {
       user._id.toString(),
     );
 
-    const userLevel = PlanLevels[plan];
+    const userLevel = PlanLevels[plan] ?? 0;
 
-    const predictionLevel = PlanLevels[prediction.accessType];
+    const predictionLevel =
+      PlanLevels[prediction.accessType as keyof typeof PlanLevels] ?? 0;
 
     if (userLevel < predictionLevel) {
       return {
         allowed: false,
 
         state: 'upgrade_required',
+
+        purchased: false,
+
+        ...release,
+
+        showProbabilities: false,
+
+        allowedMarkets: [],
 
         message: `${prediction.accessType} subscription required`,
       };
@@ -79,15 +136,19 @@ export class AccessService {
     // 3. CHECK RELEASE TIME
     // ==========================
 
-    const rule = PredictionAccessRules[prediction.accessType];
-
-    const hoursLeft = this.getHoursLeft(prediction.kickoffTimestamp);
-
     if (hoursLeft > rule.releaseHoursBeforeKickoff) {
       return {
         allowed: false,
 
         state: 'locked',
+
+        purchased: false,
+
+        ...release,
+
+        showProbabilities: false,
+
+        allowedMarkets: [],
 
         message: `Available ${rule.releaseHoursBeforeKickoff} hours before kickoff`,
       };
@@ -103,6 +164,8 @@ export class AccessService {
       state: 'subscription',
 
       purchased: false,
+
+      ...release,
 
       showProbabilities: rule.showProbabilities,
 

@@ -20,6 +20,8 @@ export const PredictionAccessRules = {
       PredictionMarkets.BOTH_TEAMS_TO_SCORE,
 
       PredictionMarkets.DOUBLE_CHANCE,
+
+      PredictionMarkets.HALF_TIME,
     ],
   },
 
