@@ -8,13 +8,19 @@ import { PredictionAccessRules } from '../constants/access-rules';
 import { PredictionMarkets } from '../constants/prediction-markets';
 
 interface User {
-  _id: { toString(): string };
+  _id: {
+    toString(): string;
+  };
 }
 
 interface Prediction {
-  accessType: string;
+  accessType: 'free' | 'regular' | 'vip';
+
   kickoffTimestamp: number;
-  _id: { toString(): string };
+
+  _id: {
+    toString(): string;
+  };
 }
 
 @Injectable()
@@ -31,6 +37,7 @@ export class AccessService {
 
   private getReleaseData(
     kickoffTimestamp: number,
+
     releaseHoursBeforeKickoff: number,
   ) {
     const releaseAt =
@@ -38,17 +45,37 @@ export class AccessService {
 
     return {
       releaseAt,
+
       released: Date.now() >= releaseAt,
     };
   }
 
   async canAccessPrediction(user: User | null, prediction: Prediction) {
-    const rule = PredictionAccessRules[prediction.accessType] as NonNullable<
-      (typeof PredictionAccessRules)[keyof typeof PredictionAccessRules]
-    >;
+    /*
+      DEFAULT RULE
+
+      Guest users follow free release timing
+    */
+
+    let userPlan: 'free' | 'regular' | 'vip' = 'free';
+
+    if (user) {
+      userPlan = await this.subscriptionService.getUserPlan(
+        user._id.toString(),
+      );
+    }
+
+    /*
+      RELEASE WINDOW IS BASED ON VIEWER PLAN
+
+      NOT PREDICTION TYPE
+    */
+
+    const rule = PredictionAccessRules[userPlan];
 
     const release = this.getReleaseData(
       prediction.kickoffTimestamp,
+
       rule.releaseHoursBeforeKickoff,
     );
 
@@ -77,11 +104,12 @@ export class AccessService {
     }
 
     // ==========================
-    // 1. CHECK ONE TIME PURCHASE
+    // ONE TIME PURCHASE
     // ==========================
 
     const purchased = await this.purchaseService.hasPurchased(
       user._id.toString(),
+
       prediction._id.toString(),
     );
 
@@ -102,17 +130,12 @@ export class AccessService {
     }
 
     // ==========================
-    // 2. CHECK SUBSCRIPTION
+    // SUBSCRIPTION LEVEL CHECK
     // ==========================
 
-    const plan = await this.subscriptionService.getUserPlan(
-      user._id.toString(),
-    );
+    const userLevel = PlanLevels[userPlan] ?? 0;
 
-    const userLevel = PlanLevels[plan] ?? 0;
-
-    const predictionLevel =
-      PlanLevels[prediction.accessType as keyof typeof PlanLevels] ?? 0;
+    const predictionLevel = PlanLevels[prediction.accessType] ?? 0;
 
     if (userLevel < predictionLevel) {
       return {
@@ -133,7 +156,7 @@ export class AccessService {
     }
 
     // ==========================
-    // 3. CHECK RELEASE TIME
+    // RELEASE WINDOW CHECK
     // ==========================
 
     if (hoursLeft > rule.releaseHoursBeforeKickoff) {
@@ -155,7 +178,7 @@ export class AccessService {
     }
 
     // ==========================
-    // 4. RETURN ACCESS
+    // FULL ACCESS
     // ==========================
 
     return {
