@@ -28,6 +28,6 @@ export const PredictionAccessRules = {
 
     showProbabilities: true,
 
-    allowedMarkets: Object.values(PredictionMarkets),
+    allowedMarkets: null,
   },
 } as const;
