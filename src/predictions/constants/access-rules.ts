@@ -28,6 +28,7 @@ export const PredictionAccessRules = {
 
     showProbabilities: true,
 
+    // null means VIP has access to every market in database
     allowedMarkets: null,
   },
 } as const;

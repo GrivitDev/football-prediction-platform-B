@@ -5,7 +5,6 @@ import { PredictionPurchasesService } from '../../prediction-purchases/predictio
 
 import { PlanLevels } from '../constants/plan-levels';
 import { PredictionAccessRules } from '../constants/access-rules';
-import { PredictionMarkets } from '../constants/prediction-markets';
 
 interface User {
   _id: {
@@ -50,13 +49,11 @@ export class AccessService {
     };
   }
 
-  async canAccessPrediction(user: User | null, prediction: Prediction) {
-    /*
-      DEFAULT RULE
+  async canAccessPrediction(
+    user: User | null,
 
-      Guest users follow free release timing
-    */
-
+    prediction: Prediction,
+  ) {
     let userPlan: 'free' | 'regular' | 'vip' = 'free';
 
     if (user) {
@@ -64,12 +61,6 @@ export class AccessService {
         user._id.toString(),
       );
     }
-
-    /*
-      RELEASE WINDOW IS BASED ON VIEWER PLAN
-
-      NOT PREDICTION TYPE
-    */
 
     const rule = PredictionAccessRules[userPlan];
 
@@ -125,7 +116,7 @@ export class AccessService {
 
         showProbabilities: true,
 
-        allowedMarkets: Object.values(PredictionMarkets),
+        allowedMarkets: null,
       };
     }
 

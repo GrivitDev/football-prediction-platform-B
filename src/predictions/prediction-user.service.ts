@@ -136,7 +136,7 @@ export class PredictionUserService {
 
           markets: this.filterMarkets(
             prediction.markets,
-            access.allowedMarkets || [],
+            access.allowedMarkets,
           ),
         },
       };
