@@ -21,7 +21,7 @@ interface AccessResult {
   purchased: boolean;
   message?: string | null;
   showProbabilities: boolean;
-  allowedMarkets: readonly string[];
+  allowedMarkets: readonly string[] | null;
 }
 
 @Injectable()
@@ -177,12 +177,21 @@ export class PredictionUserService {
 
   private filterMarkets(
     markets: Array<{ market: string; [key: string]: unknown }>,
-    allowedMarkets: readonly string[],
+
+    allowedMarkets: readonly string[] | null,
   ): Array<{ market: string; [key: string]: unknown }> {
-    if (!allowedMarkets?.length) {
+    // VIP
+    // No filtering
+    if (allowedMarkets === null) {
+      return markets;
+    }
+
+    // FREE
+    if (!allowedMarkets.length) {
       return [];
     }
 
+    // REGULAR
     return markets.filter((market) => allowedMarkets.includes(market.market));
   }
 
