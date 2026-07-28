@@ -97,7 +97,7 @@ export class FootballDataService implements OnModuleInit {
             hour: '2-digit',
             minute: '2-digit',
           }),
-
+          venue: m.venue || 'Unknown Stadium',
           status: m.status,
           matchday: m.matchday,
 
@@ -148,7 +148,7 @@ export class FootballDataService implements OnModuleInit {
           hour: '2-digit',
           minute: '2-digit',
         }),
-
+        venue: m.venue || 'Unknown Stadium',
         status: m.status,
         matchday: m.matchday,
 
@@ -204,7 +204,7 @@ export class FootballDataService implements OnModuleInit {
           awayTeamBadge: m.awayTeam?.crest,
 
           date: m.utcDate,
-
+          venue: m.venue || 'Unknown Stadium',
           status: m.status,
           matchday: m.matchday,
 

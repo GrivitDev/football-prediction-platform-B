@@ -19,6 +19,8 @@ export interface Match {
   date: string;
   time?: string;
 
+  venue?: string;
+
   status?: string;
 
   matchday?: number;
