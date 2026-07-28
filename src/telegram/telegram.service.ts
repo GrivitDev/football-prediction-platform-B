@@ -68,6 +68,18 @@ export class TelegramService {
     await this.sendMessage(message);
   }
 
+  async notifyNewRegistration(data: {
+    fullName: string;
+    username: string;
+    email: string;
+    phoneNumber: string;
+    referred: boolean;
+  }) {
+    const message = this.userHandler.buildNewRegistrationMessage(data);
+
+    await this.sendMessage(message);
+  }
+
   async notifyNewPayment(data: {
     fullName: string;
     email: string;

@@ -12,6 +12,9 @@ import { UsersModule } from '../users/users.module';
 
 import { EmailService } from '../notifications/email.service';
 import { EmailModule } from 'src/notifications/email.module';
+import { TelegramModule } from 'src/telegram/telegram.module';
+import { ReferralsModule } from 'src/referrals/referrals.module';
+import { PromosModule } from 'src/promos/promos.module';
 
 @Module({
   imports: [
@@ -24,6 +27,9 @@ import { EmailModule } from 'src/notifications/email.module';
 
     UsersModule,
     EmailModule,
+    TelegramModule,
+    ReferralsModule,
+    PromosModule,
   ],
 
   controllers: [OtpController],

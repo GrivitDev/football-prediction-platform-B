@@ -9,6 +9,7 @@ export enum UserRole {
 }
 
 export enum UserStatus {
+  PENDING = 'pending',
   ACTIVE = 'active',
   SUSPENDED = 'suspended',
   DELETED = 'deleted',
@@ -60,9 +61,11 @@ export class User {
   isVerified!: boolean;
 
   @Prop({
-    default: () => new Date(Date.now() + 24 * 60 * 60 * 1000),
+    default: () => new Date(Date.now() + 30 * 60 * 1000),
+    expires: 0,
+    index: true,
   })
-  verificationExpiresAt!: Date;
+  verificationExpiresAt?: Date;
 
   // ======================
   // ROLE
@@ -120,6 +123,11 @@ export class User {
     index: true,
   })
   referredBy?: string; // User ID of referrer
+
+  @Prop({
+    trim: true,
+  })
+  pendingPromoCode?: string;
 
   @Prop({
     default: 0,

@@ -16,11 +16,10 @@ import { LoginDto } from './dto/login.dto';
 
 import { OtpService } from '../otp/otp.service';
 import { EmailService } from '../notifications/email.service';
-import { TelegramService } from 'src/telegram/telegram.service';
-import { ReferralsService } from '../referrals/referrals.service';
 import { PromosService } from 'src/promos/promos.service';
-import { PromoEngineService } from 'src/promos/promo-engine.service';
+
 import { UserStatus } from 'src/users/schemas/user.schema';
+import { TelegramService } from 'src/telegram/telegram.service';
 
 @Injectable()
 export class AuthService {
@@ -31,9 +30,7 @@ export class AuthService {
     private otpService: OtpService,
     private emailService: EmailService,
     private telegramService: TelegramService,
-    private referralsService: ReferralsService,
     private promosService: PromosService,
-    private promoEngineService: PromoEngineService,
   ) {}
 
   // ======================
@@ -52,6 +49,11 @@ export class AuthService {
 
     const normalizedUsername = username.trim().toLowerCase();
 
+    await this.usersService.deleteExpiredUnverifiedRegistration(
+      email,
+      normalizedUsername,
+    );
+
     const existingEmail = await this.usersService.findByEmail(email);
     if (existingEmail) {
       throw new BadRequestException('Email already exists');
@@ -64,12 +66,13 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     let referredBy: string | undefined;
-    let referrer: any = null;
 
     if (referralCode) {
       const normalizedReferralCode = referralCode.trim().toLowerCase();
 
-      referrer = await this.usersService.findByUsername(normalizedReferralCode);
+      const referrer = await this.usersService.findByUsername(
+        normalizedReferralCode,
+      );
 
       if (!referrer) {
         throw new BadRequestException('Invalid referral code');
@@ -95,38 +98,15 @@ export class AuthService {
       email,
       password: hashedPassword,
       referredBy,
+      pendingPromoCode: promoCode?.trim(),
     });
 
-    if (referredBy) {
-      await this.referralsService.createReferral(
-        referredBy,
-        user._id.toString(),
-      );
-    }
-
-    if (promoCode) {
-      await this.promoEngineService.joinDirectCampaign(
-        promoCode,
-        user._id.toString(),
-      );
-    }
-
-    await this.telegramService.notifyNewUser({
+    await this.telegramService.notifyNewRegistration({
       fullName: user.fullName,
       username: user.username,
       email: user.email,
       phoneNumber: user.phoneNumber,
-
-      referred: !!referredBy,
-
-      referredBy: referrer
-        ? {
-            id: referrer._id.toString(),
-            fullName: referrer.fullName,
-            username: referrer.username,
-            email: referrer.email,
-          }
-        : undefined,
+      referred: Boolean(referredBy),
     });
 
     await this.otpService.createOtp(user.email);

@@ -21,7 +21,7 @@ export class Otp {
 
   @Prop({
     default: Date.now,
-    expires: 300,
+    expires: 1200,
   })
   createdAt!: Date;
 }

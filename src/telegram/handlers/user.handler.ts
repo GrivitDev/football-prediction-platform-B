@@ -16,7 +16,7 @@ export class UserHandler {
     };
   }) {
     return `
-👤 NEW USER REGISTERED
+✅ NEW USER VERIFIED
 
 Name: ${data.fullName}
 Username: ${data.username}
@@ -32,6 +32,27 @@ Name: ${data.referredBy.fullName}
 Username: ${data.referredBy.username}`
         : ''
     }
+`;
+  }
+
+  buildNewRegistrationMessage(data: {
+    fullName: string;
+    username: string;
+    email: string;
+    phoneNumber: string;
+    referred: boolean;
+  }) {
+    return `
+📝 NEW REGISTRATION STARTED
+
+Name: ${data.fullName}
+Username: ${data.username}
+Email: ${data.email}
+Phone: ${data.phoneNumber}
+
+Referral: ${data.referred ? '✅ Yes' : '❌ No'}
+
+Status: ⏳ Pending email verification
 `;
   }
 }

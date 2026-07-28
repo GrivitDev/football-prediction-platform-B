@@ -13,6 +13,9 @@ import { ResendOtpDto } from './dto/resend-otp.dto';
 import { UsersService } from '../users/users.service';
 
 import { EmailService } from '../notifications/email.service';
+import { TelegramService } from 'src/telegram/telegram.service';
+import { ReferralsService } from 'src/referrals/referrals.service';
+import { PromoEngineService } from 'src/promos/promo-engine.service';
 
 @Injectable()
 export class OtpService {
@@ -23,6 +26,9 @@ export class OtpService {
     private usersService: UsersService,
 
     private emailService: EmailService,
+    private telegramService: TelegramService,
+    private referralsService: ReferralsService,
+    private promoEngineService: PromoEngineService,
   ) {}
 
   generateOtp() {
@@ -30,8 +36,10 @@ export class OtpService {
   }
 
   async createOtp(email: string) {
+    const normalizedEmail = email.trim().toLowerCase();
+
     const existingOtp = await this.otpModel.findOne({
-      email,
+      email: normalizedEmail,
     });
 
     if (existingOtp) {
@@ -47,17 +55,17 @@ export class OtpService {
     }
 
     await this.otpModel.deleteMany({
-      email,
+      email: normalizedEmail,
     });
 
     const otpCode = this.generateOtp();
 
     await this.otpModel.create({
-      email,
+      email: normalizedEmail,
       code: otpCode,
     });
 
-    await this.emailService.sendOtpEmail(email, otpCode);
+    await this.emailService.sendOtpEmail(normalizedEmail, otpCode);
 
     return {
       message: 'OTP sent successfully',
@@ -66,19 +74,59 @@ export class OtpService {
   async verifyOtp(verifyOtpDto: VerifyOtpDto) {
     const { email, code } = verifyOtpDto;
 
-    const otp = await this.otpModel.findOne({
-      email,
-      code,
-    });
+    const normalizedEmail = email.trim().toLowerCase();
 
+    const otp = await this.otpModel.findOne({
+      email: normalizedEmail,
+      code,
+      createdAt: {
+        $gt: new Date(Date.now() - 20 * 60 * 1000),
+      },
+    });
     if (!otp) {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
-    await this.usersService.verifyUser(email);
+    const pendingUser = await this.usersService.findByEmail(normalizedEmail);
+
+    const pendingPromoCode = pendingUser?.pendingPromoCode;
+
+    const user = await this.usersService.verifyUser(normalizedEmail);
+    if (!user) {
+      throw new BadRequestException(
+        'Verification expired or account could not be verified',
+      );
+    }
 
     await this.otpModel.deleteMany({
-      email,
+      email: normalizedEmail,
+    });
+
+    if (user.referredBy) {
+      await this.referralsService.createReferral(
+        user.referredBy,
+        user._id.toString(),
+      );
+    }
+
+    if (pendingPromoCode) {
+      await this.promoEngineService.joinDirectCampaign(
+        pendingPromoCode,
+        user._id.toString(),
+      );
+    }
+
+    await this.emailService.sendWelcomeEmail({
+      email: user.email,
+      fullName: user.fullName,
+    });
+
+    await this.telegramService.notifyNewUser({
+      fullName: user.fullName,
+      username: user.username,
+      email: user.email,
+      phoneNumber: user.phoneNumber,
+      referred: Boolean(user.referredBy),
     });
 
     return {
@@ -93,6 +141,24 @@ export class OtpService {
 
     if (!user) {
       throw new BadRequestException('User not found');
+    }
+
+    if (user.isVerified) {
+      throw new BadRequestException('Account is already verified');
+    }
+
+    if (
+      !user.verificationExpiresAt ||
+      user.verificationExpiresAt <= new Date()
+    ) {
+      await this.usersService.deleteExpiredUnverifiedRegistration(
+        email,
+        user.username,
+      );
+
+      throw new BadRequestException(
+        'Registration expired. Please register again.',
+      );
     }
 
     await this.createOtp(email);

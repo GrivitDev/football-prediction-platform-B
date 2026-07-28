@@ -19,6 +19,7 @@ export class UsersService {
 
     const filter: any = {
       isDeleted: false,
+      isVerified: true,
     };
 
     if (search) {
@@ -111,7 +112,7 @@ export class UsersService {
       ...userData,
       email: userData.email?.trim().toLowerCase(),
       username: userData.username?.trim().toLowerCase(),
-      status: UserStatus.ACTIVE,
+      status: UserStatus.PENDING,
     });
 
     return user.save();
@@ -122,13 +123,22 @@ export class UsersService {
   // =========================
   async verifyUser(email: string) {
     return this.userModel.findOneAndUpdate(
-      { email: email.trim().toLowerCase(), isDeleted: false },
+      {
+        email: email.trim().toLowerCase(),
+        isDeleted: false,
+        isVerified: false,
+        verificationExpiresAt: {
+          $gt: new Date(),
+        },
+      },
       {
         $set: {
           isVerified: true,
+          status: UserStatus.ACTIVE,
         },
         $unset: {
           verificationExpiresAt: 1,
+          pendingPromoCode: 1,
         },
       },
       { returnDocument: 'after' },
@@ -211,13 +221,17 @@ export class UsersService {
   // ANALYTICS
   // =========================
   async countUsers() {
-    return this.userModel.countDocuments({ isDeleted: false });
+    return this.userModel.countDocuments({
+      isDeleted: false,
+      isVerified: true,
+    });
   }
 
   async countActiveUsers() {
     return this.userModel.countDocuments({
       status: UserStatus.ACTIVE,
       isDeleted: false,
+      isVerified: true,
     });
   }
 
@@ -225,12 +239,16 @@ export class UsersService {
     return this.userModel.countDocuments({
       status: UserStatus.SUSPENDED,
       isDeleted: false,
+      isVerified: true,
     });
   }
 
   async getRecentUsers(limit: number = 10) {
     return this.userModel
-      .find({ isDeleted: false })
+      .find({
+        isDeleted: false,
+        isVerified: true,
+      })
       .sort({ createdAt: -1 })
       .limit(limit);
   }
@@ -242,6 +260,7 @@ export class UsersService {
     return this.userModel.countDocuments({
       createdAt: { $gte: start },
       isDeleted: false,
+      isVerified: true,
     });
   }
 
@@ -283,6 +302,24 @@ export class UsersService {
       verificationExpiresAt: {
         $lt: new Date(),
       },
+    });
+  }
+
+  async deleteExpiredUnverifiedRegistration(email: string, username: string) {
+    return this.userModel.deleteMany({
+      isVerified: false,
+      isDeleted: false,
+      verificationExpiresAt: {
+        $lte: new Date(),
+      },
+      $or: [
+        {
+          email: email.trim().toLowerCase(),
+        },
+        {
+          username: username.trim().toLowerCase(),
+        },
+      ],
     });
   }
 }
