@@ -248,7 +248,17 @@ export class FootballDataService implements OnModuleInit {
 
         form: team.form || null,
       }));
-    } catch {
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        console.error(
+          'Football Data Error:',
+          error.response?.status,
+          error.response?.data,
+        );
+      } else {
+        console.error('Football Data Error:', error);
+      }
+
       throw new InternalServerErrorException('Failed to fetch standings');
     }
   }
