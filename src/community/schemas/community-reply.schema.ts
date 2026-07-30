@@ -36,6 +36,32 @@ export class CommunityReply {
   message!: string;
 
   @Prop({
+    type: Object,
+
+    default: {
+      strongly_agree: 0,
+
+      agree: 0,
+
+      slightly_agree: 0,
+
+      slightly_disagree: 0,
+
+      disagree: 0,
+
+      strongly_disagree: 0,
+    },
+  })
+  reactions!: Record<string, number>;
+
+  @Prop({
+    type: [String],
+
+    default: [],
+  })
+  reactedBy!: string[];
+
+  @Prop({
     default: true,
   })
   isVisible!: boolean;

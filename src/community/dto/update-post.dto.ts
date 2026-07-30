@@ -10,9 +10,10 @@ import { CommunityPostType } from '../enums/community-post-type.enum';
 
 import { CommunityMediaType } from '../enums/community-media-type.enum';
 
-export class CreatePostDto {
+export class UpdatePostDto {
+  @IsOptional()
   @IsEnum(CommunityPostType)
-  type!: CommunityPostType;
+  type?: CommunityPostType;
 
   @IsOptional()
   @IsString()

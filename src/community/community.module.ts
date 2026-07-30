@@ -15,9 +15,11 @@ import {
 import { CommunityController } from './community.controller';
 
 import { CommunityService } from './community.service';
+import { UploadsModule } from 'src/uploads/uploads.module';
 
 @Module({
   imports: [
+    UploadsModule,
     MongooseModule.forFeature([
       {
         name: CommunityPost.name,

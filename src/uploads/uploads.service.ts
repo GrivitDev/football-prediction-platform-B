@@ -76,6 +76,10 @@ export class UploadsService {
     return this.upload(file, UploadFolder.USERS);
   }
 
+  async uploadCommunityMedia(file: Express.Multer.File) {
+    return this.upload(file, UploadFolder.COMMUNITY);
+  }
+
   async deleteImage(publicId: string) {
     return cloudinary.uploader.destroy(publicId);
   }

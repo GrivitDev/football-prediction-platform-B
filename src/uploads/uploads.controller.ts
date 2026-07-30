@@ -20,6 +20,8 @@ import { Roles } from '../common/decorators/roles.decorator';
 
 import { imageFileFilter } from './validators/image-file.validator';
 
+import { communityMediaFilter } from './validators/community-media.validator';
+
 @Controller('uploads')
 export class UploadsController {
   constructor(private readonly uploadsService: UploadsService) {}
@@ -174,6 +176,36 @@ export class UploadsController {
       message: 'Avatar uploaded successfully',
 
       data: image,
+    };
+  }
+
+  // ======================================================
+  // USER COMMUNITY MEDIA
+  // ======================================================
+
+  @UseGuards(JwtAuthGuard)
+  @Post('community')
+  @UseInterceptors(
+    FileInterceptor('media', {
+      storage: memoryStorage(),
+
+      limits: {
+        fileSize: 20 * 1024 * 1024,
+      },
+
+      fileFilter: communityMediaFilter,
+    }),
+  )
+  async uploadCommunityMedia(
+    @UploadedFile()
+    file: Express.Multer.File,
+  ) {
+    const media = await this.uploadsService.uploadCommunityMedia(file);
+
+    return {
+      message: 'Community media uploaded successfully',
+
+      data: media,
     };
   }
 }

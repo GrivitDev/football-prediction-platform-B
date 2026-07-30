@@ -2,6 +2,10 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 
 import { HydratedDocument } from 'mongoose';
 
+import { CommunityPostType } from '../enums/community-post-type.enum';
+
+import { CommunityMediaType } from '../enums/community-media-type.enum';
+
 export type CommunityPostDocument = HydratedDocument<CommunityPost>;
 
 export enum CommunityReaction {
@@ -40,20 +44,44 @@ export class CommunityPost {
 
   @Prop({
     required: true,
-    maxlength: 100,
+    enum: CommunityPostType,
   })
-  title!: string;
+  type!: CommunityPostType;
 
   @Prop({
-    required: true,
+    maxlength: 100,
+  })
+  title?: string;
+
+  @Prop({
     maxlength: 1000,
   })
-  message!: string;
+  message?: string;
+
+  @Prop({
+    type: {
+      type: String,
+      enum: CommunityMediaType,
+    },
+
+    url: String,
+
+    publicId: String,
+  })
+  media?: {
+    type: CommunityMediaType;
+
+    url: string;
+
+    publicId: string;
+  };
 
   @Prop()
   category?: string;
+
   @Prop({
     type: Object,
+
     default: {
       strongly_agree: 0,
 
@@ -72,6 +100,7 @@ export class CommunityPost {
 
   @Prop({
     type: [String],
+
     default: [],
   })
   reactedBy!: string[];
@@ -87,9 +116,23 @@ export class CommunityPost {
   isFeatured!: boolean;
 
   @Prop({
+    default: false,
+  })
+  isPinned!: boolean;
+
+  @Prop({
+    default: false,
+  })
+  isLocked!: boolean;
+
+  @Prop({
     default: 0,
   })
   replyCount!: number;
 }
 
 export const CommunityPostSchema = SchemaFactory.createForClass(CommunityPost);
+
+CommunityPostSchema.index({
+  title: 'text',
+});

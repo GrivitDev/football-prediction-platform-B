@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/mongoose';
 
@@ -15,6 +19,8 @@ import {
 } from './schemas/community-reply.schema';
 
 import { CreatePostDto } from './dto/create-post.dto';
+
+import { UpdatePostDto } from './dto/update-post.dto';
 
 import { CreateReplyDto } from './dto/create-reply.dto';
 
@@ -36,33 +42,71 @@ export class CommunityService {
 
       fullName: user.fullName,
 
+      type: dto.type,
+
       title: dto.title,
 
       message: dto.message,
 
       category: dto.category,
+
+      media: dto.media,
     });
   }
 
-  async findAll() {
-    return this.postModel
-      .find({
-        isVisible: true,
-      })
-      .sort({
-        createdAt: -1,
-      })
-      .limit(20);
+  async findAll(page: number = 1, limit: number = 20, search?: string) {
+    const filter: any = {
+      isVisible: true,
+    };
+
+    if (search) {
+      filter.$text = {
+        $search: search,
+      };
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [posts, total] = await Promise.all([
+      this.postModel
+
+        .find(filter)
+
+        .sort({
+          createdAt: -1,
+        })
+
+        .skip(skip)
+
+        .limit(limit),
+
+      this.postModel.countDocuments(filter),
+    ]);
+
+    return {
+      posts,
+
+      page,
+
+      total,
+
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async featured() {
     return this.postModel
+
       .find({
         isVisible: true,
+
+        isFeatured: true,
       })
+
       .sort({
         createdAt: -1,
       })
+
       .limit(3);
   }
 
@@ -74,10 +118,13 @@ export class CommunityService {
     }
 
     const replies = await this.replyModel
+
       .find({
         postId: id,
+
         isVisible: true,
       })
+
       .sort({
         createdAt: 1,
       });
@@ -87,6 +134,38 @@ export class CommunityService {
 
       replies,
     };
+  }
+
+  async update(id: string, user: any, dto: UpdatePostDto) {
+    const post = await this.postModel.findById(id);
+
+    if (!post) {
+      throw new NotFoundException('Community post not found');
+    }
+
+    if (post.userId.toString() !== user._id.toString()) {
+      throw new ForbiddenException('You cannot edit this post');
+    }
+
+    Object.assign(post, dto);
+
+    return post.save();
+  }
+
+  async remove(id: string, user: any) {
+    const post = await this.postModel.findById(id);
+
+    if (!post) {
+      throw new NotFoundException('Community post not found');
+    }
+
+    if (post.userId.toString() !== user._id.toString()) {
+      throw new ForbiddenException('You cannot delete this post');
+    }
+
+    post.isVisible = false;
+
+    return post.save();
   }
 
   async react(postId: string, userId: string, emoji: string) {
@@ -122,6 +201,10 @@ export class CommunityService {
       throw new NotFoundException('Community post not found');
     }
 
+    if (post.isLocked) {
+      throw new ForbiddenException('This discussion is locked');
+    }
+
     const reply = await this.replyModel.create({
       postId,
 
@@ -149,10 +232,13 @@ export class CommunityService {
 
   async findReplies(postId: string) {
     return this.replyModel
+
       .find({
         postId,
+
         isVisible: true,
       })
+
       .sort({
         createdAt: 1,
       });

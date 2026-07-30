@@ -8,4 +8,6 @@ export enum UploadFolder {
   PAYMENT_PROOFS = 'football-predictions/payment-proofs',
 
   USERS = 'football-predictions/users',
+
+  COMMUNITY = 'football-predictions/community',
 }
