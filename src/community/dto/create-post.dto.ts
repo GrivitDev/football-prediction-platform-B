@@ -1,6 +1,6 @@
 import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
-export class CreateFeedbackDto {
+export class CreatePostDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)
@@ -8,10 +8,10 @@ export class CreateFeedbackDto {
 
   @IsString()
   @IsNotEmpty()
-  @MaxLength(500)
+  @MaxLength(1000)
   message!: string;
 
   @IsOptional()
   @IsString()
-  reaction?: string;
+  category?: string;
 }
