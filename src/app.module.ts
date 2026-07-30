@@ -39,6 +39,7 @@ import { AdsModule } from './ads/ads.module';
 import { InternalAdsModule } from './internal-ads/internal-ads.module';
 import { ReferralsModule } from './referrals/referrals.module';
 import { EmailModule } from './notifications/email.module';
+import { FeedbackModule } from './feedback/feedback.module';
 
 @Module({
   imports: [
@@ -91,6 +92,7 @@ import { EmailModule } from './notifications/email.module';
     AdsModule,
     EmailModule,
     InternalAdsModule,
+    FeedbackModule,
 
     ReferralsModule,
   ],
