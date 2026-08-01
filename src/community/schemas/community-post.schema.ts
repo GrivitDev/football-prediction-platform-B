@@ -80,21 +80,46 @@ export class CommunityPost {
   category?: string;
 
   @Prop({
-    type: Object,
+    type: {
+      strongly_agree: {
+        type: Number,
+        default: 0,
+      },
 
-    default: {
-      strongly_agree: 0,
+      agree: {
+        type: Number,
+        default: 0,
+      },
 
-      agree: 0,
+      slightly_agree: {
+        type: Number,
+        default: 0,
+      },
 
-      slightly_agree: 0,
+      slightly_disagree: {
+        type: Number,
+        default: 0,
+      },
 
-      slightly_disagree: 0,
+      disagree: {
+        type: Number,
+        default: 0,
+      },
 
-      disagree: 0,
-
-      strongly_disagree: 0,
+      strongly_disagree: {
+        type: Number,
+        default: 0,
+      },
     },
+
+    default: () => ({
+      strongly_agree: 0,
+      agree: 0,
+      slightly_agree: 0,
+      slightly_disagree: 0,
+      disagree: 0,
+      strongly_disagree: 0,
+    }),
   })
   reactions!: Record<string, number>;
 

@@ -168,28 +168,43 @@ export class CommunityService {
     return post.save();
   }
 
-  async react(postId: string, userId: string, emoji: string) {
+  async react(postId: string, userId: string, reaction: string) {
     const post = await this.postModel.findById(postId);
 
     if (!post) {
       throw new NotFoundException('Community post not found');
     }
 
-    const reactionKey = `${userId}:${emoji}`;
-
-    const existingReaction = post.reactedBy.findIndex(
-      (item) => item === reactionKey,
+    const existingReaction = post.reactedBy.find((entry) =>
+      entry.startsWith(`${userId}:`),
     );
 
-    if (existingReaction !== -1) {
-      post.reactedBy.splice(existingReaction, 1);
+    if (existingReaction) {
+      const [, previousReaction] = existingReaction.split(':');
 
-      post.reactions[emoji] = Math.max(0, (post.reactions[emoji] || 0) - 1);
-    } else {
-      post.reactedBy.push(reactionKey);
+      if (previousReaction === reaction) {
+        post.reactedBy = post.reactedBy.filter(
+          (entry) => entry !== existingReaction,
+        );
 
-      post.reactions[emoji] = (post.reactions[emoji] || 0) + 1;
+        post.reactions[reaction] = Math.max(0, post.reactions[reaction] - 1);
+
+        return post.save();
+      }
+
+      post.reactions[previousReaction] = Math.max(
+        0,
+        post.reactions[previousReaction] - 1,
+      );
+
+      post.reactedBy = post.reactedBy.filter(
+        (entry) => entry !== existingReaction,
+      );
     }
+
+    post.reactedBy.push(`${userId}:${reaction}`);
+
+    post.reactions[reaction] = (post.reactions[reaction] ?? 0) + 1;
 
     return post.save();
   }
