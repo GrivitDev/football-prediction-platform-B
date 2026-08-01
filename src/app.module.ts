@@ -34,7 +34,6 @@ import { PredictionPurchasesModule } from './prediction-purchases/prediction-pur
 import { TelegramModule } from './telegram/telegram.module';
 import { PlanConfigModule } from './plan-config/plan-config.module';
 import { AdminGateway } from './realtime/admin.gateway';
-import { LivescoreModule } from './livescore/livescore.module';
 import { AdsModule } from './ads/ads.module';
 import { InternalAdsModule } from './internal-ads/internal-ads.module';
 import { ReferralsModule } from './referrals/referrals.module';
@@ -83,8 +82,6 @@ import { CommunityModule } from './community/community.module';
     UserSessionModule,
     TelegramModule,
     PlanConfigModule,
-
-    LivescoreModule,
 
     PredictionPurchasesModule,
     SportsModule,
