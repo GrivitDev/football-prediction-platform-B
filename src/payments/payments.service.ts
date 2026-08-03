@@ -160,7 +160,228 @@ export class PaymentsService {
       payment,
     };
   }
+  // =====================================
+  // CREATE GATEWAY PAYMENT RECORD
+  // =====================================
+  async createGatewayPaymentRecord(dto: {
+    userId: string;
+    email: string;
+    type: 'subscription' | 'prediction' | 'vip_upgrade';
+    target: string;
+    gateway: 'paystack' | 'opay';
+  }) {
+    const existingPending = await this.paymentModel.findOne({
+      userId: dto.userId,
+      type: dto.type,
+      target: dto.target,
+      status: 'pending',
+    });
 
+    if (existingPending) {
+      throw new BadRequestException('You already have a pending payment.');
+    }
+
+    let amount = 0;
+
+    const config = await this.planConfigService.get();
+
+    if (dto.type === 'subscription' || dto.type === 'vip_upgrade') {
+      if (dto.target === 'regular') {
+        amount = config.regularPrice;
+      } else if (dto.target === 'vip') {
+        amount = config.vipPrice;
+      } else {
+        throw new BadRequestException('Invalid subscription plan.');
+      }
+    }
+
+    if (dto.type === 'prediction') {
+      const purchase = await this.predictionPurchaseService.getByReference(
+        dto.target,
+      );
+
+      if (!purchase) {
+        throw new BadRequestException('Purchase not found.');
+      }
+
+      if (purchase.userId.toString() !== dto.userId) {
+        throw new BadRequestException('Purchase does not belong to this user.');
+      }
+
+      if (purchase.status === 'success') {
+        throw new BadRequestException('Prediction already purchased.');
+      }
+
+      amount = purchase.amount;
+    }
+
+    const payment = await this.paymentModel.create({
+      userId: dto.userId,
+      email: dto.email,
+
+      amount,
+
+      type: dto.type,
+      target: dto.target,
+
+      reference: randomUUID(),
+
+      gateway: dto.gateway,
+
+      status: 'pending',
+
+      transferReference: '',
+      proofImageUrl: '',
+      proofPublicId: '',
+      proofMessage: '',
+      adminNote: '',
+      gatewayTransactionId: '',
+      gatewayResponse: null,
+    });
+
+    return payment;
+  }
+
+  // =====================================
+  // FIND PAYMENT
+  // =====================================
+  async findPaymentByReference(reference: string) {
+    return this.paymentModel.findOne({
+      reference,
+    });
+  }
+
+  // =====================================
+  // APPROVE GATEWAY PAYMENT
+  // =====================================
+  async approveGatewayPayment(
+    reference: string,
+    gatewayTransactionId: string,
+    gatewayResponse: Record<string, any>,
+  ) {
+    const payment = await this.paymentModel.findOne({
+      reference,
+    });
+
+    if (!payment) {
+      throw new BadRequestException('Payment not found.');
+    }
+
+    if (payment.status === 'approved') {
+      return payment;
+    }
+
+    payment.status = 'approved';
+
+    payment.gatewayTransactionId = gatewayTransactionId;
+
+    payment.gatewayResponse = gatewayResponse;
+
+    payment.processedAt = new Date();
+
+    await payment.save();
+
+    const config = await this.planConfigService.get();
+
+    // =============================
+    // SUBSCRIPTION
+    // =============================
+    if (payment.type === 'subscription') {
+      const plan = payment.target as 'regular' | 'vip';
+
+      const subscription = await this.subscriptionsService.activatePlan({
+        userId: payment.userId,
+        email: payment.email,
+        plan,
+        amount: payment.amount,
+        durationDays: config.subscriptionDurationDays,
+      });
+
+      await this.emailService.sendSubscriptionActivatedEmail({
+        email: payment.email,
+        plan: subscription.plan,
+        amount: payment.amount,
+        activatedDate: subscription.startDate,
+        expiryDate: subscription.expiryDate,
+      });
+
+      if (plan === 'regular') {
+        await this.referralsService.markRegularSubscription(payment.userId);
+      }
+
+      if (plan === 'vip') {
+        await this.referralsService.markVipSubscription(payment.userId);
+      }
+    }
+
+    // =============================
+    // VIP UPGRADE
+    // =============================
+    if (payment.type === 'vip_upgrade') {
+      const subscription = await this.subscriptionsService.activatePlan({
+        userId: payment.userId,
+        email: payment.email,
+        plan: 'vip',
+        amount: payment.amount,
+        durationDays: config.subscriptionDurationDays,
+      });
+
+      await this.emailService.sendSubscriptionActivatedEmail({
+        email: payment.email,
+        plan: subscription.plan,
+        amount: payment.amount,
+        activatedDate: subscription.startDate,
+        expiryDate: subscription.expiryDate,
+      });
+
+      await this.referralsService.markVipSubscription(payment.userId);
+    }
+
+    // =============================
+    // PREDICTION
+    // =============================
+    if (payment.type === 'prediction') {
+      await this.predictionPurchaseService.markAsSuccessByReference(
+        payment.target,
+        payment._id.toString(),
+        gatewayResponse,
+      );
+    }
+
+    this.adminGateway.emitPaymentUpdate(payment);
+
+    return payment;
+  }
+
+  // =====================================
+  // REJECT GATEWAY PAYMENT
+  // =====================================
+  async rejectGatewayPayment(
+    reference: string,
+    gatewayResponse?: Record<string, any>,
+  ) {
+    const payment = await this.paymentModel.findOne({
+      reference,
+    });
+
+    if (!payment) {
+      throw new BadRequestException('Payment not found.');
+    }
+
+    if (payment.status !== 'pending') {
+      return payment;
+    }
+
+    payment.status = 'rejected';
+
+    payment.gatewayResponse = gatewayResponse ?? null;
+
+    payment.processedAt = new Date();
+
+    await payment.save();
+
+    return payment;
+  }
   // =====================================
   // APPROVE PAYMENT (FIXED)
   // =====================================
@@ -335,7 +556,10 @@ export class PaymentsService {
   }
 
   async getTotalRevenue() {
-    const res = await this.paymentModel.aggregate([
+    const res = await this.paymentModel.aggregate<{
+      _id: null;
+      total: number;
+    }>([
       { $match: { status: 'approved' } },
       {
         $group: {
@@ -345,7 +569,7 @@ export class PaymentsService {
       },
     ]);
 
-    return res[0]?.total || 0;
+    return res[0]?.total ?? 0;
   }
   async getPaymentSummary(userId: string) {
     const payments = await this.paymentModel
@@ -398,8 +622,11 @@ export class PaymentsService {
       .limit(limit);
   }
 
-  async getLifetimeRevenue(userId: string) {
-    const result = await this.paymentModel.aggregate([
+  async getLifetimeRevenue(userId: string): Promise<number> {
+    const result = await this.paymentModel.aggregate<{
+      _id: null;
+      total: number;
+    }>([
       {
         $match: {
           userId,

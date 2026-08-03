@@ -39,6 +39,7 @@ import { InternalAdsModule } from './internal-ads/internal-ads.module';
 import { ReferralsModule } from './referrals/referrals.module';
 import { EmailModule } from './notifications/email.module';
 import { CommunityModule } from './community/community.module';
+import { PaymentGatewaysModule } from './payment-gateways/payment-gateways.module';
 
 @Module({
   imports: [
@@ -90,6 +91,7 @@ import { CommunityModule } from './community/community.module';
     EmailModule,
     InternalAdsModule,
     CommunityModule,
+    PaymentGatewaysModule,
 
     ReferralsModule,
   ],

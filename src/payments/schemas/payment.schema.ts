@@ -36,11 +36,21 @@ export class Payment {
   })
   type!: PaymentType;
 
-  /**
-   * subscription => regular | vip
-   * vip_upgrade => vip
-   * prediction => purchase reference (IMPORTANT)
-   */
+  @Prop({
+    enum: ['manual', 'paystack', 'opay'],
+    default: 'manual',
+  })
+  gateway!: 'manual' | 'paystack' | 'opay';
+
+  @Prop({ default: '' })
+  gatewayTransactionId!: string;
+
+  @Prop({
+    type: Object,
+    default: null,
+  })
+  gatewayResponse!: Record<string, any> | null;
+
   @Prop({ required: true })
   target!: string;
 
