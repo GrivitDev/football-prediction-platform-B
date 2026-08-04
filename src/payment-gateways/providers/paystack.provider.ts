@@ -84,7 +84,10 @@ export class PaystackProvider implements PaymentGateway {
         },
       }),
     );
-
+    // 👇 ADD THIS
+    console.log('================ PAYSTACK VERIFY ================');
+    console.log(JSON.stringify(data, null, 2));
+    console.log('=================================================');
     const payment = data.data;
 
     // ===================================================
