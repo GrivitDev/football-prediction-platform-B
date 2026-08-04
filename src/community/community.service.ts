@@ -179,34 +179,60 @@ export class CommunityService {
       entry.startsWith(`${userId}:`),
     );
 
+    // User clicked the same reaction again
     if (existingReaction) {
       const [, previousReaction] = existingReaction.split(':');
 
       if (previousReaction === reaction) {
-        post.reactedBy = post.reactedBy.filter(
-          (entry) => entry !== existingReaction,
+        await this.postModel.updateOne(
+          { _id: postId },
+          {
+            $pull: {
+              reactedBy: existingReaction,
+            },
+            $inc: {
+              [`reactions.${reaction}`]: -1,
+            },
+          },
         );
 
-        post.reactions[reaction] = Math.max(0, post.reactions[reaction] - 1);
-
-        return post.save();
+        return this.postModel.findById(postId);
       }
 
-      post.reactions[previousReaction] = Math.max(
-        0,
-        post.reactions[previousReaction] - 1,
+      // User changed reaction
+      await this.postModel.updateOne(
+        { _id: postId },
+        {
+          $pull: {
+            reactedBy: existingReaction,
+          },
+          $push: {
+            reactedBy: `${userId}:${reaction}`,
+          },
+          $inc: {
+            [`reactions.${previousReaction}`]: -1,
+            [`reactions.${reaction}`]: 1,
+          },
+        },
       );
 
-      post.reactedBy = post.reactedBy.filter(
-        (entry) => entry !== existingReaction,
-      );
+      return this.postModel.findById(postId);
     }
 
-    post.reactedBy.push(`${userId}:${reaction}`);
+    // First reaction
+    await this.postModel.updateOne(
+      { _id: postId },
+      {
+        $push: {
+          reactedBy: `${userId}:${reaction}`,
+        },
+        $inc: {
+          [`reactions.${reaction}`]: 1,
+        },
+      },
+    );
 
-    post.reactions[reaction] = (post.reactions[reaction] ?? 0) + 1;
-
-    return post.save();
+    return this.postModel.findById(postId);
   }
 
   async reply(postId: string, user: any, dto: CreateReplyDto) {
