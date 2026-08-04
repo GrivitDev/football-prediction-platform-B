@@ -14,6 +14,7 @@ import {
 import { UsersModule } from '../users/users.module';
 import { SubscriptionsScheduler } from './subscriptions.scheduler';
 import { EmailModule } from 'src/notifications/email.module';
+import { PlanConfigModule } from 'src/plan-config/plan-config.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { EmailModule } from 'src/notifications/email.module';
 
     UsersModule,
     EmailModule,
+    PlanConfigModule,
   ],
 
   controllers: [SubscriptionsController],
