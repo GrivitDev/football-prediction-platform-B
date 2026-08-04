@@ -187,7 +187,9 @@ export class PaymentsService {
     });
 
     if (existingPending) {
-      throw new BadRequestException('You already have a pending payment.');
+      throw new BadRequestException(
+        'You already have a pending payment. if not activated, try again after 30 minutes or Contact the admin',
+      );
     }
 
     const config = await this.planConfigService.get();
@@ -757,5 +759,32 @@ export class PaymentsService {
         createdAt: -1,
       })
       .limit(limit);
+  }
+
+  // =====================================
+  // DELETE EXPIRED GATEWAY PAYMENTS
+  // =====================================
+  // Deletes only gateway payments that have
+  // remained pending for more than 30 minutes.
+  //
+  // Manual payment requests are NOT deleted.
+  // Approved and rejected payments are NOT deleted.
+  // =====================================
+  async deleteExpiredPendingGatewayPayments(): Promise<number> {
+    const expirationTime = new Date(Date.now() - 30 * 60 * 1000);
+
+    const result = await this.paymentModel.deleteMany({
+      status: 'pending',
+
+      gateway: {
+        $in: ['paystack', 'opay'],
+      },
+
+      createdAt: {
+        $lt: expirationTime,
+      },
+    });
+
+    return result.deletedCount ?? 0;
   }
 }

@@ -87,23 +87,21 @@ export class PaymentGatewaysService {
   // Activate Subscription / Prediction
   // ===================================================
   async verifyPayment(gatewayName: 'paystack' | 'opay', reference: string) {
-    // =================================================
-    // CREATE GATEWAY INSTANCE
-    // =================================================
-
     const gateway = this.gatewayFactory.create(gatewayName);
-
-    // =================================================
-    // VERIFY DIRECTLY WITH PAYMENT GATEWAY
-    // =================================================
 
     const verification = await gateway.verifyPayment(reference);
 
     // =================================================
-    // PAYMENT SUCCESSFUL
+    // SUCCESS
     // =================================================
 
     if (verification.status === 'success') {
+      if (!verification.transactionId) {
+        throw new BadRequestException(
+          'Payment was successful but no transaction ID was returned.',
+        );
+      }
+
       const payment = await this.paymentsService.approveGatewayPayment(
         reference,
 
@@ -123,14 +121,14 @@ export class PaymentGatewaysService {
 
         reference,
 
-        transactionId: verification.transactionId ?? null,
+        transactionId: verification.transactionId,
 
         payment,
       };
     }
 
     // =================================================
-    // PAYMENT STILL PENDING
+    // PENDING
     // =================================================
 
     if (verification.status === 'pending') {
@@ -150,7 +148,7 @@ export class PaymentGatewaysService {
     }
 
     // =================================================
-    // PAYMENT FAILED
+    // FAILED
     // =================================================
 
     await this.paymentsService.rejectGatewayPayment(

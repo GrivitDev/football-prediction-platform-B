@@ -93,6 +93,9 @@ export class OPayProvider implements PaymentGateway {
   // =====================================================
   // VERIFY PAYMENT
   // =====================================================
+  // =====================================================
+  // VERIFY PAYMENT
+  // =====================================================
   async verifyPayment(reference: string): Promise<VerifyPaymentResult> {
     const { data } = await firstValueFrom(
       this.http.post(
@@ -112,17 +115,95 @@ export class OPayProvider implements PaymentGateway {
       ),
     );
 
+    const payment = data.data;
+
+    // ===================================================
+    // INVALID RESPONSE
+    // ===================================================
+
+    if (!payment) {
+      return {
+        success: false,
+
+        status: 'failed',
+
+        message: data.message ?? 'Unable to verify payment.',
+
+        transactionId: undefined,
+
+        raw: data,
+      };
+    }
+
+    // ===================================================
+    // NORMALIZE OPay STATUS
+    // ===================================================
+
+    const paymentStatus = String(payment.status ?? '').toUpperCase();
+
+    // ===================================================
+    // SUCCESS
+    // ===================================================
+
+    if (data.code === '00000' && paymentStatus === 'SUCCESS') {
+      return {
+        success: true,
+
+        status: 'success',
+
+        message: data.message ?? 'Payment verified successfully.',
+
+        transactionId: payment.transactionId
+          ? String(payment.transactionId)
+          : undefined,
+
+        raw: payment,
+      };
+    }
+
+    // ===================================================
+    // PENDING / PROCESSING
+    // ===================================================
+
+    if (
+      paymentStatus === 'PENDING' ||
+      paymentStatus === 'PROCESSING' ||
+      paymentStatus === 'IN_PROGRESS'
+    ) {
+      return {
+        success: false,
+
+        status: 'pending',
+
+        message: data.message ?? 'Your payment is still being processed.',
+
+        transactionId: payment.transactionId
+          ? String(payment.transactionId)
+          : undefined,
+
+        raw: payment,
+      };
+    }
+
+    // ===================================================
+    // FAILED
+    // ===================================================
+
     return {
-      success: data.code === '00000' && data.data.status === 'SUCCESS',
+      success: false,
 
-      message: data.message,
+      status: 'failed',
 
-      transactionId: data.data.transactionId,
+      message:
+        data.message ?? `Payment status: ${payment.status ?? 'unknown'}.`,
 
-      raw: data.data,
+      transactionId: payment.transactionId
+        ? String(payment.transactionId)
+        : undefined,
+
+      raw: payment,
     };
   }
-
   // =====================================================
   // VALIDATE WEBHOOK
   // =====================================================

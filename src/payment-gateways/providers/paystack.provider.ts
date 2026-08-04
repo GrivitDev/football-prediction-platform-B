@@ -73,6 +73,9 @@ export class PaystackProvider implements PaymentGateway {
   // =====================================================
   // VERIFY PAYMENT
   // =====================================================
+  // =====================================================
+  // VERIFY PAYMENT
+  // =====================================================
   async verifyPayment(reference: string): Promise<VerifyPaymentResult> {
     const { data } = await firstValueFrom(
       this.http.get(`${this.baseUrl}/transaction/verify/${reference}`, {
@@ -84,12 +87,79 @@ export class PaystackProvider implements PaymentGateway {
 
     const payment = data.data;
 
+    // ===================================================
+    // PROVIDER RESPONSE IS NOT VALID
+    // ===================================================
+
+    if (!data.status || !payment) {
+      return {
+        success: false,
+
+        status: 'failed',
+
+        message: data.message ?? 'Unable to verify payment.',
+
+        transactionId: payment?.id ? String(payment.id) : undefined,
+
+        raw: data,
+      };
+    }
+
+    // ===================================================
+    // NORMALIZE PAYSTACK STATUS
+    // ===================================================
+
+    const paymentStatus = String(payment.status ?? '').toLowerCase();
+
+    // ===================================================
+    // SUCCESS
+    // ===================================================
+
+    if (paymentStatus === 'success') {
+      return {
+        success: true,
+
+        status: 'success',
+
+        message: data.message ?? 'Payment verified successfully.',
+
+        transactionId: payment.id ? String(payment.id) : undefined,
+
+        raw: payment,
+      };
+    }
+
+    // ===================================================
+    // PENDING / PROCESSING
+    // ===================================================
+
+    if (paymentStatus === 'pending' || paymentStatus === 'ongoing') {
+      return {
+        success: false,
+
+        status: 'pending',
+
+        message: data.message ?? 'Your payment is still being processed.',
+
+        transactionId: payment.id ? String(payment.id) : undefined,
+
+        raw: payment,
+      };
+    }
+
+    // ===================================================
+    // FAILED / ABANDONED / OTHER
+    // ===================================================
+
     return {
-      success: data.status === true && payment.status === 'success',
+      success: false,
 
-      message: data.message,
+      status: 'failed',
 
-      transactionId: String(payment.id),
+      message:
+        data.message ?? `Payment status: ${payment.status ?? 'unknown'}.`,
+
+      transactionId: payment.id ? String(payment.id) : undefined,
 
       raw: payment,
     };
