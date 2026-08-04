@@ -189,11 +189,18 @@ export class SubscriptionsService {
       Math.ceil(millisecondsRemaining / (1000 * 60 * 60 * 24)),
     );
 
-    const dailyRegularPrice = regularPrice / subscriptionDurationDays;
+    const regularDailyPrice = regularPrice / subscriptionDurationDays;
 
-    const credit = Math.round(dailyRegularPrice * daysRemaining);
+    const vipDailyPrice = vipPrice / subscriptionDurationDays;
 
-    const amount = Math.max(0, vipPrice - credit);
+    // Extra amount required per remaining day
+    const upgradeDailyPrice = vipDailyPrice - regularDailyPrice;
+
+    // Cost of upgrading the remaining days
+    const upgradeCost = Math.round(upgradeDailyPrice * daysRemaining);
+
+    // Amount the customer pays
+    const amount = Math.min(vipPrice, Math.round(regularPrice + upgradeCost));
 
     return {
       currentPlan: subscription.plan,
@@ -206,7 +213,13 @@ export class SubscriptionsService {
 
       daysRemaining,
 
-      credit,
+      regularDailyPrice,
+
+      vipDailyPrice,
+
+      upgradeDailyPrice,
+
+      upgradeCost,
 
       amount,
 
