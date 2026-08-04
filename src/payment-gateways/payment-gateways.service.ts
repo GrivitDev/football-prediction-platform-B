@@ -69,7 +69,7 @@ export class PaymentGatewaysService {
 
       callbackUrl: `${this.configService.get<string>(
         'FRONTEND_URL',
-      )}/payment/callback`,
+      )}/pricing/callback`,
     });
   }
 
