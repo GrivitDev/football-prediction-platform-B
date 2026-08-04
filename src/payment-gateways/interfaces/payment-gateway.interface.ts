@@ -16,10 +16,14 @@ export interface InitializePaymentResult {
   reference: string;
 }
 
+export type PaymentVerificationStatus = 'success' | 'pending' | 'failed';
+
 export interface VerifyPaymentResult {
   success: boolean;
 
-  transactionId: string;
+  status: PaymentVerificationStatus;
+
+  transactionId?: string;
 
   message?: string;
 
@@ -46,6 +50,14 @@ export interface PaymentGateway {
 
   /**
    * Verify payment by our internal reference.
+   *
+   * The provider implementation must normalize
+   * Paystack / OPay responses into the common
+   * application status:
+   *
+   * success
+   * pending
+   * failed
    */
   verifyPayment(reference: string): Promise<VerifyPaymentResult>;
 

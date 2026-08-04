@@ -86,52 +86,90 @@ export class PaymentGatewaysService {
   //      ↓
   // Activate Subscription / Prediction
   // ===================================================
-  async verifyPayment(
-    gatewayName: 'paystack' | 'opay',
-
-    reference: string,
-  ) {
+  async verifyPayment(gatewayName: 'paystack' | 'opay', reference: string) {
     // =================================================
     // CREATE GATEWAY INSTANCE
     // =================================================
+
     const gateway = this.gatewayFactory.create(gatewayName);
 
     // =================================================
     // VERIFY DIRECTLY WITH PAYMENT GATEWAY
     // =================================================
+
     const verification = await gateway.verifyPayment(reference);
 
     // =================================================
-    // PAYMENT VERIFICATION FAILED
+    // PAYMENT SUCCESSFUL
     // =================================================
-    if (!verification.success) {
-      await this.paymentsService.rejectGatewayPayment(
+
+    if (verification.status === 'success') {
+      const payment = await this.paymentsService.approveGatewayPayment(
         reference,
+
+        verification.transactionId,
 
         verification.raw,
       );
 
-      throw new BadRequestException(
-        verification.message ?? 'Payment verification failed.',
-      );
+      return {
+        success: true,
+
+        status: 'approved',
+
+        message:
+          verification.message ??
+          'Your payment has been successfully confirmed.',
+
+        reference,
+
+        transactionId: verification.transactionId ?? null,
+
+        payment,
+      };
     }
 
     // =================================================
-    // PAYMENT VERIFIED SUCCESSFULLY
-    //
-    // ONLY NOW:
-    // - Mark payment as approved
-    // - Activate subscription
-    // - Complete prediction purchase
-    // - Process VIP upgrade
+    // PAYMENT STILL PENDING
     // =================================================
-    return this.paymentsService.approveGatewayPayment(
-      reference,
 
-      verification.transactionId,
+    if (verification.status === 'pending') {
+      return {
+        success: false,
+
+        status: 'pending',
+
+        message:
+          verification.message ??
+          'Your payment is still being processed. Please check again shortly.',
+
+        reference,
+
+        transactionId: verification.transactionId ?? null,
+      };
+    }
+
+    // =================================================
+    // PAYMENT FAILED
+    // =================================================
+
+    await this.paymentsService.rejectGatewayPayment(
+      reference,
 
       verification.raw,
     );
+
+    return {
+      success: false,
+
+      status: 'failed',
+
+      message: verification.message ?? 'We could not confirm your payment.',
+
+      reference,
+
+      transactionId: verification.transactionId ?? null,
+    };
   }
 
   // ===================================================
