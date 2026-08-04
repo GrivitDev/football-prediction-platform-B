@@ -26,15 +26,21 @@ export class SubscriptionsService {
   // GET ACTIVE SUBSCRIPTION
   // =====================================
   async getActiveSubscription(userId: string) {
-    return this.subscriptionModel.findOne({
-      userId,
-      isActive: true,
-      expiryDate: { $gt: new Date() },
-    });
+    const now = new Date();
+
+    return this.subscriptionModel
+      .findOne({
+        userId,
+        startDate: { $lte: now },
+        expiryDate: { $gt: now },
+      })
+      .sort({
+        startDate: -1,
+      });
   }
 
   // =====================================
-  // CREATE OR EXTEND SUBSCRIPTION
+  // CREATE OR QUEUE SUBSCRIPTION
   // =====================================
   async createSubscription(data: {
     userId: string;
@@ -48,52 +54,73 @@ export class SubscriptionsService {
     const existing = await this.getActiveSubscription(data.userId);
 
     // =====================================
-    // CASE 1: NO ACTIVE SUBSCRIPTION
+    // NO ACTIVE SUBSCRIPTION
     // =====================================
     if (!existing) {
-      const expiry = this.addDays(now, data.durationDays);
+      const startDate = now;
+
+      const expiryDate = this.addDays(startDate, data.durationDays);
 
       return this.subscriptionModel.create({
         userId: data.userId,
         email: data.email,
         plan: data.plan,
         amount: data.amount,
-        startDate: now,
-        expiryDate: expiry,
+        startDate,
+        expiryDate,
         isActive: true,
+        expiringReminderSent: false,
+        expiredNotificationSent: false,
       });
     }
 
     // =====================================
-    // CASE 2: UPGRADE OR EXTEND EXISTING
+    // SAME PLAN
+    //
+    // Extend from current expiry date.
+    //
+    // Regular -> Regular
+    // VIP -> VIP
     // =====================================
+    if (existing.plan === data.plan) {
+      const startDate = existing.expiryDate;
 
-    let newPlan = existing.plan;
+      const expiryDate = this.addDays(startDate, data.durationDays);
 
-    // Upgrade logic: regular -> vip
-    if (existing.plan === 'regular' && data.plan === 'vip') {
-      newPlan = 'vip';
+      return this.subscriptionModel.create({
+        userId: data.userId,
+        email: data.email,
+        plan: data.plan,
+        amount: data.amount,
+        startDate,
+        expiryDate,
+        isActive: false,
+        expiringReminderSent: false,
+        expiredNotificationSent: false,
+      });
     }
 
-    // Preserve remaining time
-    const baseDate = existing.expiryDate > now ? existing.expiryDate : now;
+    // =====================================
+    // DIFFERENT PLAN
+    //
+    // Current plan remains active.
+    // New plan starts after current plan expires.
+    //
+    // Regular -> VIP
+    // VIP -> Regular
+    // =====================================
+    const startDate = existing.expiryDate;
 
-    const newExpiry = this.addDays(baseDate, data.durationDays);
-
-    // deactivate old record
-    await this.subscriptionModel.updateMany(
-      { userId: data.userId, isActive: true },
-      { isActive: false },
-    );
+    const expiryDate = this.addDays(startDate, data.durationDays);
 
     return this.subscriptionModel.create({
       userId: data.userId,
       email: data.email,
-      plan: newPlan,
+      plan: data.plan,
       amount: data.amount,
-      startDate: now,
-      expiryDate: newExpiry,
-      isActive: true,
+      startDate,
+      expiryDate,
+      isActive: false,
       expiringReminderSent: false,
       expiredNotificationSent: false,
     });
@@ -134,40 +161,58 @@ export class SubscriptionsService {
   }
 
   // =====================================
-  // ADMIN HELPERS
+  // GET EXPIRED SUBSCRIPTIONS
   // =====================================
   async getExpiredSubscriptions() {
-    return this.subscriptionModel.find({
-      isActive: true,
-      expiryDate: { $lt: new Date() },
-    });
-  }
+    const now = new Date();
 
-  async deactivateSubscription(id: string) {
-    return this.subscriptionModel.findByIdAndUpdate(id, { isActive: false });
+    return this.subscriptionModel.find({
+      startDate: {
+        $lte: now,
+      },
+
+      expiryDate: {
+        $lt: now,
+      },
+    });
   }
   // =====================================
   // ADMIN SUMMARY
   // =====================================
   async getSubscriptionSummary(userId: string) {
-    const subscription = await this.subscriptionModel
+    const now = new Date();
+
+    const subscription = await this.getActiveSubscription(userId);
+
+    const pendingSubscription = await this.subscriptionModel
       .findOne({
         userId,
+
+        startDate: {
+          $gt: now,
+        },
       })
-      .sort({ createdAt: -1 });
+      .sort({
+        startDate: 1,
+      });
 
     if (!subscription) {
       return {
         hasSubscription: false,
+
         currentPlan: 'free',
+
         status: 'inactive',
+
         subscription: null,
+
         daysRemaining: 0,
+
         expired: true,
+
+        pendingSubscription,
       };
     }
-
-    const now = new Date();
 
     const daysRemaining = Math.max(
       0,
@@ -182,23 +227,34 @@ export class SubscriptionsService {
 
       currentPlan: subscription.plan,
 
-      status:
-        subscription.isActive && subscription.expiryDate > now
-          ? 'active'
-          : 'expired',
+      status: 'active',
 
       daysRemaining,
 
-      expired: subscription.expiryDate <= now,
+      expired: false,
 
       subscription,
+
+      pendingSubscription,
     };
   }
+
+  // =====================================
+  // GET VIP USERS
+  // =====================================
   async getVipUsers() {
+    const now = new Date();
+
     return this.subscriptionModel.find({
       plan: 'vip',
-      isActive: true,
-      expiryDate: { $gt: new Date() },
+
+      startDate: {
+        $lte: now,
+      },
+
+      expiryDate: {
+        $gt: now,
+      },
     });
   }
 
@@ -206,11 +262,11 @@ export class SubscriptionsService {
   // FIND SUBSCRIPTIONS EXPIRING IN 3 DAYS
   // =====================================
   async getExpiringSubscriptions() {
-    const today = new Date();
+    const now = new Date();
 
-    const targetDate = new Date();
+    const targetDate = new Date(now);
 
-    targetDate.setDate(today.getDate() + 3);
+    targetDate.setDate(targetDate.getDate() + 3);
 
     const start = new Date(targetDate);
 
@@ -221,14 +277,16 @@ export class SubscriptionsService {
     end.setHours(23, 59, 59, 999);
 
     return this.subscriptionModel.find({
-      isActive: true,
-
-      expiringReminderSent: false,
+      startDate: {
+        $lte: now,
+      },
 
       expiryDate: {
         $gte: start,
         $lte: end,
       },
+
+      expiringReminderSent: false,
     });
   }
 
@@ -236,14 +294,18 @@ export class SubscriptionsService {
   // FIND EXPIRED SUBSCRIPTIONS
   // =====================================
   async getSubscriptionsExpired() {
-    return this.subscriptionModel.find({
-      isActive: true,
+    const now = new Date();
 
-      expiredNotificationSent: false,
+    return this.subscriptionModel.find({
+      startDate: {
+        $lte: now,
+      },
 
       expiryDate: {
-        $lt: new Date(),
+        $lt: now,
       },
+
+      expiredNotificationSent: false,
     });
   }
 

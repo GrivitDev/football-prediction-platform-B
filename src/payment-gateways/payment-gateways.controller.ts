@@ -23,6 +23,8 @@ export class PaymentGatewaysController {
 
   // =====================================================
   // INITIALIZE PAYMENT
+  //
+  // User must be authenticated to create a payment.
   // =====================================================
   @UseGuards(JwtAuthGuard)
   @Post('initialize')
@@ -37,19 +39,33 @@ export class PaymentGatewaysController {
   ) {
     return this.paymentGatewaysService.initializePayment({
       userId: user._id,
+
       email: user.email,
 
       gateway: body.gateway,
 
       type: body.type,
+
       target: body.target,
     });
   }
 
   // =====================================================
   // VERIFY PAYMENT
+  //
+  // No JWT required.
+  //
+  // The payment reference is used to identify and verify
+  // the transaction directly with the payment gateway.
+  //
+  // Frontend callback page
+  //        ↓
+  // Verify with gateway
+  //        ↓
+  // Approve payment
+  //        ↓
+  // Activate subscription / prediction
   // =====================================================
-  @UseGuards(JwtAuthGuard)
   @Get(':gateway/verify')
   verifyPayment(
     @Param('gateway')
@@ -58,37 +74,57 @@ export class PaymentGatewaysController {
     @Query('reference')
     reference: string,
   ) {
-    return this.paymentGatewaysService.verifyPayment(gateway, reference);
+    return this.paymentGatewaysService.verifyPayment(
+      gateway,
+
+      reference,
+    );
   }
 
   // =====================================================
   // PAYSTACK WEBHOOK
+  //
+  // Public endpoint.
+  //
+  // Paystack calls this endpoint directly.
+  // Signature validation is handled by the service.
   // =====================================================
   @Post('paystack/webhook')
   paystackWebhook(
     @Req() req: any,
+
     @Headers('x-paystack-signature')
     signature: string,
   ) {
     return this.paymentGatewaysService.handleWebhook(
       'paystack',
+
       req.body,
+
       signature,
     );
   }
 
   // =====================================================
   // OPAY WEBHOOK
+  //
+  // Public endpoint.
+  //
+  // OPay calls this endpoint directly.
+  // Signature validation is handled by the service.
   // =====================================================
   @Post('opay/webhook')
   opayWebhook(
     @Req() req: any,
+
     @Headers('authorization')
     signature: string,
   ) {
     return this.paymentGatewaysService.handleWebhook(
       'opay',
+
       req.body,
+
       signature,
     );
   }

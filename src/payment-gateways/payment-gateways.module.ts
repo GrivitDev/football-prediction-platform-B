@@ -5,13 +5,15 @@ import { PaymentGatewaysController } from './payment-gateways.controller';
 import { PaymentGatewaysService } from './payment-gateways.service';
 
 import { PaymentsModule } from '../payments/payments.module';
+import { UsersModule } from '../users/users.module';
+import { TelegramModule } from '../telegram/telegram.module';
 
 import { PaystackProvider } from './providers/paystack.provider';
 import { OPayProvider } from './providers/opay.provider';
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 
 @Module({
-  imports: [HttpModule, PaymentsModule],
+  imports: [HttpModule, PaymentsModule, UsersModule, TelegramModule],
 
   controllers: [PaymentGatewaysController],
 
@@ -19,6 +21,7 @@ import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
     PaymentGatewaysService,
 
     PaystackProvider,
+
     OPayProvider,
 
     PaymentGatewayFactory,

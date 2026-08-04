@@ -9,11 +9,11 @@ import { Payment, PaymentDocument } from './schemas/payment.schema';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 import { PredictionPurchasesService } from '../prediction-purchases/prediction-purchases.service';
-import { TelegramService } from 'src/telegram/telegram.service';
 import { AdminGateway } from 'src/realtime/admin.gateway';
 import { ReferralsService } from 'src/referrals/referrals.service';
 import { PlanConfigService } from 'src/plan-config/plan-config.service';
 import { EmailService } from 'src/notifications/email.service';
+import { TelegramService } from 'src/telegram/telegram.service';
 
 @Injectable()
 export class PaymentsService {
@@ -24,15 +24,20 @@ export class PaymentsService {
     private subscriptionsService: SubscriptionsService,
 
     private predictionPurchaseService: PredictionPurchasesService,
-    private telegramService: TelegramService,
+
     private adminGateway: AdminGateway,
+
     private referralsService: ReferralsService,
+
+    private telegramService: TelegramService,
+
     private readonly planConfigService: PlanConfigService,
+
     private emailService: EmailService,
   ) {}
 
   // =====================================
-  // CREATE PAYMENT
+  // CREATE MANUAL PAYMENT
   // =====================================
   async createPayment(dto: {
     userId: string;
@@ -63,6 +68,7 @@ export class PaymentsService {
       target: dto.target,
       status: 'pending',
     });
+
     if (existingPayment) {
       throw new BadRequestException('Payment already pending');
     }
@@ -90,7 +96,6 @@ export class PaymentsService {
         throw new BadRequestException('Purchase not found.');
       }
 
-      // Additional validation
       if (purchase.userId.toString() !== dto.userId) {
         throw new BadRequestException('Purchase does not belong to this user.');
       }
@@ -107,6 +112,7 @@ export class PaymentsService {
     const payment = await this.paymentModel.create({
       userId: dto.userId,
       email: dto.email,
+
       amount,
 
       type: dto.type,
@@ -153,13 +159,16 @@ export class PaymentsService {
 
       proofImageUrl: dto.proofImageUrl,
     });
+
     this.adminGateway.emitNewPayment(payment);
+
     return {
       message: 'Payment submitted',
       reference,
       payment,
     };
   }
+
   // =====================================
   // CREATE GATEWAY PAYMENT RECORD
   // =====================================
@@ -181,20 +190,35 @@ export class PaymentsService {
       throw new BadRequestException('You already have a pending payment.');
     }
 
-    let amount = 0;
-
     const config = await this.planConfigService.get();
 
-    if (dto.type === 'subscription' || dto.type === 'vip_upgrade') {
-      if (dto.target === 'regular') {
-        amount = config.regularPrice;
-      } else if (dto.target === 'vip') {
-        amount = config.vipPrice;
-      } else {
+    let amount = 0;
+
+    // =====================================
+    // SUBSCRIPTION
+    // =====================================
+    if (dto.type === 'subscription') {
+      if (dto.target !== 'regular' && dto.target !== 'vip') {
         throw new BadRequestException('Invalid subscription plan.');
       }
+
+      amount = dto.target === 'regular' ? config.regularPrice : config.vipPrice;
     }
 
+    // =====================================
+    // VIP UPGRADE
+    // =====================================
+    if (dto.type === 'vip_upgrade') {
+      if (dto.target !== 'vip') {
+        throw new BadRequestException('Invalid VIP upgrade target.');
+      }
+
+      amount = config.vipPrice;
+    }
+
+    // =====================================
+    // PREDICTION
+    // =====================================
     if (dto.type === 'prediction') {
       const purchase = await this.predictionPurchaseService.getByReference(
         dto.target,
@@ -235,9 +259,12 @@ export class PaymentsService {
       proofPublicId: '',
       proofMessage: '',
       adminNote: '',
+
       gatewayTransactionId: '',
       gatewayResponse: null,
     });
+
+    this.adminGateway.emitNewPayment(payment);
 
     return payment;
   }
@@ -252,7 +279,7 @@ export class PaymentsService {
   }
 
   // =====================================
-  // APPROVE GATEWAY PAYMENT
+  // APPROVE VERIFIED GATEWAY PAYMENT
   // =====================================
   async approveGatewayPayment(
     reference: string,
@@ -271,6 +298,13 @@ export class PaymentsService {
       return payment;
     }
 
+    if (payment.status !== 'pending') {
+      throw new BadRequestException('Payment has already been processed.');
+    }
+
+    // =====================================
+    // MARK PAYMENT AS APPROVED
+    // =====================================
     payment.status = 'approved';
 
     payment.gatewayTransactionId = gatewayTransactionId;
@@ -283,11 +317,15 @@ export class PaymentsService {
 
     const config = await this.planConfigService.get();
 
-    // =============================
+    // =====================================
     // SUBSCRIPTION
-    // =============================
+    // =====================================
     if (payment.type === 'subscription') {
-      const plan = payment.target as 'regular' | 'vip';
+      const plan = payment.target?.trim();
+
+      if (plan !== 'regular' && plan !== 'vip') {
+        throw new BadRequestException('Invalid subscription plan.');
+      }
 
       const subscription = await this.subscriptionsService.activatePlan({
         userId: payment.userId,
@@ -299,9 +337,13 @@ export class PaymentsService {
 
       await this.emailService.sendSubscriptionActivatedEmail({
         email: payment.email,
+
         plan: subscription.plan,
+
         amount: payment.amount,
+
         activatedDate: subscription.startDate,
+
         expiryDate: subscription.expiryDate,
       });
 
@@ -314,9 +356,9 @@ export class PaymentsService {
       }
     }
 
-    // =============================
+    // =====================================
     // VIP UPGRADE
-    // =============================
+    // =====================================
     if (payment.type === 'vip_upgrade') {
       const subscription = await this.subscriptionsService.activatePlan({
         userId: payment.userId,
@@ -328,18 +370,22 @@ export class PaymentsService {
 
       await this.emailService.sendSubscriptionActivatedEmail({
         email: payment.email,
+
         plan: subscription.plan,
+
         amount: payment.amount,
+
         activatedDate: subscription.startDate,
+
         expiryDate: subscription.expiryDate,
       });
 
       await this.referralsService.markVipSubscription(payment.userId);
     }
 
-    // =============================
-    // PREDICTION
-    // =============================
+    // =====================================
+    // PREDICTION PURCHASE
+    // =====================================
     if (payment.type === 'prediction') {
       await this.predictionPurchaseService.markAsSuccessByReference(
         payment.target,
@@ -382,8 +428,9 @@ export class PaymentsService {
 
     return payment;
   }
+
   // =====================================
-  // APPROVE PAYMENT (FIXED)
+  // APPROVE MANUAL PAYMENT
   // =====================================
   async approvePayment(paymentId: string, adminId: string) {
     const payment = await this.paymentModel.findById(paymentId);
@@ -396,9 +443,13 @@ export class PaymentsService {
       throw new BadRequestException('Already processed');
     }
 
-    // mark FIRST (prevents race conditions)
+    // =====================================
+    // MARK FIRST
+    // =====================================
     payment.status = 'approved';
+
     payment.processedAt = new Date();
+
     payment.processedBy = adminId;
 
     await payment.save();
@@ -406,12 +457,12 @@ export class PaymentsService {
     const config = await this.planConfigService.get();
 
     // =====================================
-    // SUBSCRIPTION FLOW
+    // SUBSCRIPTION
     // =====================================
     if (payment.type === 'subscription') {
-      const plan = payment.target?.trim() as 'regular' | 'vip';
+      const plan = payment.target?.trim();
 
-      if (!['regular', 'vip'].includes(plan)) {
+      if (plan !== 'regular' && plan !== 'vip') {
         throw new BadRequestException('Invalid subscription plan');
       }
 
@@ -445,7 +496,7 @@ export class PaymentsService {
     }
 
     // =====================================
-    // VIP UPGRADE FLOW
+    // VIP UPGRADE
     // =====================================
     if (payment.type === 'vip_upgrade') {
       const subscription = await this.subscriptionsService.activatePlan({
@@ -467,11 +518,12 @@ export class PaymentsService {
 
         expiryDate: subscription.expiryDate,
       });
+
       await this.referralsService.markVipSubscription(payment.userId);
     }
 
     // =====================================
-    // PREDICTION FLOW (FIXED)
+    // PREDICTION PURCHASE
     // =====================================
     if (payment.type === 'prediction') {
       const purchase = await this.predictionPurchaseService.getByReference(
@@ -481,6 +533,7 @@ export class PaymentsService {
       if (!purchase) {
         throw new BadRequestException('Prediction purchase not found');
       }
+
       await this.predictionPurchaseService.markAsSuccessByReference(
         payment.target,
         payment._id.toString(),
@@ -489,12 +542,18 @@ export class PaymentsService {
         },
       );
     }
+
     this.adminGateway.emitPaymentUpdate(payment);
+
     return {
       message: 'Payment approved',
       payment,
     };
   }
+
+  // =====================================
+  // USER PAYMENTS
+  // =====================================
   async getUserPayments(userId: string) {
     return this.paymentModel
       .find({
@@ -504,8 +563,9 @@ export class PaymentsService {
         createdAt: -1,
       });
   }
+
   // =====================================
-  // REJECT PAYMENT
+  // REJECT MANUAL PAYMENT
   // =====================================
   async rejectPayment(paymentId: string, adminId: string, adminNote?: string) {
     const payment = await this.paymentModel.findById(paymentId);
@@ -519,11 +579,15 @@ export class PaymentsService {
     }
 
     payment.status = 'rejected';
+
     payment.processedAt = new Date();
+
     payment.processedBy = adminId;
+
     payment.adminNote = adminNote || '';
 
     await payment.save();
+
     await this.emailService.sendPaymentRejectedEmail({
       email: payment.email,
 
@@ -547,12 +611,18 @@ export class PaymentsService {
   // =====================================
   async getPendingPayments() {
     return this.paymentModel
-      .find({ status: 'pending' })
-      .sort({ createdAt: -1 });
+      .find({
+        status: 'pending',
+      })
+      .sort({
+        createdAt: -1,
+      });
   }
 
   async getAllPayments() {
-    return this.paymentModel.find().sort({ createdAt: -1 });
+    return this.paymentModel.find().sort({
+      createdAt: -1,
+    });
   }
 
   async getTotalRevenue() {
@@ -560,21 +630,35 @@ export class PaymentsService {
       _id: null;
       total: number;
     }>([
-      { $match: { status: 'approved' } },
+      {
+        $match: {
+          status: 'approved',
+        },
+      },
       {
         $group: {
           _id: null,
-          total: { $sum: '$amount' },
+          total: {
+            $sum: '$amount',
+          },
         },
       },
     ]);
 
     return res[0]?.total ?? 0;
   }
+
+  // =====================================
+  // USER PAYMENT SUMMARY
+  // =====================================
   async getPaymentSummary(userId: string) {
     const payments = await this.paymentModel
-      .find({ userId })
-      .sort({ createdAt: -1 });
+      .find({
+        userId,
+      })
+      .sort({
+        createdAt: -1,
+      });
 
     const approved = payments.filter((p) => p.status === 'approved');
 
@@ -615,13 +699,23 @@ export class PaymentsService {
     };
   }
 
+  // =====================================
+  // LATEST USER PAYMENTS
+  // =====================================
   async getLatestUserPayments(userId: string, limit = 10) {
     return this.paymentModel
-      .find({ userId })
-      .sort({ createdAt: -1 })
+      .find({
+        userId,
+      })
+      .sort({
+        createdAt: -1,
+      })
       .limit(limit);
   }
 
+  // =====================================
+  // USER LIFETIME REVENUE
+  // =====================================
   async getLifetimeRevenue(userId: string): Promise<number> {
     const result = await this.paymentModel.aggregate<{
       _id: null;
@@ -646,11 +740,22 @@ export class PaymentsService {
     return result[0]?.total || 0;
   }
 
+  // =====================================
+  // COUNT PAYMENTS
+  // =====================================
   async countPayments() {
     return this.paymentModel.countDocuments();
   }
 
+  // =====================================
+  // RECENT PAYMENTS
+  // =====================================
   async getRecentPayments(limit = 10) {
-    return this.paymentModel.find().sort({ createdAt: -1 }).limit(limit);
+    return this.paymentModel
+      .find()
+      .sort({
+        createdAt: -1,
+      })
+      .limit(limit);
   }
 }

@@ -116,4 +116,69 @@ export class TelegramService {
 
     await this.sendMessage(message);
   }
+
+  async notifyGatewayPaymentReceived(data: {
+    gateway: 'paystack' | 'opay';
+
+    fullName: string;
+
+    email: string;
+
+    amount: number;
+
+    type: 'subscription' | 'prediction' | 'vip_upgrade';
+
+    target: string;
+
+    reference: string;
+
+    transactionId: string;
+  }) {
+    const message = `
+💳 GATEWAY PAYMENT RECEIVED
+
+━━━━━━━━━━━━━━━━━━━━
+
+👤 CUSTOMER
+
+Name:
+${data.fullName}
+
+Email:
+${data.email}
+
+━━━━━━━━━━━━━━━━━━━━
+
+💰 PAYMENT
+
+Gateway:
+${data.gateway.toUpperCase()}
+
+Type:
+${data.type.replace('_', ' ').toUpperCase()}
+
+Target:
+${data.target.toUpperCase()}
+
+Amount:
+₦${data.amount.toLocaleString()}
+
+Reference:
+${data.reference}
+
+Transaction ID:
+${data.transactionId}
+
+━━━━━━━━━━━━━━━━━━━━
+
+Status:
+⏳ AWAITING VERIFICATION
+
+The payment gateway has reported a successful payment.
+
+━━━━━━━━━━━━━━━━━━━━
+`;
+
+    await this.sendMessage(message.trim());
+  }
 }
