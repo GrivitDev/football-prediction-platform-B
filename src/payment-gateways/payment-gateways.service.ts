@@ -71,7 +71,7 @@ export class PaymentGatewaysService {
         'FRONTEND_URL',
       )}/pricing/callback?gateway=${dto.gateway}`,
     });
-  }-
+  }
 
   // ===================================================
   // VERIFY PAYMENT
