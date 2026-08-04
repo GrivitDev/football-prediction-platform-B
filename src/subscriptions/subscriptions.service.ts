@@ -127,7 +127,108 @@ export class SubscriptionsService {
   }
 
   // =====================================
-  // WRAPPER
+  // CALCULATE VIP UPGRADE PRICE
+  // =====================================
+  async calculateUpgradePrice(
+    userId: string,
+    regularPrice: number,
+    vipPrice: number,
+    subscriptionDurationDays: number,
+  ) {
+    const subscription = await this.getActiveSubscription(userId);
+
+    // No subscription
+    if (!subscription) {
+      return {
+        currentPlan: 'free',
+
+        regularPrice,
+
+        vipPrice,
+
+        subscriptionDurationDays,
+
+        daysRemaining: 0,
+
+        credit: 0,
+
+        amount: vipPrice,
+
+        canUpgrade: false,
+      };
+    }
+
+    // Already VIP
+    if (subscription.plan === 'vip') {
+      return {
+        currentPlan: 'vip',
+
+        regularPrice,
+
+        vipPrice,
+
+        subscriptionDurationDays,
+
+        daysRemaining: 0,
+
+        credit: 0,
+
+        amount: 0,
+
+        canUpgrade: false,
+      };
+    }
+
+    const now = new Date();
+
+    const millisecondsRemaining =
+      subscription.expiryDate.getTime() - now.getTime();
+
+    const daysRemaining = Math.max(
+      0,
+      Math.ceil(millisecondsRemaining / (1000 * 60 * 60 * 24)),
+    );
+
+    const dailyRegularPrice = regularPrice / subscriptionDurationDays;
+
+    const credit = Math.round(dailyRegularPrice * daysRemaining);
+
+    const amount = Math.max(0, vipPrice - credit);
+
+    return {
+      currentPlan: subscription.plan,
+
+      regularPrice,
+
+      vipPrice,
+
+      subscriptionDurationDays,
+
+      daysRemaining,
+
+      credit,
+
+      amount,
+
+      canUpgrade: subscription.plan === 'regular',
+    };
+  }
+
+  // =====================================
+  // ACTIVATE PLAN
+  //
+  // Handles:
+  //
+  // Free -> Regular      = activate now
+  // Free -> VIP          = activate now
+  //
+  // Regular -> Regular   = extend
+  // VIP -> VIP           = extend
+  //
+  // VIP -> Regular       = queue after expiry
+  //
+  // Regular -> VIP       = activate immediately
+  //                        (current regular ends now)
   // =====================================
   async activatePlan(data: {
     userId: string;
@@ -136,7 +237,108 @@ export class SubscriptionsService {
     amount: number;
     durationDays: number;
   }) {
-    return this.createSubscription(data);
+    const now = new Date();
+
+    const existing = await this.getActiveSubscription(data.userId);
+
+    // =====================================
+    // NO ACTIVE SUBSCRIPTION
+    // =====================================
+    if (!existing) {
+      return this.subscriptionModel.create({
+        userId: data.userId,
+        email: data.email,
+
+        plan: data.plan,
+        amount: data.amount,
+
+        startDate: now,
+        expiryDate: this.addDays(now, data.durationDays),
+
+        isActive: true,
+
+        expiringReminderSent: false,
+        expiredNotificationSent: false,
+      });
+    }
+
+    // =====================================
+    // SAME PLAN
+    //
+    // Extend subscription
+    // =====================================
+    if (existing.plan === data.plan) {
+      return this.subscriptionModel.create({
+        userId: data.userId,
+        email: data.email,
+
+        plan: data.plan,
+        amount: data.amount,
+
+        startDate: existing.expiryDate,
+        expiryDate: this.addDays(existing.expiryDate, data.durationDays),
+
+        isActive: false,
+
+        expiringReminderSent: false,
+        expiredNotificationSent: false,
+      });
+    }
+
+    // =====================================
+    // REGULAR -> VIP
+    //
+    // Upgrade immediately.
+    //
+    // End current subscription now.
+    // VIP starts immediately.
+    // =====================================
+    if (existing.plan === 'regular' && data.plan === 'vip') {
+      existing.expiryDate = now;
+      existing.isActive = false;
+
+      await existing.save();
+
+      return this.subscriptionModel.create({
+        userId: data.userId,
+        email: data.email,
+
+        plan: 'vip',
+        amount: data.amount,
+
+        startDate: now,
+        expiryDate: this.addDays(now, data.durationDays),
+
+        isActive: true,
+
+        expiringReminderSent: false,
+        expiredNotificationSent: false,
+      });
+    }
+
+    // =====================================
+    // VIP -> REGULAR
+    //
+    // Never downgrade immediately.
+    //
+    // Queue Regular subscription
+    // after VIP expires.
+    // =====================================
+    return this.subscriptionModel.create({
+      userId: data.userId,
+      email: data.email,
+
+      plan: 'regular',
+      amount: data.amount,
+
+      startDate: existing.expiryDate,
+      expiryDate: this.addDays(existing.expiryDate, data.durationDays),
+
+      isActive: false,
+
+      expiringReminderSent: false,
+      expiredNotificationSent: false,
+    });
   }
 
   // =====================================

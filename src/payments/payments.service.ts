@@ -77,14 +77,21 @@ export class PaymentsService {
 
     let amount = 0;
 
-    if (dto.type === 'subscription' || dto.type === 'vip_upgrade') {
-      if (dto.target === 'regular') {
-        amount = config.regularPrice;
-      } else if (dto.target === 'vip') {
-        amount = config.vipPrice;
-      } else {
-        throw new BadRequestException('Invalid subscription plan.');
+    if (dto.type === 'vip_upgrade') {
+      const upgrade = await this.subscriptionsService.calculateUpgradePrice(
+        dto.userId,
+        config.regularPrice,
+        config.vipPrice,
+        config.subscriptionDurationDays,
+      );
+
+      if (!upgrade.canUpgrade) {
+        throw new BadRequestException(
+          'You are not eligible for a VIP upgrade.',
+        );
       }
+
+      amount = upgrade.amount;
     }
 
     if (dto.type === 'prediction') {
@@ -215,7 +222,20 @@ export class PaymentsService {
         throw new BadRequestException('Invalid VIP upgrade target.');
       }
 
-      amount = config.vipPrice;
+      const upgrade = await this.subscriptionsService.calculateUpgradePrice(
+        dto.userId,
+        config.regularPrice,
+        config.vipPrice,
+        config.subscriptionDurationDays,
+      );
+
+      if (!upgrade.canUpgrade) {
+        throw new BadRequestException(
+          'You are not eligible for a VIP upgrade.',
+        );
+      }
+
+      amount = upgrade.amount;
     }
 
     // =====================================
