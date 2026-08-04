@@ -69,9 +69,9 @@ export class PaymentGatewaysService {
 
       callbackUrl: `${this.configService.get<string>(
         'FRONTEND_URL',
-      )}/pricing/callback`,
+      )}/pricing/callback?gateway=${dto.gateway}`,
     });
-  }
+  }-
 
   // ===================================================
   // VERIFY PAYMENT

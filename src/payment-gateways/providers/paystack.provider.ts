@@ -73,9 +73,6 @@ export class PaystackProvider implements PaymentGateway {
   // =====================================================
   // VERIFY PAYMENT
   // =====================================================
-  // =====================================================
-  // VERIFY PAYMENT
-  // =====================================================
   async verifyPayment(reference: string): Promise<VerifyPaymentResult> {
     const { data } = await firstValueFrom(
       this.http.get(`${this.baseUrl}/transaction/verify/${reference}`, {
