@@ -69,28 +69,6 @@ export class EmailService {
   "
 >
 
-<!-- Header -->
-
-<tr>
-
-<td
-  align="center"
-  style="
-    background:#0f172a;
-    padding:35px;
-  "
->
-
-<img
-  src="https://www.honestpredict.com/logo1.png"
-  alt="Honest Predict"
-  width="90"
-/>
-
-</td>
-
-</tr>
-
 <!-- Banner -->
 
 <tr>
@@ -346,27 +324,6 @@ www.honestpredict.com
   "
 >
 
-<!-- Header -->
-
-<tr>
-
-<td
-  align="center"
-  style="
-    background:#0f172a;
-    padding:35px;
-  "
->
-
-<img
-  src="https://www.honestpredict.com/logo1.png"
-  alt="Honest Predict"
-  width="90"
-/>
-
-</td>
-
-</tr>
 
 <!-- Banner -->
 

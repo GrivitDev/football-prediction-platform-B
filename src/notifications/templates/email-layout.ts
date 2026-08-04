@@ -74,28 +74,6 @@ ${preheader}
   "
 >
 
-<!-- HEADER -->
-
-<tr>
-
-<td
-  align="center"
-  style="
-    background:#0f172a;
-    padding:35px;
-  "
->
-
-<img
-  src="https://www.honestpredict.com/logo1.png"
-  alt="Honest Predict"
-  width="90"
-/>
-
-</td>
-
-</tr>
-
 <!-- BANNER -->
 
 <tr>
