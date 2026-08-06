@@ -4,6 +4,7 @@ import { HydratedDocument, Types } from 'mongoose';
 import { AdAction, AdActionSchema } from './ad-action.schema';
 import { AdDisplay, AdDisplaySchema } from './ad-display.schema';
 import { AdImage, AdImageSchema } from './ad-image.schema';
+import { AdAudience } from '../enums/ad-audience.enum';
 
 export type AdDocument = HydratedDocument<Ad>;
 
@@ -59,6 +60,12 @@ export class Ad {
     default: 5,
   })
   priority!: number;
+
+  @Prop({
+    enum: AdAudience,
+    default: AdAudience.ALL,
+  })
+  audience!: AdAudience;
 
   @Prop({
     default: true,

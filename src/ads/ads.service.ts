@@ -19,6 +19,7 @@ import { AdPage } from './enums/ad-page.enum';
 import { AdDevice } from './enums/ad-device.enum';
 
 import { ExternalAdFrequency } from './enums/external-ad-frequency.enum';
+import { AdAudience } from './enums/ad-audience.enum';
 
 @Injectable()
 export class AdsService {
@@ -191,22 +192,38 @@ export class AdsService {
   // GET ADS FOR PAGE
   // =====================================================
 
-  async getPageAds(
-    page: AdPage,
-
-    device: AdDevice,
-  ) {
+  async getPageAds(page: AdPage, device: AdDevice, userId?: string) {
     const now = new Date();
+
+    let audience = AdAudience.GUEST;
+
+    if (userId) {
+      const plan = await this.subscriptionsService.getUserPlan(userId);
+
+      switch (plan) {
+        case 'vip':
+          audience = AdAudience.VIP;
+          break;
+
+        case 'regular':
+          audience = AdAudience.REGULAR;
+          break;
+
+        default:
+          audience = AdAudience.FREE;
+          break;
+      }
+    }
 
     return this.adModel
       .find({
         isActive: true,
 
-        $and: [
-          // ==========================================
-          // DATE RANGE CHECK
-          // ==========================================
+        audience: {
+          $in: [AdAudience.ALL, audience],
+        },
 
+        $and: [
           {
             $or: [
               {
@@ -214,7 +231,6 @@ export class AdsService {
                   $exists: false,
                 },
               },
-
               {
                 startDate: {
                   $lte: now,
@@ -230,7 +246,6 @@ export class AdsService {
                   $exists: false,
                 },
               },
-
               {
                 endDate: {
                   $gte: now,
@@ -238,10 +253,6 @@ export class AdsService {
               },
             ],
           },
-
-          // ==========================================
-          // DISPLAY RULE CHECK
-          // ==========================================
 
           {
             displays: {
@@ -252,7 +263,6 @@ export class AdsService {
                   {
                     device,
                   },
-
                   {
                     device: AdDevice.ALL,
                   },
@@ -262,12 +272,9 @@ export class AdsService {
           },
         ],
       })
-
       .populate('createdBy', 'fullName email')
-
       .sort({
         priority: -1,
-
         createdAt: -1,
       });
   }

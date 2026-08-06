@@ -41,16 +41,17 @@ export class AdsController {
   // =====================================================
 
   @Get()
+  @UseGuards(OptionalJwtAuthGuard)
   async getAds(
     @Query('page') page: AdPage,
 
     @Query('device') device: AdDevice,
-  ) {
-    return this.adsService.getPageAds(
-      page,
 
-      device,
-    );
+    @Req() req: Request,
+  ) {
+    const user = req.user as any;
+
+    return this.adsService.getPageAds(page, device, user?._id?.toString());
   }
 
   // =====================================================

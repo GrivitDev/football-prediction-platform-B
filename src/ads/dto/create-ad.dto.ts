@@ -3,6 +3,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
@@ -17,6 +18,7 @@ import { Type } from 'class-transformer';
 import { CreateAdActionDto } from './create-ad-action.dto';
 import { CreateAdDisplayDto } from './create-ad-display.dto';
 import { CreateAdImageDto } from './create-ad-image.dto';
+import { AdAudience } from '../enums/ad-audience.enum';
 
 export class CreateAdDto {
   @IsString()
@@ -64,6 +66,10 @@ export class CreateAdDto {
   @Min(1)
   @Max(10)
   priority: number = 5;
+
+  @IsEnum(AdAudience)
+  @IsOptional()
+  audience: AdAudience = AdAudience.ALL;
 
   @IsOptional()
   @IsBoolean()
