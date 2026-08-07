@@ -272,11 +272,7 @@ export class AdsService {
           },
         ],
       })
-      .populate('createdBy', 'fullName email')
-      .sort({
-        priority: -1,
-        createdAt: -1,
-      });
+      .populate('createdBy', 'fullName email');
   }
   // =====================================================
   // RECORD IMPRESSION
