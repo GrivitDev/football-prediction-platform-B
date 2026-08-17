@@ -11,6 +11,7 @@ import { TelegramModule } from '../telegram/telegram.module';
 import { PaystackProvider } from './providers/paystack.provider';
 import { OPayProvider } from './providers/opay.provider';
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
+import { ExchangeRateService } from './exchange-rate.service';
 
 @Module({
   imports: [HttpModule, PaymentsModule, UsersModule, TelegramModule],
@@ -19,6 +20,8 @@ import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 
   providers: [
     PaymentGatewaysService,
+
+    ExchangeRateService,
 
     PaystackProvider,
 

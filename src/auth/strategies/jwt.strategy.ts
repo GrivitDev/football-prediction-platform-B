@@ -63,6 +63,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
       role: user.role,
 
+      country: user.country,
+
+      countryCode: user.countryCode,
+
+      currency: user.currency,
+
       sessionId: payload.sessionId,
     };
   }

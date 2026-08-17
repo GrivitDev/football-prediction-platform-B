@@ -217,29 +217,15 @@ export class PaymentsService {
   }
 
   // =====================================
-  // CREATE GATEWAY PAYMENT RECORD
+  // CALCULATE GATEWAY PAYMENT AMOUNT
   // =====================================
-  async createGatewayPaymentRecord(dto: {
+  async calculateGatewayPaymentAmount(dto: {
     userId: string;
-    email: string;
+
     type: 'subscription' | 'prediction' | 'vip_upgrade';
+
     target: string;
-    gateway: 'paystack' | 'opay';
-    currency: 'NGN' | 'USD';
   }) {
-    const existingPending = await this.paymentModel.findOne({
-      userId: dto.userId,
-      type: dto.type,
-      target: dto.target,
-      status: 'pending',
-    });
-
-    if (existingPending) {
-      throw new BadRequestException(
-        'You already have a pending payment. if not activated, try again after 30 minutes or Contact the admin',
-      );
-    }
-
     const config = await this.planConfigService.get();
 
     const { currency, pricing } = await this.getUserPricing(dto.userId);
@@ -249,6 +235,7 @@ export class PaymentsService {
     // =====================================
     // SUBSCRIPTION
     // =====================================
+
     if (dto.type === 'subscription') {
       if (dto.target !== 'regular' && dto.target !== 'vip') {
         throw new BadRequestException('Invalid subscription plan.');
@@ -260,6 +247,7 @@ export class PaymentsService {
     // =====================================
     // VIP UPGRADE
     // =====================================
+
     if (dto.type === 'vip_upgrade') {
       if (dto.target !== 'vip') {
         throw new BadRequestException('Invalid VIP upgrade target.');
@@ -285,6 +273,7 @@ export class PaymentsService {
     // =====================================
     // PREDICTION
     // =====================================
+
     if (dto.type === 'prediction') {
       const purchase = await this.predictionPurchaseService.getByReference(
         dto.target,
@@ -305,14 +294,71 @@ export class PaymentsService {
       amount = purchase.amount;
     }
 
-    const payment = await this.paymentModel.create({
-      userId: dto.userId,
-      email: dto.email,
-
+    return {
       amount,
       currency,
+    };
+  }
+
+  // =====================================
+  // CREATE GATEWAY PAYMENT RECORD
+  // =====================================
+  async createGatewayPaymentRecord(dto: {
+    userId: string;
+
+    email: string;
+
+    type: 'subscription' | 'prediction' | 'vip_upgrade';
+
+    target: string;
+
+    gateway: 'paystack' | 'opay';
+
+    amount: number;
+
+    currency: 'NGN' | 'USD';
+
+    gatewayAmount: number;
+
+    gatewayCurrency: 'NGN';
+
+    exchangeRate?: number;
+  }) {
+    const existingPending = await this.paymentModel.findOne({
+      userId: dto.userId,
+      type: dto.type,
+      target: dto.target,
+      status: 'pending',
+    });
+
+    if (existingPending) {
+      throw new BadRequestException(
+        'You already have a pending payment. If not activated, try again after 30 minutes or contact the admin.',
+      );
+    }
+
+    const payment = await this.paymentModel.create({
+      userId: dto.userId,
+
+      email: dto.email,
+
+      // Original customer amount
+      amount: dto.amount,
+
+      // Original customer currency
+      currency: dto.currency,
+
+      // Actual amount sent to gateway
+      gatewayAmount: dto.gatewayAmount,
+
+      // Gateway currency
+      gatewayCurrency: dto.gatewayCurrency,
+
+      // Exchange rate used
+      exchangeRate: dto.exchangeRate,
 
       type: dto.type,
+
       target: dto.target,
 
       reference: randomUUID(),
@@ -333,10 +379,12 @@ export class PaymentsService {
 
     await this.telegramService.notifyNewPayment({
       fullName: dto.email,
+
       email: dto.email,
 
-      amount,
-      currency,
+      amount: dto.amount,
+
+      currency: dto.currency,
 
       type: dto.type,
 
@@ -347,7 +395,6 @@ export class PaymentsService {
 
     return payment;
   }
-
   // =====================================
   // FIND PAYMENT
   // =====================================

@@ -42,6 +42,28 @@ export class Payment {
   })
   type!: PaymentType;
 
+  // =====================================
+  // GATEWAY PAYMENT VALUES
+  // =====================================
+
+  @Prop({
+    required: true,
+  })
+  gatewayAmount?: number;
+
+  @Prop({
+    type: String,
+    enum: ['NGN'],
+    default: 'NGN',
+  })
+  gatewayCurrency?: 'NGN';
+
+  @Prop({
+    type: Number,
+    default: null,
+  })
+  exchangeRate?: number;
+
   @Prop({
     enum: ['manual', 'paystack', 'opay'],
     default: 'manual',

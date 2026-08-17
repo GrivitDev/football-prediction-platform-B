@@ -164,10 +164,6 @@ export class AuthService {
       throw new UnauthorizedException('Account is temporarily banned');
     }
 
-    if (user.bannedUntil && user.bannedUntil > new Date()) {
-      throw new UnauthorizedException('Account temporarily banned');
-    }
-
     // UPDATE LOGIN INFO
     await this.usersService.updateLoginInfo(user._id.toString());
 
@@ -202,6 +198,10 @@ export class AuthService {
 
       role: user.role,
 
+      country: user.country,
+      countryCode: user.countryCode,
+      currency: user.currency,
+
       sessionId: session._id.toString(),
     });
 
@@ -214,6 +214,10 @@ export class AuthService {
         username: user.username,
         email: user.email,
         role: user.role,
+
+        country: user.country,
+        countryCode: user.countryCode,
+        currency: user.currency,
       },
     };
   }
