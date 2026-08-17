@@ -6,6 +6,8 @@ export interface InitializePaymentInput {
   reference: string;
 
   callbackUrl: string;
+
+  currency: string;
 }
 
 export interface InitializePaymentResult {

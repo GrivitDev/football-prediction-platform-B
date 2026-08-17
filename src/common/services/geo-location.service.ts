@@ -8,7 +8,8 @@ export class GeoLocationService {
       // Ignore local development IPs
       if (ip === '127.0.0.1' || ip === '::1') {
         return {
-          country: 'Localhost',
+          country: 'Nigeria',
+          countryCode: 'NG',
           city: 'Local Development',
         };
       }

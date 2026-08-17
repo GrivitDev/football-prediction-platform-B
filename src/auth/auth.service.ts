@@ -20,6 +20,7 @@ import { PromosService } from 'src/promos/promos.service';
 
 import { UserStatus } from 'src/users/schemas/user.schema';
 import { TelegramService } from 'src/telegram/telegram.service';
+import { GeoLocationService } from 'src/common/services/geo-location.service';
 
 @Injectable()
 export class AuthService {
@@ -31,12 +32,13 @@ export class AuthService {
     private emailService: EmailService,
     private telegramService: TelegramService,
     private promosService: PromosService,
+    private readonly geoLocationService: GeoLocationService,
   ) {}
 
   // ======================
   // REGISTER
   // ======================
-  async register(registerDto: RegisterDto) {
+  async register(registerDto: RegisterDto, ip?: string) {
     const {
       fullName,
       username,
@@ -91,12 +93,24 @@ export class AuthService {
         throw new BadRequestException('Invalid or expired promo code');
       }
     }
+
+    const location = await this.geoLocationService.lookup(ip || '');
+
+    const country = location?.country || '';
+    const countryCode = location?.countryCode || '';
+    const currency = countryCode === 'NG' ? 'NGN' : 'USD';
+
     const user = await this.usersService.create({
       fullName,
       username: normalizedUsername,
       phoneNumber,
       email,
       password: hashedPassword,
+
+      country,
+      countryCode,
+      currency,
+
       referredBy,
       pendingPromoCode: promoCode?.trim(),
     });

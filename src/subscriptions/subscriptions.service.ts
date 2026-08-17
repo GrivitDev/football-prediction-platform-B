@@ -134,13 +134,18 @@ export class SubscriptionsService {
     regularPrice: number,
     vipPrice: number,
     subscriptionDurationDays: number,
+    currency: 'NGN' | 'USD',
   ) {
     const subscription = await this.getActiveSubscription(userId);
 
-    // No subscription
+    // =====================================
+    // NO SUBSCRIPTION
+    // =====================================
     if (!subscription) {
       return {
         currentPlan: 'free',
+
+        currency,
 
         regularPrice,
 
@@ -150,7 +155,15 @@ export class SubscriptionsService {
 
         daysRemaining: 0,
 
+        regularDailyPrice: 0,
+
+        vipDailyPrice: 0,
+
+        upgradeDailyPrice: 0,
+
         credit: 0,
+
+        upgradeCost: vipPrice,
 
         amount: vipPrice,
 
@@ -158,10 +171,14 @@ export class SubscriptionsService {
       };
     }
 
-    // Already VIP
+    // =====================================
+    // ALREADY VIP
+    // =====================================
     if (subscription.plan === 'vip') {
       return {
         currentPlan: 'vip',
+
+        currency,
 
         regularPrice,
 
@@ -171,7 +188,15 @@ export class SubscriptionsService {
 
         daysRemaining: 0,
 
+        regularDailyPrice: 0,
+
+        vipDailyPrice: 0,
+
+        upgradeDailyPrice: 0,
+
         credit: 0,
+
+        upgradeCost: 0,
 
         amount: 0,
 
@@ -189,36 +214,24 @@ export class SubscriptionsService {
       Math.ceil(millisecondsRemaining / (1000 * 60 * 60 * 24)),
     );
 
+    // Daily values in the selected currency
     const regularDailyPrice = regularPrice / subscriptionDurationDays;
 
     const vipDailyPrice = vipPrice / subscriptionDurationDays;
 
-    // =====================================
-    // UPGRADE CALCULATION
-    // =====================================
-
-    // Difference between VIP and Regular
-    // daily subscription value.
+    // Difference per remaining day
     const upgradeDailyPrice = vipDailyPrice - regularDailyPrice;
 
-    // Existing Regular subscription value
-    // that the user has not yet consumed.
-    const credit = Math.round(regularDailyPrice * daysRemaining);
+    // Credit for unused Regular subscription
+    const credit = regularDailyPrice * daysRemaining;
 
-    // Cost of a fresh full VIP subscription
-    // after applying the unused Regular value.
-    const amount = Math.max(
-      0,
-      Math.min(vipPrice, Math.round(vipPrice - credit)),
-    );
-
-    // Keep upgradeCost in the response.
-    // It represents the actual amount required
-    // for the VIP upgrade in this calculation.
-    const upgradeCost = amount;
+    // Final amount to pay
+    const amount = Math.max(0, vipPrice - credit);
 
     return {
       currentPlan: subscription.plan,
+
+      currency,
 
       regularPrice,
 
@@ -234,14 +247,15 @@ export class SubscriptionsService {
 
       upgradeDailyPrice,
 
-      upgradeCost,
+      credit,
+
+      upgradeCost: amount,
 
       amount,
 
       canUpgrade: subscription.plan === 'regular',
     };
   }
-
   // =====================================
   // ACTIVATE PLAN
   //

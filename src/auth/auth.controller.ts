@@ -17,8 +17,14 @@ export class AuthController {
   // REGISTER
   // ======================
   @Post('register')
-  register(@Body() registerDto: RegisterDto) {
-    return this.authService.register(registerDto);
+  register(@Body() registerDto: RegisterDto, @Req() req: Request) {
+    const ip =
+      (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+      req.ip ||
+      req.socket.remoteAddress ||
+      '';
+
+    return this.authService.register(registerDto, ip.toString());
   }
 
   // ======================

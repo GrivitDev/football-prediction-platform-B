@@ -20,6 +20,12 @@ export class Payment {
 
   @Prop({
     required: true,
+    enum: ['NGN', 'USD'],
+  })
+  currency!: 'NGN' | 'USD';
+
+  @Prop({
+    required: true,
     unique: true,
   })
   reference!: string;

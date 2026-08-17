@@ -1,10 +1,9 @@
 import { Injectable } from '@nestjs/common';
-
 import { InjectModel } from '@nestjs/mongoose';
-
 import { Model } from 'mongoose';
 
 import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
+import { RevenueBreakdown } from './interfaces/revenue-breakdown.interface';
 
 @Injectable()
 export class AnalyticsRevenueService {
@@ -38,13 +37,11 @@ export class AnalyticsRevenueService {
       // ==========================================
       // TOTAL REVENUE
       // ==========================================
-
       this.sumRevenue(approvedPayments),
 
       // ==========================================
       // VIP REVENUE
       // ==========================================
-
       this.sumRevenue({
         ...approvedPayments,
 
@@ -52,7 +49,6 @@ export class AnalyticsRevenueService {
           {
             type: 'vip_upgrade',
           },
-
           {
             type: 'subscription',
             target: 'vip',
@@ -63,7 +59,6 @@ export class AnalyticsRevenueService {
       // ==========================================
       // REGULAR REVENUE
       // ==========================================
-
       this.sumRevenue({
         ...approvedPayments,
 
@@ -73,9 +68,8 @@ export class AnalyticsRevenueService {
       }),
 
       // ==========================================
-      // PREDICTION PURCHASE REVENUE
+      // PREDICTION REVENUE
       // ==========================================
-
       this.sumRevenue({
         ...approvedPayments,
 
@@ -85,7 +79,6 @@ export class AnalyticsRevenueService {
       // ==========================================
       // PAYMENT COUNTS
       // ==========================================
-
       this.paymentModel.countDocuments(),
 
       this.paymentModel.countDocuments({
@@ -121,11 +114,14 @@ export class AnalyticsRevenueService {
   }
 
   // ==========================================
-  // SUM PAYMENT AMOUNT
+  // SUM REVENUE BY CURRENCY
   // ==========================================
 
-  private async sumRevenue(match: Record<string, unknown>): Promise<number> {
+  private async sumRevenue(
+    match: Record<string, unknown>,
+  ): Promise<RevenueBreakdown> {
     const result = await this.paymentModel.aggregate<{
+      _id: 'NGN' | 'USD';
       total: number;
     }>([
       {
@@ -134,7 +130,7 @@ export class AnalyticsRevenueService {
 
       {
         $group: {
-          _id: null,
+          _id: '$currency',
 
           total: {
             $sum: '$amount',
@@ -143,6 +139,15 @@ export class AnalyticsRevenueService {
       },
     ]);
 
-    return result[0]?.total ?? 0;
+    const revenue: RevenueBreakdown = {
+      NGN: 0,
+      USD: 0,
+    };
+
+    for (const item of result) {
+      revenue[item._id] = item.total;
+    }
+
+    return revenue;
   }
 }

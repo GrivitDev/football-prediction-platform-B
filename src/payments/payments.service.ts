@@ -14,12 +14,15 @@ import { ReferralsService } from 'src/referrals/referrals.service';
 import { PlanConfigService } from 'src/plan-config/plan-config.service';
 import { EmailService } from 'src/notifications/email.service';
 import { TelegramService } from 'src/telegram/telegram.service';
+import { UsersService } from 'src/users/users.service';
 
 @Injectable()
 export class PaymentsService {
   constructor(
     @InjectModel(Payment.name)
     private paymentModel: Model<PaymentDocument>,
+
+    private usersService: UsersService,
 
     private subscriptionsService: SubscriptionsService,
 
@@ -35,6 +38,30 @@ export class PaymentsService {
 
     private emailService: EmailService,
   ) {}
+
+  private async getUserPricing(userId: string) {
+    const user = await this.usersService.findById(userId);
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    const config = await this.planConfigService.get();
+
+    return {
+      currency: user.currency,
+      pricing:
+        user.currency === 'USD'
+          ? {
+              regular: config.regularPriceUSD,
+              vip: config.vipPriceUSD,
+            }
+          : {
+              regular: config.regularPrice,
+              vip: config.vipPrice,
+            },
+    };
+  }
 
   // =====================================
   // CREATE MANUAL PAYMENT
@@ -75,14 +102,25 @@ export class PaymentsService {
 
     const config = await this.planConfigService.get();
 
+    const { currency, pricing } = await this.getUserPricing(dto.userId);
+
     let amount = 0;
+
+    if (dto.type === 'subscription') {
+      if (dto.target !== 'regular' && dto.target !== 'vip') {
+        throw new BadRequestException('Invalid subscription plan.');
+      }
+
+      amount = dto.target === 'regular' ? pricing.regular : pricing.vip;
+    }
 
     if (dto.type === 'vip_upgrade') {
       const upgrade = await this.subscriptionsService.calculateUpgradePrice(
         dto.userId,
-        config.regularPrice,
-        config.vipPrice,
+        pricing.regular,
+        pricing.vip,
         config.subscriptionDurationDays,
+        currency,
       );
 
       if (!upgrade.canUpgrade) {
@@ -121,6 +159,7 @@ export class PaymentsService {
       email: dto.email,
 
       amount,
+      currency,
 
       type: dto.type,
       target: dto.target,
@@ -143,6 +182,7 @@ export class PaymentsService {
       email: payment.email,
 
       amount: payment.amount,
+      currency: payment.currency,
 
       paymentType:
         payment.type === 'subscription'
@@ -159,6 +199,7 @@ export class PaymentsService {
       email: dto.email,
 
       amount,
+      currency,
 
       type: dto.type,
 
@@ -168,7 +209,6 @@ export class PaymentsService {
     });
 
     this.adminGateway.emitNewPayment(payment);
-
     return {
       message: 'Payment submitted',
       reference,
@@ -185,6 +225,7 @@ export class PaymentsService {
     type: 'subscription' | 'prediction' | 'vip_upgrade';
     target: string;
     gateway: 'paystack' | 'opay';
+    currency: 'NGN' | 'USD';
   }) {
     const existingPending = await this.paymentModel.findOne({
       userId: dto.userId,
@@ -201,6 +242,8 @@ export class PaymentsService {
 
     const config = await this.planConfigService.get();
 
+    const { currency, pricing } = await this.getUserPricing(dto.userId);
+
     let amount = 0;
 
     // =====================================
@@ -211,7 +254,7 @@ export class PaymentsService {
         throw new BadRequestException('Invalid subscription plan.');
       }
 
-      amount = dto.target === 'regular' ? config.regularPrice : config.vipPrice;
+      amount = dto.target === 'regular' ? pricing.regular : pricing.vip;
     }
 
     // =====================================
@@ -224,9 +267,10 @@ export class PaymentsService {
 
       const upgrade = await this.subscriptionsService.calculateUpgradePrice(
         dto.userId,
-        config.regularPrice,
-        config.vipPrice,
+        pricing.regular,
+        pricing.vip,
         config.subscriptionDurationDays,
+        currency,
       );
 
       if (!upgrade.canUpgrade) {
@@ -266,6 +310,7 @@ export class PaymentsService {
       email: dto.email,
 
       amount,
+      currency,
 
       type: dto.type,
       target: dto.target,
@@ -284,6 +329,18 @@ export class PaymentsService {
 
       gatewayTransactionId: '',
       gatewayResponse: null,
+    });
+
+    await this.telegramService.notifyNewPayment({
+      fullName: dto.email,
+      email: dto.email,
+
+      amount,
+      currency,
+
+      type: dto.type,
+
+      target: dto.target,
     });
 
     this.adminGateway.emitNewPayment(payment);
@@ -363,6 +420,7 @@ export class PaymentsService {
         plan: subscription.plan,
 
         amount: payment.amount,
+        currency: payment.currency,
 
         activatedDate: subscription.startDate,
 
@@ -396,6 +454,7 @@ export class PaymentsService {
         plan: subscription.plan,
 
         amount: payment.amount,
+        currency: payment.currency,
 
         activatedDate: subscription.startDate,
 
@@ -502,6 +561,7 @@ export class PaymentsService {
         plan: subscription.plan,
 
         amount: payment.amount,
+        currency: payment.currency,
 
         activatedDate: subscription.startDate,
 
@@ -535,6 +595,7 @@ export class PaymentsService {
         plan: subscription.plan,
 
         amount: payment.amount,
+        currency: payment.currency,
 
         activatedDate: subscription.startDate,
 
@@ -621,10 +682,10 @@ export class PaymentsService {
             : 'Prediction Purchase',
 
       amount: payment.amount,
+      currency: payment.currency,
 
       reason: payment.adminNote,
     });
-
     return payment;
   }
 
@@ -648,26 +709,19 @@ export class PaymentsService {
   }
 
   async getTotalRevenue() {
-    const res = await this.paymentModel.aggregate<{
-      _id: null;
-      total: number;
-    }>([
-      {
-        $match: {
-          status: 'approved',
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          total: {
-            $sum: '$amount',
-          },
-        },
-      },
-    ]);
+    const payments = await this.paymentModel.find({
+      status: 'approved',
+    });
 
-    return res[0]?.total ?? 0;
+    return {
+      NGN: payments
+        .filter((p) => p.currency === 'NGN')
+        .reduce((sum, p) => sum + p.amount, 0),
+
+      USD: payments
+        .filter((p) => p.currency === 'USD')
+        .reduce((sum, p) => sum + p.amount, 0),
+    };
   }
 
   // =====================================
@@ -683,33 +737,45 @@ export class PaymentsService {
       });
 
     const approved = payments.filter((p) => p.status === 'approved');
-
     const pending = payments.filter((p) => p.status === 'pending');
-
     const rejected = payments.filter((p) => p.status === 'rejected');
 
-    const subscriptionPayments = approved.filter(
+    const approvedNGN = approved.filter((p) => p.currency === 'NGN');
+    const approvedUSD = approved.filter((p) => p.currency === 'USD');
+
+    const subscriptionNGN = approvedNGN.filter(
       (p) => p.type === 'subscription' || p.type === 'vip_upgrade',
     );
 
-    const predictionPayments = approved.filter((p) => p.type === 'prediction');
+    const subscriptionUSD = approvedUSD.filter(
+      (p) => p.type === 'subscription' || p.type === 'vip_upgrade',
+    );
+
+    const predictionNGN = approvedNGN.filter((p) => p.type === 'prediction');
+
+    const predictionUSD = approvedUSD.filter((p) => p.type === 'prediction');
 
     return {
       payments,
 
       latestPayments: payments.slice(0, 10),
 
-      totalRevenue: approved.reduce((sum, p) => sum + p.amount, 0),
+      revenue: {
+        total: {
+          NGN: approvedNGN.reduce((sum, p) => sum + p.amount, 0),
+          USD: approvedUSD.reduce((sum, p) => sum + p.amount, 0),
+        },
 
-      subscriptionRevenue: subscriptionPayments.reduce(
-        (sum, p) => sum + p.amount,
-        0,
-      ),
+        subscriptions: {
+          NGN: subscriptionNGN.reduce((sum, p) => sum + p.amount, 0),
+          USD: subscriptionUSD.reduce((sum, p) => sum + p.amount, 0),
+        },
 
-      predictionRevenue: predictionPayments.reduce(
-        (sum, p) => sum + p.amount,
-        0,
-      ),
+        predictions: {
+          NGN: predictionNGN.reduce((sum, p) => sum + p.amount, 0),
+          USD: predictionUSD.reduce((sum, p) => sum + p.amount, 0),
+        },
+      },
 
       totalPayments: payments.length,
 
@@ -720,7 +786,6 @@ export class PaymentsService {
       rejectedPayments: rejected.length,
     };
   }
-
   // =====================================
   // LATEST USER PAYMENTS
   // =====================================
@@ -738,28 +803,21 @@ export class PaymentsService {
   // =====================================
   // USER LIFETIME REVENUE
   // =====================================
-  async getLifetimeRevenue(userId: string): Promise<number> {
-    const result = await this.paymentModel.aggregate<{
-      _id: null;
-      total: number;
-    }>([
-      {
-        $match: {
-          userId,
-          status: 'approved',
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          total: {
-            $sum: '$amount',
-          },
-        },
-      },
-    ]);
+  async getLifetimeRevenue(userId: string) {
+    const payments = await this.paymentModel.find({
+      userId,
+      status: 'approved',
+    });
 
-    return result[0]?.total || 0;
+    return {
+      NGN: payments
+        .filter((p) => p.currency === 'NGN')
+        .reduce((sum, p) => sum + p.amount, 0),
+
+      USD: payments
+        .filter((p) => p.currency === 'USD')
+        .reduce((sum, p) => sum + p.amount, 0),
+    };
   }
 
   // =====================================

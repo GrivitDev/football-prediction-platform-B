@@ -540,12 +540,15 @@ www.honestpredict.com
   async sendPaymentReceivedEmail(data: {
     email: string;
     amount: number;
+    currency: string;
     paymentType: string;
     reference: string;
   }) {
     const homeUrl = 'https://www.honestpredict.com';
 
     const aboutUrl = 'https://www.honestpredict.com/about';
+
+    const symbol = data.currency === 'USD' ? '$' : '₦';
 
     return this.resend.emails.send({
       from: 'Honest Predict <payments@honestpredict.com>',
@@ -586,7 +589,7 @@ ${infoCard('Payment Summary', [
   },
   {
     label: 'Amount',
-    value: `₦${data.amount.toLocaleString()}`,
+    value: `${symbol}${data.amount.toLocaleString()}`,
   },
   {
     label: 'Reference',
@@ -616,12 +619,15 @@ Our support team is always available if you have any questions regarding your pa
     email: string;
     plan: 'regular' | 'vip';
     amount: number;
+    currency: string;
     activatedDate: Date;
     expiryDate: Date;
   }) {
     const dashboardUrl = 'https://www.honestpredict.com/dashboard';
 
     const predictionsUrl = 'https://www.honestpredict.com/predictions';
+
+    const symbol = data.currency === 'USD' ? '$' : '₦';
 
     const planName =
       data.plan === 'vip' ? 'VIP Subscription' : 'Regular Subscription';
@@ -666,7 +672,7 @@ ${infoCard('Subscription Summary', [
   },
   {
     label: 'Amount Paid',
-    value: `₦${data.amount.toLocaleString()}`,
+    value: `${symbol}${data.amount.toLocaleString()}`,
   },
   {
     label: 'Activated',
@@ -744,11 +750,14 @@ We wish you success with your football predictions!
     email: string;
     paymentType: string;
     amount: number;
+    currency: string;
     reason?: string;
   }) {
     const paymentUrl = 'https://www.honestpredict.com/payments';
 
     const supportUrl = 'https://www.honestpredict.com/about';
+
+    const symbol = data.currency === 'USD' ? '$' : '₦';
 
     return this.resend.emails.send({
       from: 'Honest Predict <payments@honestpredict.com>',
@@ -787,7 +796,7 @@ ${infoCard('Payment Details', [
   },
   {
     label: 'Amount',
-    value: `₦${data.amount.toLocaleString()}`,
+    value: `${symbol}${data.amount.toLocaleString()}`,
   },
   {
     label: 'Status',

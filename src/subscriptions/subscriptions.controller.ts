@@ -3,12 +3,14 @@ import { SubscriptionsService } from './subscriptions.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { GetUser } from '../common/decorators/get-user.decorator';
 import { PlanConfigService } from 'src/plan-config/plan-config.service';
+import { UsersService } from 'src/users/users.service';
 
 @Controller('subscriptions')
 export class SubscriptionsController {
   constructor(
     private readonly service: SubscriptionsService,
     private readonly planConfigService: PlanConfigService,
+    private readonly usersService: UsersService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -35,11 +37,24 @@ export class SubscriptionsController {
   async getUpgradePrice(@GetUser() user: any) {
     const config = await this.planConfigService.get();
 
+    const dbUser = await this.usersService.findById(user._id);
+
+    if (!dbUser) {
+      throw new Error('User not found');
+    }
+
+    const regularPrice =
+      dbUser.currency === 'USD' ? config.regularPriceUSD : config.regularPrice;
+
+    const vipPrice =
+      dbUser.currency === 'USD' ? config.vipPriceUSD : config.vipPrice;
+
     return this.service.calculateUpgradePrice(
       user._id,
-      config.regularPrice,
-      config.vipPrice,
+      regularPrice,
+      vipPrice,
       config.subscriptionDurationDays,
+      dbUser.currency,
     );
   }
 }

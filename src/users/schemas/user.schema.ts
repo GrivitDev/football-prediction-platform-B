@@ -49,6 +49,28 @@ export class User {
   password!: string;
 
   // ======================
+  // LOCATION
+  // ======================
+
+  @Prop({
+    default: '',
+  })
+  country!: string;
+
+  @Prop({
+    default: '',
+    uppercase: true,
+  })
+  countryCode!: string;
+
+  @Prop({
+    enum: ['NGN', 'USD'],
+    default: 'USD',
+    uppercase: true,
+  })
+  currency!: 'NGN' | 'USD';
+
+  // ======================
   // ACCOUNT STATUS (NEW)
   // ======================
   @Prop({ enum: UserStatus, default: UserStatus.ACTIVE, index: true })

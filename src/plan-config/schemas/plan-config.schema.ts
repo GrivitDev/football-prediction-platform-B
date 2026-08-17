@@ -7,23 +7,20 @@ export type PlanConfigDocument = HydratedDocument<PlanConfig>;
   timestamps: true,
 })
 export class PlanConfig {
+  // ===========================
+  // Nigeria Pricing
+  // ===========================
   @Prop({
-    default: 1000,
+    default: 10000,
     min: 0,
   })
   regularPrice!: number;
 
   @Prop({
-    default: 5000,
+    default: 50000,
     min: 0,
   })
   vipPrice!: number;
-
-  @Prop({
-    default: 30,
-    min: 1,
-  })
-  subscriptionDurationDays!: number;
 
   @Prop({
     type: Object,
@@ -40,6 +37,46 @@ export class PlanConfig {
     accountNumber: string;
     instructions: string;
   };
+
+  // ===========================
+  // International Pricing
+  // ===========================
+  @Prop({
+    default: 10,
+    min: 0,
+  })
+  regularPriceUSD!: number;
+
+  @Prop({
+    default: 50,
+    min: 0,
+  })
+  vipPriceUSD!: number;
+
+  @Prop({
+    type: Object,
+    default: {
+      bankName: '',
+      accountName: '',
+      accountNumber: '',
+      instructions: '',
+    },
+  })
+  bankDetailsUSD!: {
+    bankName: string;
+    accountName: string;
+    accountNumber: string;
+    instructions: string;
+  };
+
+  // ===========================
+  // Common
+  // ===========================
+  @Prop({
+    default: 30,
+    min: 1,
+  })
+  subscriptionDurationDays!: number;
 
   @Prop({
     type: Object,

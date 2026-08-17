@@ -19,7 +19,9 @@ export interface TelegramPaymentNotification {
   email: string;
 
   type: string;
+
   amount: number;
+  currency: string;
 
   target: string;
 

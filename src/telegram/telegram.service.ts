@@ -85,7 +85,9 @@ export class TelegramService {
     email: string;
 
     type: string;
+
     amount: number;
+    currency: string;
 
     target: string;
 
@@ -125,6 +127,7 @@ export class TelegramService {
     email: string;
 
     amount: number;
+    currency: string;
 
     type: 'subscription' | 'prediction' | 'vip_upgrade';
 
@@ -134,6 +137,7 @@ export class TelegramService {
 
     transactionId: string;
   }) {
+    const symbol = data.currency === 'USD' ? '$' : '₦';
     const message = `
 💳 GATEWAY PAYMENT RECEIVED
 
@@ -161,7 +165,7 @@ Target:
 ${data.target.toUpperCase()}
 
 Amount:
-₦${data.amount.toLocaleString()}
+${symbol}${data.amount.toLocaleString()}
 
 Reference:
 ${data.reference}

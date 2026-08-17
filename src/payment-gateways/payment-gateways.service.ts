@@ -36,6 +36,8 @@ export class PaymentGatewaysService {
     type: 'subscription' | 'prediction' | 'vip_upgrade';
 
     target: string;
+
+    currency: 'NGN' | 'USD';
   }) {
     // =================================================
     // CREATE PENDING PAYMENT RECORD
@@ -50,6 +52,8 @@ export class PaymentGatewaysService {
       type: dto.type,
 
       target: dto.target,
+
+      currency: dto.currency,
     });
 
     // =================================================
@@ -64,6 +68,8 @@ export class PaymentGatewaysService {
       email: dto.email,
 
       amount: payment.amount,
+
+      currency: payment.currency,
 
       reference: payment.reference,
 
@@ -251,6 +257,8 @@ export class PaymentGatewaysService {
       email: user.email,
 
       amount: payment.amount,
+
+      currency: payment.currency,
 
       type: payment.type,
 

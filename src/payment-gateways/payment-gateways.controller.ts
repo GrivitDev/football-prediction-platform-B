@@ -35,6 +35,7 @@ export class PaymentGatewaysController {
       gateway: 'paystack' | 'opay';
       type: 'subscription' | 'prediction' | 'vip_upgrade';
       target: string;
+      currency: 'NGN' | 'USD';
     },
   ) {
     return this.paymentGatewaysService.initializePayment({
@@ -47,6 +48,8 @@ export class PaymentGatewaysController {
       type: body.type,
 
       target: body.target,
+
+      currency: body.currency,
     });
   }
 

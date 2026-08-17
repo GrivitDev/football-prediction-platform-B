@@ -3,8 +3,6 @@ import { HydratedDocument } from 'mongoose';
 
 export type SubscriptionDocument = HydratedDocument<Subscription>;
 
-export type PlanType = 'free' | 'regular' | 'vip';
-
 @Schema({ timestamps: true })
 export class Subscription {
   @Prop({ required: true })
