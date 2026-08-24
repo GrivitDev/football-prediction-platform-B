@@ -146,6 +146,29 @@ export class UsersService {
   }
 
   // =========================
+  // REFERRAL TRACKING
+  // =========================
+
+  async incrementSuccessfulReferrals(userId: string) {
+    return this.userModel.findOneAndUpdate(
+      {
+        _id: userId,
+
+        isDeleted: false,
+      },
+
+      {
+        $inc: {
+          successfulReferrals: 1,
+        },
+      },
+
+      {
+        returnDocument: 'after',
+      },
+    );
+  }
+  // =========================
   // ADMIN CONTROL
   // =========================
 

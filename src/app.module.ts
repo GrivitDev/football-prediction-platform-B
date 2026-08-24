@@ -18,8 +18,6 @@ import { PaymentsModule } from './payments/payments.module';
 
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 
-import { PostsModule } from './posts/posts.module';
-
 import { UploadsModule } from './uploads/uploads.module';
 
 import { AnalyticsModule } from './analytics/analytics.module';
@@ -70,8 +68,6 @@ import { PaymentGatewaysModule } from './payment-gateways/payment-gateways.modul
     PaymentsModule,
 
     SubscriptionsModule,
-
-    PostsModule,
 
     UploadsModule,
 

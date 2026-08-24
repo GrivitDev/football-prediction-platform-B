@@ -1,14 +1,11 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import * as bodyParser from 'body-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
-
-  app.set('trust proxy', true);
+  const app = await NestFactory.create(AppModule);
 
   app.enableCors({
     origin: (
@@ -17,7 +14,8 @@ async function bootstrap() {
     ) => {
       const allowedOrigins = [
         process.env.FRONTEND_URL,
-        'https://www.honestpredict.com',
+        'https://www.2xpredict.com',
+        'https://2xpredict.com',
       ].filter(Boolean);
 
       if (!origin || allowedOrigins.includes(origin)) {

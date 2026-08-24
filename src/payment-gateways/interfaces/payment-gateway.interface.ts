@@ -7,7 +7,7 @@ export interface InitializePaymentInput {
 
   callbackUrl: string;
 
-  currency: string;
+  currency: 'NGN';
 }
 
 export interface InitializePaymentResult {

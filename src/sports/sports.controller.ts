@@ -1,5 +1,3 @@
-// src/sports/sports.controller.ts
-
 import { Controller, Get, Param, Query } from '@nestjs/common';
 
 import { SportsService } from './sports.service';
@@ -8,17 +6,28 @@ import { SportsService } from './sports.service';
 export class SportsController {
   constructor(private readonly sportsService: SportsService) {}
 
-  // =========================================
+  // ============================================================
   // LEAGUES
-  // =========================================
+  // ============================================================
+
   @Get('leagues')
   getLeagues() {
     return this.sportsService.getLeagues();
   }
 
-  // =========================================
+  // ============================================================
+  // LIVE MATCHES
+  // ============================================================
+
+  @Get('live')
+  getLiveMatches() {
+    return this.sportsService.getLiveMatches();
+  }
+
+  // ============================================================
   // FIXTURES
-  // =========================================
+  // ============================================================
+
   @Get('fixtures')
   getFixtures(
     @Query('leagueCode')
@@ -27,9 +36,10 @@ export class SportsController {
     return this.sportsService.getFixtures(leagueCode);
   }
 
-  // =========================================
+  // ============================================================
   // MATCH DETAILS
-  // =========================================
+  // ============================================================
+
   @Get('match/:matchId')
   getMatch(
     @Param('matchId')
@@ -38,9 +48,10 @@ export class SportsController {
     return this.sportsService.getMatchDetails(matchId);
   }
 
-  // =========================================
+  // ============================================================
   // RESULTS
-  // =========================================
+  // ============================================================
+
   @Get('results')
   getResults(
     @Query('leagueCode')
@@ -49,9 +60,10 @@ export class SportsController {
     return this.sportsService.getFinishedMatches(leagueCode);
   }
 
-  // =========================================
+  // ============================================================
   // STANDINGS
-  // =========================================
+  // ============================================================
+
   @Get('standings')
   getStandings(
     @Query('leagueCode')
