@@ -656,29 +656,39 @@ export class FootballDataService implements OnModuleInit {
     this.requireLeagueCode(leagueCode);
 
     try {
-      const pastDate = new Date();
+      const competition = await this.getCompetitionInfo(leagueCode);
 
-      pastDate.setDate(pastDate.getDate() - 7);
+      const params: Record<string, string> = {
+        status: 'FINISHED',
+      };
 
-      const today = new Date();
+      // ========================================================
+      // CURRENT SEASON
+      // ========================================================
+
+      if (competition.season?.startDate) {
+        params.dateFrom = competition.season.startDate;
+      }
+
+      if (competition.season?.endDate) {
+        params.dateTo = competition.season.endDate;
+      }
 
       const res = await this.http.get(`/competitions/${leagueCode}/matches`, {
-        params: {
-          status: 'FINISHED',
-
-          dateFrom: pastDate.toISOString().split('T')[0],
-
-          dateTo: today.toISOString().split('T')[0],
-        },
+        params,
 
         headers: {
           'X-Unfold-Goals': 'true',
         },
       });
 
-      return (res.data.matches || []).map((match: any) =>
-        this.mapMatch(match, leagueCode),
-      );
+      return (res.data?.matches ?? [])
+
+        .map((match: any) => this.mapMatch(match, leagueCode))
+
+        .filter((match: Match) => match.status === 'FINISHED')
+
+        .sort((a, b) => b.kickoffTimestamp - a.kickoffTimestamp);
     } catch (error) {
       this.logApiError(error, 'Finished Matches');
 
