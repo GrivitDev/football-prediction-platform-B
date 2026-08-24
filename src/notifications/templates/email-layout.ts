@@ -81,7 +81,7 @@ ${preheader}
 <td>
 
 <img
-  src="https://www.2xpredict.com/banner.png"
+  src="https://www.honestpredict.com/banner.png"
   alt="Football Predictions"
   width="600"
   style="
@@ -141,7 +141,7 @@ Football Predictions • VIP Tips • Live Scores
 <p style="margin:0;">
 
 <a
-  href="https://www.2xpredict.com"
+  href="https://www.honestpredict.com"
   style="
     color:#2563eb;
     text-decoration:none;
@@ -149,7 +149,7 @@ Football Predictions • VIP Tips • Live Scores
   "
 >
 
-www.2xpredict.com
+www.honestpredict.com
 
 </a>
 
