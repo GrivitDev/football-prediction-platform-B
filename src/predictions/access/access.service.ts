@@ -17,8 +17,6 @@ interface Prediction {
 
   kickoffTimestamp: number;
 
-  settled: boolean;
-
   _id: {
     toString(): string;
   };
@@ -51,30 +49,11 @@ export class AccessService {
     };
   }
 
-  async canAccessPrediction(user: User | null, prediction: Prediction) {
-    // ============================================
-    // SETTLED MATCH — PUBLIC ACCESS
-    // ============================================
+  async canAccessPrediction(
+    user: User | null,
 
-    if (prediction.settled) {
-      return {
-        allowed: true,
-
-        state: 'settled',
-
-        purchased: false,
-
-        ...this.getReleaseData(prediction.kickoffTimestamp, 0),
-
-        showProbabilities: true,
-
-        // null = all markets
-        allowedMarkets: null,
-
-        message: null,
-      };
-    }
-
+    prediction: Prediction,
+  ) {
     let userPlan: 'free' | 'regular' | 'vip' = 'free';
 
     if (user) {
@@ -87,14 +66,15 @@ export class AccessService {
 
     const release = this.getReleaseData(
       prediction.kickoffTimestamp,
+
       rule.releaseHoursBeforeKickoff,
     );
 
     const hoursLeft = this.getHoursLeft(prediction.kickoffTimestamp);
 
-    // ============================================
+    // ==========================
     // LOGIN REQUIRED
-    // ============================================
+    // ==========================
 
     if (!user) {
       return {
@@ -114,12 +94,13 @@ export class AccessService {
       };
     }
 
-    // ============================================
+    // ==========================
     // ONE TIME PURCHASE
-    // ============================================
+    // ==========================
 
     const purchased = await this.purchaseService.hasPurchased(
       user._id.toString(),
+
       prediction._id.toString(),
     );
 
@@ -136,14 +117,12 @@ export class AccessService {
         showProbabilities: true,
 
         allowedMarkets: null,
-
-        message: null,
       };
     }
 
-    // ============================================
+    // ==========================
     // SUBSCRIPTION LEVEL CHECK
-    // ============================================
+    // ==========================
 
     const userLevel = PlanLevels[userPlan] ?? 0;
 
@@ -167,9 +146,9 @@ export class AccessService {
       };
     }
 
-    // ============================================
+    // ==========================
     // RELEASE WINDOW CHECK
-    // ============================================
+    // ==========================
 
     if (hoursLeft > rule.releaseHoursBeforeKickoff) {
       return {
@@ -189,9 +168,9 @@ export class AccessService {
       };
     }
 
-    // ============================================
+    // ==========================
     // FULL ACCESS
-    // ============================================
+    // ==========================
 
     return {
       allowed: true,
@@ -205,8 +184,6 @@ export class AccessService {
       showProbabilities: rule.showProbabilities,
 
       allowedMarkets: rule.allowedMarkets,
-
-      message: null,
     };
   }
 }

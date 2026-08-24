@@ -35,6 +35,15 @@ export class PredictionsController {
   }
 
   // ======================
+  // PUBLIC SETTLED WINS
+  // ======================
+
+  @Get('settled-wins')
+  findSettledWins() {
+    return this.service.findSettledWins();
+  }
+
+  // ======================
   // USER ACCESS VIEW (FIXED)
   // ======================
   @UseGuards(JwtAuthGuard)

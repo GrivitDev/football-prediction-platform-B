@@ -214,4 +214,50 @@ export class PredictionsService {
   async countPredictions() {
     return this.predictionModel.countDocuments({ deleted: false });
   }
+
+  async findSettledWins() {
+    const predictions = await this.predictionModel
+      .find({
+        status: 'won',
+        settled: true,
+        deleted: false,
+      })
+      .sort({
+        settledAt: -1,
+      })
+      .limit(50)
+      .lean();
+
+    return predictions.map((prediction) => ({
+      ...prediction,
+
+      data: {
+        prediction: prediction.prediction,
+
+        probabilities: prediction.probabilities,
+
+        markets: prediction.markets ?? [],
+      },
+
+      accessType: prediction.accessType,
+
+      price: prediction.price,
+
+      access: {
+        allowed: true,
+
+        state: 'subscription',
+
+        purchased: false,
+
+        plan: prediction.accessType,
+
+        released: true,
+
+        releaseAt: 0,
+
+        message: null,
+      },
+    }));
+  }
 }
