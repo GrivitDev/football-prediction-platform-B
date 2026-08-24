@@ -17,6 +17,8 @@ interface Prediction {
 
   kickoffTimestamp: number;
 
+  settled: boolean;
+
   _id: {
     toString(): string;
   };
