@@ -1092,6 +1092,39 @@ export class FootballDataService implements OnModuleInit {
   //   -> groups + knockout
   // ==========================================================
 
+  // ==========================================================
+  // FINISHED MATCHES BY IDS
+  // ==========================================================
+
+  async getFinishedMatchesByIds(matchIds: string[]): Promise<Match[]> {
+    if (!Array.isArray(matchIds) || matchIds.length === 0) {
+      return [];
+    }
+
+    try {
+      const res = await this.http.get('/matches', {
+        params: {
+          ids: matchIds.join(','),
+          status: 'FINISHED',
+        },
+
+        headers: {
+          'X-Unfold-Goals': 'true',
+        },
+      });
+
+      return (res.data?.matches || [])
+        .map((match: any) => this.mapMatch(match))
+        .filter((match: Match) => match.status === 'FINISHED');
+    } catch (error) {
+      this.logApiError(error, 'Finished Matches By IDs');
+
+      throw new InternalServerErrorException(
+        'Failed to fetch finished matches',
+      );
+    }
+  }
+
   async getStandings(
     leagueCode: string,
   ): Promise<CompetitionStandingsResponse> {

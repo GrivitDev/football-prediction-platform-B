@@ -49,7 +49,7 @@ export class SportsController {
   }
 
   // ============================================================
-  // RESULTS
+  // RESULTS BY LEAGUE
   // ============================================================
 
   @Get('results')
@@ -58,6 +58,23 @@ export class SportsController {
     leagueCode: string,
   ) {
     return this.sportsService.getFinishedMatches(leagueCode);
+  }
+
+  // ============================================================
+  // RESULTS BY MATCH IDS
+  // ============================================================
+
+  @Get('results/by-ids')
+  getResultsByIds(
+    @Query('matchIds')
+    matchIds: string,
+  ) {
+    const ids = matchIds
+      ?.split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    return this.sportsService.getFinishedMatchesByIds(ids);
   }
 
   // ============================================================

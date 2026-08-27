@@ -53,4 +53,8 @@ export class SportsService {
   getStandings(leagueCode: string) {
     return this.footballDataService.getStandings(leagueCode);
   }
+
+  getFinishedMatchesByIds(matchIds: string[]) {
+    return this.footballDataService.getFinishedMatchesByIds(matchIds);
+  }
 }
