@@ -14,6 +14,7 @@ import { AccessService } from './access/access.service';
 
 import { SettlementController } from './settlement/settlement.controller';
 import { PredictionUserService } from './prediction-user.service';
+import { SportsModule } from 'src/sports/sports.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { PredictionUserService } from './prediction-user.service';
     ]),
     PredictionPurchasesModule,
     SubscriptionsModule,
+    SportsModule,
   ],
 
   controllers: [PredictionsController, SettlementController],
