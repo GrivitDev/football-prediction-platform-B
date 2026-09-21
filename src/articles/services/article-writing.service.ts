@@ -25,6 +25,8 @@ export class ArticleWritingService {
   private readonly model: string;
   private readonly client: GoogleGenAI | null;
 
+  private readonly maxRetries = 3;
+
   constructor(private readonly configService: ConfigService) {
     this.apiKey =
       this.configService.get<string>('GEMINI_API_KEY')?.trim() || '';
@@ -93,74 +95,231 @@ export class ArticleWritingService {
       `Gemini request started: action=${action}, target=${target}, model=${this.model}`,
     );
 
-    try {
-      const response = await this.client.models.generateContent({
-        model: this.model,
-        contents: prompt,
-        config: {
-          temperature: 0.4,
-          maxOutputTokens: 12000,
-        },
-      });
+    const rawResult = await this.generateWithRetry(prompt, action, target);
 
-      const rawResult = response.text?.trim() || '';
+    const cleanedResult = this.cleanModelOutput(rawResult);
 
-      if (!rawResult) {
-        this.logger.error('Gemini returned an empty response.');
+    const result =
+      target === 'whole-article' && action !== 'seo' && action !== 'headings'
+        ? sanitizeArticleHtml(cleanedResult)
+        : sanitizeArticlePlainText(cleanedResult);
 
-        throw new ServiceUnavailableException(
-          'The AI service returned an empty response.',
-        );
-      }
+    if (!result) {
+      this.logger.error('Gemini response became empty after sanitization.');
 
-      const cleanedResult = this.cleanModelOutput(rawResult);
-
-      const result =
-        target === 'whole-article' && action !== 'seo' && action !== 'headings'
-          ? sanitizeArticleHtml(cleanedResult)
-          : sanitizeArticlePlainText(cleanedResult);
-
-      if (!result) {
-        this.logger.error('Gemini response became empty after sanitization.');
-
-        throw new ServiceUnavailableException(
-          'The AI service returned an unusable response.',
-        );
-      }
-
-      this.logger.log(
-        `Gemini request completed: action=${action}, target=${target}`,
+      throw new ServiceUnavailableException(
+        'The AI service returned an unusable response.',
       );
+    }
 
-      return {
-        result,
-        model: this.model,
-      };
-    } catch (error) {
-      if (error instanceof ServiceUnavailableException) {
-        throw error;
-      }
+    this.logger.log(
+      `Gemini request completed: action=${action}, target=${target}`,
+    );
 
-      if (error instanceof Error) {
+    return {
+      result,
+      model: this.model,
+    };
+  }
+
+  private async generateWithRetry(
+    prompt: string,
+    action: string,
+    target: AiTarget,
+  ): Promise<string> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= this.maxRetries + 1; attempt += 1) {
+      try {
+        const response = await this.client!.models.generateContent({
+          model: this.model,
+          contents: prompt,
+          config: {
+            maxOutputTokens: 12000,
+          },
+        });
+
+        const result = response.text?.trim() || '';
+
+        if (!result) {
+          throw new ServiceUnavailableException(
+            'The AI service returned an empty response.',
+          );
+        }
+
+        return result;
+      } catch (error) {
+        lastError = error;
+
+        const status = this.getErrorStatus(error);
+
+        const message = this.getErrorMessage(error);
+
         this.logger.error(
           [
-            'Gemini request failed.',
-            `message=${error.message}`,
+            `Gemini attempt ${attempt} failed.`,
+            `status=${status ?? 'unknown'}`,
             `action=${action}`,
             `target=${target}`,
             `model=${this.model}`,
+            `message=${message}`,
           ].join(' | '),
         );
 
-        this.logger.debug(error.stack || '');
-      } else {
-        this.logger.error(`Gemini request failed: ${String(error)}`);
-      }
+        /*
+         * 403 means the project/API key is not permitted
+         * to use the requested resource. Retrying will not
+         * solve a project-level permission denial.
+         */
+        if (status === 403) {
+          throw new ServiceUnavailableException(
+            'Gemini access is denied for this project. Check the Gemini API key and project access in Google AI Studio or Google Cloud.',
+          );
+        }
 
-      throw new ServiceUnavailableException(
-        'The AI writing service is currently unavailable.',
-      );
+        /*
+         * 401 means the API key is invalid, missing,
+         * expired, or otherwise rejected.
+         */
+        if (status === 401) {
+          throw new ServiceUnavailableException(
+            'The Gemini API key is invalid or unavailable. Check GEMINI_API_KEY in the server environment.',
+          );
+        }
+
+        /*
+         * 404 means the configured model cannot be found.
+         */
+        if (status === 404) {
+          throw new ServiceUnavailableException(
+            `The configured Gemini model "${this.model}" was not found or is unavailable to this project.`,
+          );
+        }
+
+        /*
+         * 400 usually means the request itself is invalid.
+         */
+        if (
+          status !== 429 &&
+          status !== undefined &&
+          status >= 400 &&
+          status < 500
+        ) {
+          throw new ServiceUnavailableException(
+            `Gemini rejected the request: ${message}`,
+          );
+        }
+
+        /*
+         * Retry transient rate-limit/server failures.
+         */
+        if (!this.isRetryableStatus(status) || attempt > this.maxRetries) {
+          break;
+        }
+
+        const delay = this.getRetryDelay(attempt);
+
+        this.logger.warn(`Retrying Gemini request in ${delay}ms.`);
+
+        await this.sleep(delay);
+      }
     }
+
+    if (lastError instanceof ServiceUnavailableException) {
+      throw lastError;
+    }
+
+    throw new ServiceUnavailableException(
+      'The Gemini AI service is temporarily unavailable. Please try again.',
+    );
+  }
+
+  private isRetryableStatus(status?: number): boolean {
+    return (
+      status === 429 ||
+      status === 500 ||
+      status === 502 ||
+      status === 503 ||
+      status === 504
+    );
+  }
+
+  private getRetryDelay(attempt: number): number {
+    const base = 1000 * Math.pow(2, attempt - 1);
+
+    const jitter = Math.floor(Math.random() * 500);
+
+    return base + jitter;
+  }
+
+  private sleep(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  private getErrorStatus(error: unknown): number | undefined {
+    if (typeof error !== 'object' || error === null) {
+      return undefined;
+    }
+
+    if (
+      'status' in error &&
+      typeof (
+        error as {
+          status?: unknown;
+        }
+      ).status === 'number'
+    ) {
+      return (
+        error as {
+          status: number;
+        }
+      ).status;
+    }
+
+    if (
+      'response' in error &&
+      typeof (
+        error as {
+          response?: unknown;
+        }
+      ).response === 'object' &&
+      (
+        error as {
+          response?: {
+            status?: unknown;
+          };
+        }
+      ).response?.status &&
+      typeof (
+        error as {
+          response: {
+            status: unknown;
+          };
+        }
+      ).response.status === 'number'
+    ) {
+      return (
+        error as {
+          response: {
+            status: number;
+          };
+        }
+      ).response.status;
+    }
+
+    return undefined;
+  }
+
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    if (typeof error === 'object' && error !== null && 'message' in error) {
+      return String(error.message);
+    }
+
+    return String(error);
   }
 
   private buildPrompt(
@@ -248,16 +407,12 @@ ${content}
       `.trim();
     }
 
-    const actionInstructions = this.getActionInstructions(action);
-
-    const targetInstructions = this.getTargetInstructions(target);
-
     return `
 You are an article writing assistant.
 
-${actionInstructions}
+${this.getActionInstructions(action)}
 
-${targetInstructions}
+${this.getTargetInstructions(target)}
 
 Preserve the author's meaning and factual claims.
 
