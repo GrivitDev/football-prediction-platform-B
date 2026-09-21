@@ -124,7 +124,6 @@ export class ArticleGrammarService {
         new URLSearchParams({
           text,
           language: language || 'auto',
-          enabledOnly: 'true',
         }).toString(),
         {
           headers: {
