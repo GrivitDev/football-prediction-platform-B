@@ -15,22 +15,22 @@ import {
 
 type AiTarget = 'whole-article' | 'title' | 'subtitle' | 'description';
 
-interface XaiResponse {
+interface GroqChatResponse {
   id?: string;
   model?: string;
-  status?: string;
-  output?: Array<{
-    type?: string;
-    content?: Array<{
-      type?: string;
-      text?: string;
-    }>;
+  choices?: Array<{
+    index?: number;
+    message?: {
+      role?: string;
+      content?: string | null;
+    };
+    finish_reason?: string;
   }>;
   error?: {
-    code?: string;
     message?: string;
     type?: string;
-  } | null;
+    code?: string;
+  };
 }
 
 @Injectable()
@@ -40,19 +40,20 @@ export class ArticleWritingService {
   private readonly apiKey: string;
   private readonly model: string;
 
-  private readonly baseUrl = 'https://api.x.ai/v1/responses';
+  private readonly baseUrl = 'https://api.groq.com/openai/v1/chat/completions';
 
   private readonly maxRetries = 3;
   private readonly requestTimeoutMs = 90_000;
 
   constructor(private readonly configService: ConfigService) {
-    this.apiKey = this.configService.get<string>('XAI_API_KEY')?.trim() || '';
+    this.apiKey = this.configService.get<string>('GROQ_API_KEY')?.trim() || '';
 
     this.model =
-      this.configService.get<string>('XAI_MODEL')?.trim() || 'grok-4.6';
+      this.configService.get<string>('GROQ_MODEL')?.trim() ||
+      'openai/gpt-oss-120b';
 
-    this.logger.log(`Grok model configured: ${this.model}`);
-    this.logger.log(`Grok API key configured: ${this.apiKey ? 'yes' : 'no'}`);
+    this.logger.log(`Groq model configured: ${this.model}`);
+    this.logger.log(`Groq API key configured: ${this.apiKey ? 'yes' : 'no'}`);
   }
 
   async process(
@@ -74,7 +75,7 @@ export class ArticleWritingService {
     }
 
     if (!this.apiKey) {
-      this.logger.error('Grok API key is not configured.');
+      this.logger.error('Groq API key is not configured.');
 
       throw new ServiceUnavailableException(
         'The AI service is not configured yet.',
@@ -101,7 +102,7 @@ export class ArticleWritingService {
     );
 
     this.logger.log(
-      `Grok request started: action=${action}, target=${target}, model=${this.model}`,
+      `Groq request started: action=${action}, target=${target}, model=${this.model}`,
     );
 
     const rawResult = await this.generateWithRetry(prompt, action, target);
@@ -114,7 +115,7 @@ export class ArticleWritingService {
         : sanitizeArticlePlainText(cleanedResult);
 
     if (!result) {
-      this.logger.error('Grok response became empty after sanitization.');
+      this.logger.error('Groq response became empty after sanitization.');
 
       throw new ServiceUnavailableException(
         'The AI service returned an unusable response.',
@@ -122,7 +123,7 @@ export class ArticleWritingService {
     }
 
     this.logger.log(
-      `Grok request completed: action=${action}, target=${target}`,
+      `Groq request completed: action=${action}, target=${target}`,
     );
 
     return {
@@ -140,9 +141,9 @@ export class ArticleWritingService {
 
     for (let attempt = 1; attempt <= this.maxRetries + 1; attempt += 1) {
       try {
-        const rawResponse = await this.requestGrok(prompt);
+        const response = await this.requestGroq(prompt);
 
-        const result = this.extractResponseText(rawResponse);
+        const result = response.choices?.[0]?.message?.content?.trim() || '';
 
         if (!result) {
           throw new ServiceUnavailableException(
@@ -159,7 +160,7 @@ export class ArticleWritingService {
 
         this.logger.error(
           [
-            `Grok attempt ${attempt} failed.`,
+            `Groq attempt ${attempt} failed.`,
             `status=${status ?? 'unknown'}`,
             `action=${action}`,
             `target=${target}`,
@@ -168,24 +169,39 @@ export class ArticleWritingService {
           ].join(' | '),
         );
 
+        /*
+         * 401 means the API key is invalid,
+         * missing, expired, or rejected.
+         */
         if (status === 401) {
           throw new ServiceUnavailableException(
-            'The Grok API key is invalid or unavailable. Check XAI_API_KEY in the server environment.',
+            'The Groq API key is invalid or unavailable. Check GROQ_API_KEY in the server environment.',
           );
         }
 
+        /*
+         * 403 means the API key/project is not permitted
+         * to use the requested resource.
+         */
         if (status === 403) {
           throw new ServiceUnavailableException(
-            'Grok access is denied for this API key or team. Check the xAI Console project and API key permissions.',
+            'Groq access is denied for this API key or project. Check the Groq Console and API key permissions.',
           );
         }
 
+        /*
+         * 404 normally means the configured model
+         * or endpoint cannot be found.
+         */
         if (status === 404) {
           throw new ServiceUnavailableException(
-            `The configured Grok model "${this.model}" was not found or is unavailable to this API key.`,
+            `The configured Groq model "${this.model}" was not found or is unavailable.`,
           );
         }
 
+        /*
+         * Other client-side errors should not be retried.
+         */
         if (
           status !== 429 &&
           status !== undefined &&
@@ -193,17 +209,20 @@ export class ArticleWritingService {
           status < 500
         ) {
           throw new ServiceUnavailableException(
-            `Grok rejected the request: ${message}`,
+            `Groq rejected the request: ${message}`,
           );
         }
 
+        /*
+         * Retry transient rate-limit/server failures.
+         */
         if (!this.isRetryableStatus(status) || attempt > this.maxRetries) {
           break;
         }
 
         const delay = this.getRetryDelay(attempt);
 
-        this.logger.warn(`Retrying Grok request in ${delay}ms.`);
+        this.logger.warn(`Retrying Groq request in ${delay}ms.`);
 
         await this.sleep(delay);
       }
@@ -214,11 +233,11 @@ export class ArticleWritingService {
     }
 
     throw new ServiceUnavailableException(
-      'The Grok AI service is temporarily unavailable. Please try again.',
+      'The Groq AI service is temporarily unavailable. Please try again.',
     );
   }
 
-  private async requestGrok(prompt: string): Promise<XaiResponse> {
+  private async requestGroq(prompt: string): Promise<GroqChatResponse> {
     const controller = new AbortController();
 
     const timeout = setTimeout(() => {
@@ -228,14 +247,16 @@ export class ArticleWritingService {
     try {
       const response = await fetch(this.baseUrl, {
         method: 'POST',
+
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.apiKey}`,
         },
+
         body: JSON.stringify({
           model: this.model,
 
-          input: [
+          messages: [
             {
               role: 'system',
               content:
@@ -247,13 +268,9 @@ export class ArticleWritingService {
             },
           ],
 
-          max_output_tokens: 12000,
+          max_tokens: 12_000,
 
-          /*
-           * Article content may still be unpublished.
-           * Do not store this response in the xAI Responses history.
-           */
-          store: false,
+          temperature: 0.2,
         }),
 
         signal: controller.signal,
@@ -261,10 +278,10 @@ export class ArticleWritingService {
 
       const bodyText = await response.text();
 
-      let body: XaiResponse = {};
+      let body: GroqChatResponse = {};
 
       try {
-        body = bodyText ? (JSON.parse(bodyText) as XaiResponse) : {};
+        body = bodyText ? (JSON.parse(bodyText) as GroqChatResponse) : {};
       } catch {
         body = {};
       }
@@ -273,7 +290,7 @@ export class ArticleWritingService {
         const error = new Error(
           body.error?.message ||
             bodyText ||
-            `Grok request failed with HTTP ${response.status}.`,
+            `Groq request failed with HTTP ${response.status}.`,
         );
 
         Object.assign(error, {
@@ -290,7 +307,7 @@ export class ArticleWritingService {
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         const timeoutError = new Error(
-          `Grok request timed out after ${this.requestTimeoutMs}ms.`,
+          `Groq request timed out after ${this.requestTimeoutMs}ms.`,
         );
 
         Object.assign(timeoutError, {
@@ -304,31 +321,6 @@ export class ArticleWritingService {
     } finally {
       clearTimeout(timeout);
     }
-  }
-
-  private extractResponseText(response: XaiResponse): string {
-    if (!Array.isArray(response.output)) {
-      return '';
-    }
-
-    const textParts: string[] = [];
-
-    for (const outputItem of response.output) {
-      if (!Array.isArray(outputItem.content)) {
-        continue;
-      }
-
-      for (const contentItem of outputItem.content) {
-        if (
-          contentItem.type === 'output_text' &&
-          typeof contentItem.text === 'string'
-        ) {
-          textParts.push(contentItem.text);
-        }
-      }
-    }
-
-    return textParts.join('\n').trim();
   }
 
   private isRetryableStatus(status?: number): boolean {
