@@ -1,32 +1,47 @@
 // src/articles/services/article-writing.service.ts
 
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+
 import { ConfigService } from '@nestjs/config';
-import axios from 'axios';
+
+import { GoogleGenAI } from '@google/genai';
 
 import {
   sanitizeArticleHtml,
   sanitizeArticlePlainText,
 } from '../utils/article-html.util';
 
-interface OllamaResponse {
-  response?: string;
-}
-
 type AiTarget = 'whole-article' | 'title' | 'subtitle' | 'description';
 
 @Injectable()
 export class ArticleWritingService {
-  private readonly ollamaUrl: string;
+  private readonly logger = new Logger(ArticleWritingService.name);
+
+  private readonly apiKey: string;
   private readonly model: string;
+  private readonly client: GoogleGenAI | null;
 
   constructor(private readonly configService: ConfigService) {
-    this.ollamaUrl = (
-      this.configService.get<string>('OLLAMA_URL') || 'http://127.0.0.1:11434'
-    ).replace(/\/+$/, '');
+    this.apiKey =
+      this.configService.get<string>('GEMINI_API_KEY')?.trim() || '';
 
     this.model =
-      this.configService.get<string>('OLLAMA_MODEL') || 'llama3.2:3b';
+      this.configService.get<string>('GEMINI_MODEL')?.trim() ||
+      'gemini-3.8-flash';
+
+    this.client = this.apiKey
+      ? new GoogleGenAI({
+          apiKey: this.apiKey,
+        })
+      : null;
+
+    this.logger.log(`Gemini model configured: ${this.model}`);
+
+    this.logger.log(`Gemini API key configured: ${this.apiKey ? 'yes' : 'no'}`);
   }
 
   async process(
@@ -45,6 +60,14 @@ export class ArticleWritingService {
 
     if (!normalizedContent) {
       throw new ServiceUnavailableException('There is no content to process.');
+    }
+
+    if (!this.client) {
+      this.logger.error('Gemini API key is not configured.');
+
+      throw new ServiceUnavailableException(
+        'The AI service is not configured yet.',
+      );
     }
 
     if (
@@ -66,39 +89,48 @@ export class ArticleWritingService {
       focusKeyword,
     );
 
-    try {
-      const response = await axios.post<OllamaResponse>(
-        `${this.ollamaUrl}/api/generate`,
-        {
-          model: this.model,
-          prompt,
-          stream: false,
-        },
-        {
-          timeout: 120000,
-          maxContentLength: 5 * 1024 * 1024,
-          maxBodyLength: 5 * 1024 * 1024,
-        },
-      );
+    this.logger.log(
+      `Gemini request started: action=${action}, target=${target}, model=${this.model}`,
+    );
 
-      const rawResult = response.data.response?.trim() || '';
+    try {
+      const response = await this.client.models.generateContent({
+        model: this.model,
+        contents: prompt,
+        config: {
+          temperature: 0.4,
+          maxOutputTokens: 12000,
+        },
+      });
+
+      const rawResult = response.text?.trim() || '';
 
       if (!rawResult) {
+        this.logger.error('Gemini returned an empty response.');
+
         throw new ServiceUnavailableException(
           'The AI service returned an empty response.',
         );
       }
 
+      const cleanedResult = this.cleanModelOutput(rawResult);
+
       const result =
-        target === 'whole-article' && !['seo', 'headings'].includes(action)
-          ? sanitizeArticleHtml(this.cleanModelOutput(rawResult))
-          : sanitizeArticlePlainText(this.cleanModelOutput(rawResult));
+        target === 'whole-article' && action !== 'seo' && action !== 'headings'
+          ? sanitizeArticleHtml(cleanedResult)
+          : sanitizeArticlePlainText(cleanedResult);
 
       if (!result) {
+        this.logger.error('Gemini response became empty after sanitization.');
+
         throw new ServiceUnavailableException(
           'The AI service returned an unusable response.',
         );
       }
+
+      this.logger.log(
+        `Gemini request completed: action=${action}, target=${target}`,
+      );
 
       return {
         result,
@@ -107,6 +139,22 @@ export class ArticleWritingService {
     } catch (error) {
       if (error instanceof ServiceUnavailableException) {
         throw error;
+      }
+
+      if (error instanceof Error) {
+        this.logger.error(
+          [
+            'Gemini request failed.',
+            `message=${error.message}`,
+            `action=${action}`,
+            `target=${target}`,
+            `model=${this.model}`,
+          ].join(' | '),
+        );
+
+        this.logger.debug(error.stack || '');
+      } else {
+        this.logger.error(`Gemini request failed: ${String(error)}`);
       }
 
       throw new ServiceUnavailableException(
@@ -140,7 +188,9 @@ export class ArticleWritingService {
 
     if (action === 'seo') {
       return `
-Analyze the following article for practical search-engine optimization improvements.
+You are assisting an article writer with SEO.
+
+Analyze the supplied article and provide practical recommendations.
 
 Return exactly these sections:
 
@@ -153,7 +203,7 @@ INTERNAL LINK OPPORTUNITIES:
 READABILITY RECOMMENDATIONS:
 
 Do not claim that any recommendation guarantees search ranking.
-Do not invent facts, sources, statistics, links, events, or quotations.
+Do not invent facts, statistics, sources, links, events, or quotations.
 Base every recommendation on the supplied article.
 
 ${articleTitle}
@@ -172,9 +222,9 @@ ${content}
 
     if (action === 'headings') {
       return `
-Analyze the following article and suggest a clear heading structure.
+Analyze the supplied article and suggest a clear heading structure.
 
-Return a simple hierarchy using:
+Return exactly this simple hierarchy:
 
 H1:
 H2:
@@ -198,18 +248,21 @@ ${content}
       `.trim();
     }
 
-    const targetInstructions = this.getTargetInstructions(target);
-
     const actionInstructions = this.getActionInstructions(action);
 
+    const targetInstructions = this.getTargetInstructions(target);
+
     return `
+You are an article writing assistant.
+
 ${actionInstructions}
 
 ${targetInstructions}
 
 Preserve the author's meaning and factual claims.
-Do not invent facts, statistics, quotations, sources, events, names,
-numbers, or dates.
+
+Do not invent facts, statistics, quotations, sources, events,
+names, numbers, or dates.
 
 ${articleTitle}
 
@@ -232,8 +285,11 @@ ${content}
 The target is the article title.
 
 Return only the improved title as plain text.
-Keep it concise and suitable as an article title.
-Do not return quotation marks, labels, explanations, or Markdown.
+
+Do not return quotation marks.
+Do not return labels.
+Do not return explanations.
+Do not return Markdown.
         `.trim();
 
       case 'subtitle':
@@ -241,8 +297,13 @@ Do not return quotation marks, labels, explanations, or Markdown.
 The target is the article subtitle.
 
 Return only the improved subtitle as plain text.
-Keep it concise and suitable for a subtitle under the article title.
-Do not return quotation marks, labels, explanations, or Markdown.
+
+Keep it concise and suitable directly beneath the title.
+
+Do not return quotation marks.
+Do not return labels.
+Do not return explanations.
+Do not return Markdown.
         `.trim();
 
       case 'description':
@@ -250,8 +311,13 @@ Do not return quotation marks, labels, explanations, or Markdown.
 The target is the article description.
 
 Return only the improved description as plain text.
-Keep it clear, natural, informative, and suitable as an article introduction.
-Do not return quotation marks, labels, explanations, or Markdown.
+
+Keep it clear, informative, natural, and concise.
+
+Do not return quotation marks.
+Do not return labels.
+Do not return explanations.
+Do not return Markdown.
         `.trim();
 
       case 'whole-article':
@@ -259,14 +325,33 @@ Do not return quotation marks, labels, explanations, or Markdown.
         return `
 The target is the complete article body.
 
-The input may contain HTML generated by a rich-text editor.
-Preserve meaningful HTML structure such as paragraphs, headings,
-lists, blockquotes, links, images, and inline formatting.
+The supplied content may contain HTML produced by a rich-text editor.
 
-Return only the article HTML.
-Do not wrap the response in Markdown code fences.
-Do not add commentary before or after the article.
-Do not introduce unsupported CSS or JavaScript.
+Return the complete improved article as HTML.
+
+Preserve the existing meaningful structure, including:
+
+- paragraphs
+- headings
+- lists
+- blockquotes
+- links
+- images
+- bold
+- italic
+- underline
+- strikethrough
+- text alignment
+- font family
+- font size
+
+Do not convert the article into Markdown.
+
+Do not return Markdown code fences.
+
+Do not add commentary before or after the HTML.
+
+Only return the article HTML.
         `.trim();
     }
   }
@@ -278,7 +363,7 @@ Do not introduce unsupported CSS or JavaScript.
 Rewrite the target to make it clearer, more natural,
 professional, and readable.
 
-Preserve the original meaning and factual claims.
+Keep the original meaning and factual claims.
         `.trim();
 
       case 'shorten':
@@ -293,15 +378,17 @@ Remove repetition and unnecessary wording.
         return `
 Improve and expand the target where appropriate.
 
-Add useful explanation only when it can be supported by the
-information already supplied. Do not pad the content.
+Add useful explanation only where it can be supported by
+the information already supplied.
+
+Do not pad the content.
         `.trim();
 
       case 'improve':
       default:
         return `
-Improve the target for grammar, clarity, readability, spelling,
-punctuation, and natural expression.
+Improve the target for grammar, clarity, spelling,
+punctuation, readability, and natural expression.
 
 Do not change factual claims unless correcting an obvious
 language error.
