@@ -8,8 +8,6 @@ import {
 
 import { ConfigService } from '@nestjs/config';
 
-import { GoogleGenAI } from '@google/genai';
-
 import {
   sanitizeArticleHtml,
   sanitizeArticlePlainText,
@@ -17,33 +15,44 @@ import {
 
 type AiTarget = 'whole-article' | 'title' | 'subtitle' | 'description';
 
+interface XaiResponse {
+  id?: string;
+  model?: string;
+  status?: string;
+  output?: Array<{
+    type?: string;
+    content?: Array<{
+      type?: string;
+      text?: string;
+    }>;
+  }>;
+  error?: {
+    code?: string;
+    message?: string;
+    type?: string;
+  } | null;
+}
+
 @Injectable()
 export class ArticleWritingService {
   private readonly logger = new Logger(ArticleWritingService.name);
 
   private readonly apiKey: string;
   private readonly model: string;
-  private readonly client: GoogleGenAI | null;
+
+  private readonly baseUrl = 'https://api.x.ai/v1/responses';
 
   private readonly maxRetries = 3;
+  private readonly requestTimeoutMs = 90_000;
 
   constructor(private readonly configService: ConfigService) {
-    this.apiKey =
-      this.configService.get<string>('GEMINI_API_KEY')?.trim() || '';
+    this.apiKey = this.configService.get<string>('XAI_API_KEY')?.trim() || '';
 
     this.model =
-      this.configService.get<string>('GEMINI_MODEL')?.trim() ||
-      'gemini-3.8-flash';
+      this.configService.get<string>('XAI_MODEL')?.trim() || 'grok-4.6';
 
-    this.client = this.apiKey
-      ? new GoogleGenAI({
-          apiKey: this.apiKey,
-        })
-      : null;
-
-    this.logger.log(`Gemini model configured: ${this.model}`);
-
-    this.logger.log(`Gemini API key configured: ${this.apiKey ? 'yes' : 'no'}`);
+    this.logger.log(`Grok model configured: ${this.model}`);
+    this.logger.log(`Grok API key configured: ${this.apiKey ? 'yes' : 'no'}`);
   }
 
   async process(
@@ -64,8 +73,8 @@ export class ArticleWritingService {
       throw new ServiceUnavailableException('There is no content to process.');
     }
 
-    if (!this.client) {
-      this.logger.error('Gemini API key is not configured.');
+    if (!this.apiKey) {
+      this.logger.error('Grok API key is not configured.');
 
       throw new ServiceUnavailableException(
         'The AI service is not configured yet.',
@@ -92,7 +101,7 @@ export class ArticleWritingService {
     );
 
     this.logger.log(
-      `Gemini request started: action=${action}, target=${target}, model=${this.model}`,
+      `Grok request started: action=${action}, target=${target}, model=${this.model}`,
     );
 
     const rawResult = await this.generateWithRetry(prompt, action, target);
@@ -105,7 +114,7 @@ export class ArticleWritingService {
         : sanitizeArticlePlainText(cleanedResult);
 
     if (!result) {
-      this.logger.error('Gemini response became empty after sanitization.');
+      this.logger.error('Grok response became empty after sanitization.');
 
       throw new ServiceUnavailableException(
         'The AI service returned an unusable response.',
@@ -113,7 +122,7 @@ export class ArticleWritingService {
     }
 
     this.logger.log(
-      `Gemini request completed: action=${action}, target=${target}`,
+      `Grok request completed: action=${action}, target=${target}`,
     );
 
     return {
@@ -131,15 +140,9 @@ export class ArticleWritingService {
 
     for (let attempt = 1; attempt <= this.maxRetries + 1; attempt += 1) {
       try {
-        const response = await this.client!.models.generateContent({
-          model: this.model,
-          contents: prompt,
-          config: {
-            maxOutputTokens: 12000,
-          },
-        });
+        const rawResponse = await this.requestGrok(prompt);
 
-        const result = response.text?.trim() || '';
+        const result = this.extractResponseText(rawResponse);
 
         if (!result) {
           throw new ServiceUnavailableException(
@@ -152,12 +155,11 @@ export class ArticleWritingService {
         lastError = error;
 
         const status = this.getErrorStatus(error);
-
         const message = this.getErrorMessage(error);
 
         this.logger.error(
           [
-            `Gemini attempt ${attempt} failed.`,
+            `Grok attempt ${attempt} failed.`,
             `status=${status ?? 'unknown'}`,
             `action=${action}`,
             `target=${target}`,
@@ -166,39 +168,24 @@ export class ArticleWritingService {
           ].join(' | '),
         );
 
-        /*
-         * 403 means the project/API key is not permitted
-         * to use the requested resource. Retrying will not
-         * solve a project-level permission denial.
-         */
-        if (status === 403) {
-          throw new ServiceUnavailableException(
-            'Gemini access is denied for this project. Check the Gemini API key and project access in Google AI Studio or Google Cloud.',
-          );
-        }
-
-        /*
-         * 401 means the API key is invalid, missing,
-         * expired, or otherwise rejected.
-         */
         if (status === 401) {
           throw new ServiceUnavailableException(
-            'The Gemini API key is invalid or unavailable. Check GEMINI_API_KEY in the server environment.',
+            'The Grok API key is invalid or unavailable. Check XAI_API_KEY in the server environment.',
           );
         }
 
-        /*
-         * 404 means the configured model cannot be found.
-         */
+        if (status === 403) {
+          throw new ServiceUnavailableException(
+            'Grok access is denied for this API key or team. Check the xAI Console project and API key permissions.',
+          );
+        }
+
         if (status === 404) {
           throw new ServiceUnavailableException(
-            `The configured Gemini model "${this.model}" was not found or is unavailable to this project.`,
+            `The configured Grok model "${this.model}" was not found or is unavailable to this API key.`,
           );
         }
 
-        /*
-         * 400 usually means the request itself is invalid.
-         */
         if (
           status !== 429 &&
           status !== undefined &&
@@ -206,20 +193,17 @@ export class ArticleWritingService {
           status < 500
         ) {
           throw new ServiceUnavailableException(
-            `Gemini rejected the request: ${message}`,
+            `Grok rejected the request: ${message}`,
           );
         }
 
-        /*
-         * Retry transient rate-limit/server failures.
-         */
         if (!this.isRetryableStatus(status) || attempt > this.maxRetries) {
           break;
         }
 
         const delay = this.getRetryDelay(attempt);
 
-        this.logger.warn(`Retrying Gemini request in ${delay}ms.`);
+        this.logger.warn(`Retrying Grok request in ${delay}ms.`);
 
         await this.sleep(delay);
       }
@@ -230,12 +214,126 @@ export class ArticleWritingService {
     }
 
     throw new ServiceUnavailableException(
-      'The Gemini AI service is temporarily unavailable. Please try again.',
+      'The Grok AI service is temporarily unavailable. Please try again.',
     );
+  }
+
+  private async requestGrok(prompt: string): Promise<XaiResponse> {
+    const controller = new AbortController();
+
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, this.requestTimeoutMs);
+
+    try {
+      const response = await fetch(this.baseUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+
+          input: [
+            {
+              role: 'system',
+              content:
+                'You are a professional article writing assistant. Follow the user instructions exactly and return only the requested output.',
+            },
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+
+          max_output_tokens: 12000,
+
+          /*
+           * Article content may still be unpublished.
+           * Do not store this response in the xAI Responses history.
+           */
+          store: false,
+        }),
+
+        signal: controller.signal,
+      });
+
+      const bodyText = await response.text();
+
+      let body: XaiResponse = {};
+
+      try {
+        body = bodyText ? (JSON.parse(bodyText) as XaiResponse) : {};
+      } catch {
+        body = {};
+      }
+
+      if (!response.ok) {
+        const error = new Error(
+          body.error?.message ||
+            bodyText ||
+            `Grok request failed with HTTP ${response.status}.`,
+        );
+
+        Object.assign(error, {
+          status: response.status,
+          response: {
+            status: response.status,
+          },
+        });
+
+        throw error;
+      }
+
+      return body;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        const timeoutError = new Error(
+          `Grok request timed out after ${this.requestTimeoutMs}ms.`,
+        );
+
+        Object.assign(timeoutError, {
+          status: 503,
+        });
+
+        throw timeoutError;
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private extractResponseText(response: XaiResponse): string {
+    if (!Array.isArray(response.output)) {
+      return '';
+    }
+
+    const textParts: string[] = [];
+
+    for (const outputItem of response.output) {
+      if (!Array.isArray(outputItem.content)) {
+        continue;
+      }
+
+      for (const contentItem of outputItem.content) {
+        if (
+          contentItem.type === 'output_text' &&
+          typeof contentItem.text === 'string'
+        ) {
+          textParts.push(contentItem.text);
+        }
+      }
+    }
+
+    return textParts.join('\n').trim();
   }
 
   private isRetryableStatus(status?: number): boolean {
     return (
+      status === 408 ||
       status === 429 ||
       status === 500 ||
       status === 502 ||
@@ -253,7 +351,9 @@ export class ArticleWritingService {
   }
 
   private sleep(milliseconds: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+    return new Promise((resolve) => {
+      setTimeout(resolve, milliseconds);
+    });
   }
 
   private getErrorStatus(error: unknown): number | undefined {
