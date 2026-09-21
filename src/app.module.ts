@@ -38,6 +38,7 @@ import { ReferralsModule } from './referrals/referrals.module';
 import { EmailModule } from './notifications/email.module';
 import { CommunityModule } from './community/community.module';
 import { PaymentGatewaysModule } from './payment-gateways/payment-gateways.module';
+import { ArticleModule } from './articles/article.module';
 
 @Module({
   imports: [
@@ -90,6 +91,8 @@ import { PaymentGatewaysModule } from './payment-gateways/payment-gateways.modul
     PaymentGatewaysModule,
 
     ReferralsModule,
+
+    ArticleModule,
   ],
   providers: [AdminGateway],
 })
