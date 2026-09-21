@@ -4,9 +4,16 @@ import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 
+import {
+  sanitizeArticleHtml,
+  sanitizeArticlePlainText,
+} from '../utils/article-html.util';
+
 interface OllamaResponse {
   response?: string;
 }
+
+type AiTarget = 'whole-article' | 'title' | 'subtitle' | 'description';
 
 @Injectable()
 export class ArticleWritingService {
@@ -25,13 +32,39 @@ export class ArticleWritingService {
   async process(
     content: string,
     action: string,
+    target: AiTarget = 'whole-article',
     title?: string,
+    subtitle?: string,
+    description?: string,
     focusKeyword?: string,
   ): Promise<{
     result: string;
     model: string;
   }> {
-    const prompt = this.buildPrompt(content, action, title, focusKeyword);
+    const normalizedContent = content.trim();
+
+    if (!normalizedContent) {
+      throw new ServiceUnavailableException('There is no content to process.');
+    }
+
+    if (
+      (action === 'seo' || action === 'headings') &&
+      target !== 'whole-article'
+    ) {
+      throw new ServiceUnavailableException(
+        'SEO analysis and heading suggestions require the whole article.',
+      );
+    }
+
+    const prompt = this.buildPrompt(
+      normalizedContent,
+      action,
+      target,
+      title,
+      subtitle,
+      description,
+      focusKeyword,
+    );
 
     try {
       const response = await axios.post<OllamaResponse>(
@@ -48,11 +81,22 @@ export class ArticleWritingService {
         },
       );
 
-      const result = response.data.response?.trim() || '';
+      const rawResult = response.data.response?.trim() || '';
+
+      if (!rawResult) {
+        throw new ServiceUnavailableException(
+          'The AI service returned an empty response.',
+        );
+      }
+
+      const result =
+        target === 'whole-article' && !['seo', 'headings'].includes(action)
+          ? sanitizeArticleHtml(this.cleanModelOutput(rawResult))
+          : sanitizeArticlePlainText(this.cleanModelOutput(rawResult));
 
       if (!result) {
         throw new ServiceUnavailableException(
-          'The AI service returned an empty response.',
+          'The AI service returned an unusable response.',
         );
       }
 
@@ -74,71 +118,29 @@ export class ArticleWritingService {
   private buildPrompt(
     content: string,
     action: string,
+    target: AiTarget,
     title?: string,
+    subtitle?: string,
+    description?: string,
     focusKeyword?: string,
   ): string {
     const articleTitle = title?.trim() ? `Article title: ${title.trim()}` : '';
+
+    const articleSubtitle = subtitle?.trim()
+      ? `Article subtitle: ${subtitle.trim()}`
+      : '';
+
+    const articleDescription = description?.trim()
+      ? `Article description: ${description.trim()}`
+      : '';
 
     const keyword = focusKeyword?.trim()
       ? `Focus keyword: ${focusKeyword.trim()}`
       : '';
 
-    switch (action) {
-      case 'rewrite':
-        return `
-Rewrite the following article content to make it clearer,
-more natural, professional, and readable.
-
-Preserve the original meaning and factual claims.
-Do not invent facts.
-Do not add introductory commentary.
-Return only the rewritten article content.
-
-${articleTitle}
-${keyword}
-
-Content:
-${content}
-        `.trim();
-
-      case 'shorten':
-        return `
-Shorten the following article content while preserving
-the important information, meaning, and factual claims.
-
-Remove repetition and unnecessary wording.
-Do not invent facts.
-Return only the shortened content.
-
-${articleTitle}
-${keyword}
-
-Content:
-${content}
-        `.trim();
-
-      case 'expand':
-        return `
-Improve and expand the following article content.
-
-Add useful explanation where appropriate while preserving
-the original meaning.
-Do not invent specific facts, statistics, quotations,
-events, or sources.
-Do not add unnecessary repetition.
-Return only the expanded article content.
-
-${articleTitle}
-${keyword}
-
-Content:
-${content}
-        `.trim();
-
-      case 'seo':
-        return `
-Analyze the following article for search-engine optimization
-and provide practical recommendations.
+    if (action === 'seo') {
+      return `
+Analyze the following article for practical search-engine optimization improvements.
 
 Return exactly these sections:
 
@@ -151,21 +153,29 @@ INTERNAL LINK OPPORTUNITIES:
 READABILITY RECOMMENDATIONS:
 
 Do not claim that any recommendation guarantees search ranking.
-Do not invent factual information.
+Do not invent facts, sources, statistics, links, events, or quotations.
+Base every recommendation on the supplied article.
 
 ${articleTitle}
+
+${articleSubtitle}
+
+${articleDescription}
+
 ${keyword}
 
-Content:
-${content}
-        `.trim();
+Article:
 
-      case 'headings':
-        return `
-Analyze the following article and suggest a clear heading
-structure.
+${content}
+      `.trim();
+    }
+
+    if (action === 'headings') {
+      return `
+Analyze the following article and suggest a clear heading structure.
 
 Return a simple hierarchy using:
+
 H1:
 H2:
 H3:
@@ -175,31 +185,134 @@ Do not invent facts.
 Use headings that accurately describe the existing content.
 
 ${articleTitle}
+
+${articleSubtitle}
+
+${articleDescription}
+
 ${keyword}
 
-Content:
+Article:
+
 ${content}
+      `.trim();
+    }
+
+    const targetInstructions = this.getTargetInstructions(target);
+
+    const actionInstructions = this.getActionInstructions(action);
+
+    return `
+${actionInstructions}
+
+${targetInstructions}
+
+Preserve the author's meaning and factual claims.
+Do not invent facts, statistics, quotations, sources, events, names,
+numbers, or dates.
+
+${articleTitle}
+
+${articleSubtitle}
+
+${articleDescription}
+
+${keyword}
+
+Content to process:
+
+${content}
+    `.trim();
+  }
+
+  private getTargetInstructions(target: AiTarget): string {
+    switch (target) {
+      case 'title':
+        return `
+The target is the article title.
+
+Return only the improved title as plain text.
+Keep it concise and suitable as an article title.
+Do not return quotation marks, labels, explanations, or Markdown.
+        `.trim();
+
+      case 'subtitle':
+        return `
+The target is the article subtitle.
+
+Return only the improved subtitle as plain text.
+Keep it concise and suitable for a subtitle under the article title.
+Do not return quotation marks, labels, explanations, or Markdown.
+        `.trim();
+
+      case 'description':
+        return `
+The target is the article description.
+
+Return only the improved description as plain text.
+Keep it clear, natural, informative, and suitable as an article introduction.
+Do not return quotation marks, labels, explanations, or Markdown.
+        `.trim();
+
+      case 'whole-article':
+      default:
+        return `
+The target is the complete article body.
+
+The input may contain HTML generated by a rich-text editor.
+Preserve meaningful HTML structure such as paragraphs, headings,
+lists, blockquotes, links, images, and inline formatting.
+
+Return only the article HTML.
+Do not wrap the response in Markdown code fences.
+Do not add commentary before or after the article.
+Do not introduce unsupported CSS or JavaScript.
+        `.trim();
+    }
+  }
+
+  private getActionInstructions(action: string): string {
+    switch (action) {
+      case 'rewrite':
+        return `
+Rewrite the target to make it clearer, more natural,
+professional, and readable.
+
+Preserve the original meaning and factual claims.
+        `.trim();
+
+      case 'shorten':
+        return `
+Shorten the target while preserving its important information,
+meaning, and factual claims.
+
+Remove repetition and unnecessary wording.
+        `.trim();
+
+      case 'expand':
+        return `
+Improve and expand the target where appropriate.
+
+Add useful explanation only when it can be supported by the
+information already supplied. Do not pad the content.
         `.trim();
 
       case 'improve':
       default:
         return `
-Improve the following article content for grammar,
-clarity, readability, spelling, punctuation, and natural
-expression.
+Improve the target for grammar, clarity, readability, spelling,
+punctuation, and natural expression.
 
-Preserve the author's meaning and factual claims.
-Do not invent facts.
-Do not change names, numbers, dates, quotations, or claims
-unless correcting an obvious language error.
-Return only the improved content.
-
-${articleTitle}
-${keyword}
-
-Content:
-${content}
+Do not change factual claims unless correcting an obvious
+language error.
         `.trim();
     }
+  }
+
+  private cleanModelOutput(value: string): string {
+    return value
+      .replace(/^```(?:html|HTML|text|markdown)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
   }
 }

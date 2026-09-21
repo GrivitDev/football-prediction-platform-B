@@ -52,6 +52,31 @@ export class Article {
   title!: string;
 
   @Prop({
+    trim: true,
+    maxlength: 300,
+    default: null,
+  })
+  subtitle!: string | null;
+
+  @Prop({
+    trim: true,
+    maxlength: 500,
+    default: null,
+  })
+  description!: string | null;
+
+  /**
+   * Legacy field retained for existing articles.
+   * New articles should use `description`.
+   */
+  @Prop({
+    trim: true,
+    maxlength: 500,
+    default: null,
+  })
+  excerpt!: string | null;
+
+  @Prop({
     required: true,
     trim: true,
     lowercase: true,
@@ -59,13 +84,6 @@ export class Article {
     index: true,
   })
   slug!: string;
-
-  @Prop({
-    trim: true,
-    maxlength: 500,
-    default: null,
-  })
-  excerpt!: string | null;
 
   @Prop({
     required: true,
@@ -165,6 +183,8 @@ ArticleSchema.index({
 
 ArticleSchema.index({
   title: 'text',
+  subtitle: 'text',
+  description: 'text',
   excerpt: 'text',
   content: 'text',
   tags: 'text',

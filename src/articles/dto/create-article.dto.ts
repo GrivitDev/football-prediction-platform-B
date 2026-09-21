@@ -18,13 +18,27 @@ export class CreateArticleDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(200)
-  slug?: string;
+  @MaxLength(300)
+  subtitle?: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(500)
+  description?: string;
+
+  /**
+   * Legacy field kept for compatibility with existing articles.
+   * New articles should use `description`.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   excerpt?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  slug?: string;
 
   @IsString()
   @MinLength(1)

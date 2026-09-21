@@ -50,23 +50,41 @@ export class ArticleService {
 
     const article = new this.articleModel({
       title: dto.title.trim(),
-      slug,
+
+      subtitle: dto.subtitle?.trim() || null,
+
+      description: dto.description?.trim() || null,
+
+      // Legacy compatibility field.
       excerpt: dto.excerpt?.trim() || null,
+
+      slug,
+
       content,
+
       authorId: normalizedAuthorId,
+
       featuredImageUrl: dto.featuredImageUrl || null,
+
       featuredImageAlt: dto.featuredImageAlt?.trim() || null,
+
       featuredImagePublicId: dto.featuredImagePublicId || null,
+
       seo: {
         title: dto.seoTitle?.trim() || null,
         description: dto.seoDescription?.trim() || null,
         focusKeyword: dto.focusKeyword?.trim() || null,
         canonicalUrl: dto.canonicalUrl?.trim() || null,
       },
+
       tags: this.normalizeTags(dto.tags),
+
       status,
+
       publishedAt,
+
       wordCount,
+
       readingTimeMinutes,
     });
 
@@ -123,7 +141,7 @@ export class ArticleService {
     ]);
 
     return {
-      data: data,
+      data,
       total,
       page,
       limit,
@@ -173,7 +191,7 @@ export class ArticleService {
     ]);
 
     return {
-      data: data,
+      data,
       total,
       page,
       limit,
@@ -235,6 +253,14 @@ export class ArticleService {
       article.title = dto.title.trim();
     }
 
+    if (dto.subtitle !== undefined) {
+      article.subtitle = dto.subtitle.trim() || null;
+    }
+
+    if (dto.description !== undefined) {
+      article.description = dto.description.trim() || null;
+    }
+
     if (dto.slug !== undefined) {
       article.slug = await this.generateUniqueSlug(
         dto.slug,
@@ -242,6 +268,7 @@ export class ArticleService {
       );
     }
 
+    // Legacy compatibility field.
     if (dto.excerpt !== undefined) {
       article.excerpt = dto.excerpt.trim() || null;
     }
@@ -519,17 +546,71 @@ export class ArticleService {
         'tr',
         'th',
         'td',
+        'span',
       ],
+
       allowedAttributes: {
+        p: ['style'],
+        h1: ['style'],
+        h2: ['style'],
+        h3: ['style'],
+        h4: ['style'],
+        h5: ['style'],
+        h6: ['style'],
+        span: ['style'],
+
         a: ['href', 'target', 'rel', 'title'],
+
         img: ['src', 'alt', 'title', 'width', 'height'],
+
         th: ['colspan', 'rowspan'],
+
         td: ['colspan', 'rowspan'],
       },
+
+      allowedStyles: {
+        p: {
+          'text-align': [/^(left|center|right|justify)$/i],
+        },
+
+        h1: {
+          'text-align': [/^(left|center|right|justify)$/i],
+        },
+
+        h2: {
+          'text-align': [/^(left|center|right|justify)$/i],
+        },
+
+        h3: {
+          'text-align': [/^(left|center|right|justify)$/i],
+        },
+
+        h4: {
+          'text-align': [/^(left|center|right|justify)$/i],
+        },
+
+        h5: {
+          'text-align': [/^(left|center|right|justify)$/i],
+        },
+
+        h6: {
+          'text-align': [/^(left|center|right|justify)$/i],
+        },
+
+        span: {
+          'font-family': [
+            /^(Arial|Georgia|Times New Roman|Verdana|Tahoma|Trebuchet MS|Courier New|serif|sans-serif|monospace|system-ui)$/i,
+          ],
+          'font-size': [/^(12|14|16|18|20|22|24|26|28|30|32)px$/i],
+        },
+      },
+
       allowedSchemes: ['http', 'https', 'mailto'],
+
       allowedSchemesByTag: {
         img: ['http', 'https'],
       },
+
       allowProtocolRelative: false,
     });
   }

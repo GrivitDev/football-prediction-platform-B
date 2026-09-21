@@ -94,7 +94,10 @@ export class ArticleController {
     return this.articleWritingService.process(
       dto.content,
       dto.action,
+      dto.target,
       dto.title,
+      dto.subtitle,
+      dto.description,
       dto.focusKeyword,
     );
   }
