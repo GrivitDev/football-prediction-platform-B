@@ -12,6 +12,7 @@ export type ArticleDocument = HydratedDocument<Article>;
 })
 export class ArticleSeo {
   @Prop({
+    type: String,
     trim: true,
     maxlength: 70,
     default: null,
@@ -19,6 +20,7 @@ export class ArticleSeo {
   title!: string | null;
 
   @Prop({
+    type: String,
     trim: true,
     maxlength: 170,
     default: null,
@@ -26,12 +28,14 @@ export class ArticleSeo {
   description!: string | null;
 
   @Prop({
+    type: String,
     trim: true,
     default: null,
   })
   focusKeyword!: string | null;
 
   @Prop({
+    type: String,
     trim: true,
     default: null,
   })
@@ -45,6 +49,7 @@ export const ArticleSeoSchema = SchemaFactory.createForClass(ArticleSeo);
 })
 export class Article {
   @Prop({
+    type: String,
     required: true,
     trim: true,
     maxlength: 200,
@@ -52,6 +57,7 @@ export class Article {
   title!: string;
 
   @Prop({
+    type: String,
     trim: true,
     maxlength: 300,
     default: null,
@@ -59,6 +65,7 @@ export class Article {
   subtitle!: string | null;
 
   @Prop({
+    type: String,
     trim: true,
     maxlength: 500,
     default: null,
@@ -70,6 +77,7 @@ export class Article {
    * New articles should use `description`.
    */
   @Prop({
+    type: String,
     trim: true,
     maxlength: 500,
     default: null,
@@ -77,6 +85,7 @@ export class Article {
   excerpt!: string | null;
 
   @Prop({
+    type: String,
     required: true,
     trim: true,
     lowercase: true,
@@ -86,18 +95,20 @@ export class Article {
   slug!: string;
 
   @Prop({
+    type: String,
     required: true,
   })
   content!: string;
 
   @Prop({
-    required: true,
     type: Types.ObjectId,
+    required: true,
     index: true,
   })
   authorId!: Types.ObjectId;
 
   @Prop({
+    type: String,
     trim: true,
     maxlength: 1000,
     default: null,
@@ -105,6 +116,7 @@ export class Article {
   featuredImageUrl!: string | null;
 
   @Prop({
+    type: String,
     trim: true,
     maxlength: 255,
     default: null,
@@ -112,6 +124,7 @@ export class Article {
   featuredImageAlt!: string | null;
 
   @Prop({
+    type: String,
     trim: true,
     maxlength: 500,
     default: null,
