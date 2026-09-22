@@ -1,5 +1,3 @@
-// src/articles/services/article-seo.service.ts
-
 import { Injectable } from '@nestjs/common';
 
 import { AnalyzeArticleDto } from '../dto/analyze-article.dto';
@@ -14,7 +12,9 @@ export interface SeoCheckResult {
 
 export interface ArticleSeoAnalysis {
   score: number;
+
   checks: SeoCheckResult[];
+
   metrics: {
     wordCount: number;
     headingCount: number;
@@ -33,14 +33,19 @@ export interface ArticleSeoAnalysis {
 export class ArticleSeoService {
   analyze(dto: AnalyzeArticleDto): ArticleSeoAnalysis {
     const plainText = this.stripHtml(dto.content);
+
     const normalizedText = plainText.toLowerCase();
 
     const wordCount = this.calculateWordCount(plainText);
+
     const headingCount = this.countMatches(dto.content, /<h[1-6]\b[^>]*>/gi);
+
     const h1Count = this.countMatches(dto.content, /<h1\b[^>]*>/gi);
+
     const paragraphCount = this.countMatches(dto.content, /<p\b[^>]*>/gi);
 
     const links = this.extractLinks(dto.content);
+
     const imageData = this.analyzeImages(dto.content);
 
     const focusKeyword = dto.focusKeyword?.trim().toLowerCase() || '';
@@ -53,18 +58,26 @@ export class ArticleSeoService {
 
     checks.push(
       this.checkSeoTitle(dto.seoTitle),
+
       this.checkMetaDescription(dto.seoDescription),
+
       this.checkSlug(dto.slug),
+
       this.checkFocusKeyword(
         focusKeyword,
         dto.seoTitle,
         dto.title,
         normalizedText,
       ),
+
       this.checkWordCount(wordCount),
+
       this.checkHeadingStructure(headingCount, h1Count),
+
       this.checkInternalLinks(links.internal),
+
       this.checkImages(imageData.count, imageData.withoutAlt),
+
       this.checkCanonicalUrl(dto.canonicalUrl),
     );
 
@@ -72,17 +85,28 @@ export class ArticleSeoService {
 
     return {
       score,
+
       checks,
+
       metrics: {
         wordCount,
+
         headingCount,
+
         h1Count,
+
         paragraphCount,
+
         linkCount: links.total,
+
         internalLinkCount: links.internal,
+
         externalLinkCount: links.external,
+
         imageCount: imageData.count,
+
         imagesWithoutAlt: imageData.withoutAlt,
+
         focusKeywordCount,
       },
     };
@@ -94,9 +118,13 @@ export class ArticleSeoService {
     if (!value) {
       return {
         key: 'seo-title',
+
         passed: false,
+
         label: 'SEO title',
+
         message: 'No SEO title has been provided.',
+
         recommendation: 'Add a clear SEO title relevant to the article topic.',
       };
     }
@@ -104,19 +132,28 @@ export class ArticleSeoService {
     if (value.length < 30) {
       return {
         key: 'seo-title',
+
         passed: false,
+
         label: 'SEO title',
+
         message: 'The SEO title is very short.',
-        recommendation: 'Consider making the title more descriptive.',
+
+        recommendation:
+          'Consider making the title more descriptive while keeping it concise.',
       };
     }
 
     if (value.length > 60) {
       return {
         key: 'seo-title',
+
         passed: false,
+
         label: 'SEO title',
+
         message: 'The SEO title is long.',
+
         recommendation:
           'Consider shortening it while keeping the main topic clear.',
       };
@@ -124,8 +161,11 @@ export class ArticleSeoService {
 
     return {
       key: 'seo-title',
+
       passed: true,
+
       label: 'SEO title',
+
       message: 'SEO title length is within the recommended editorial range.',
     };
   }
@@ -136,9 +176,13 @@ export class ArticleSeoService {
     if (!value) {
       return {
         key: 'meta-description',
+
         passed: false,
+
         label: 'Meta description',
+
         message: 'No meta description has been provided.',
+
         recommendation:
           'Add a concise description that explains what the article covers.',
       };
@@ -147,9 +191,13 @@ export class ArticleSeoService {
     if (value.length < 120) {
       return {
         key: 'meta-description',
+
         passed: false,
+
         label: 'Meta description',
+
         message: 'The meta description is short.',
+
         recommendation:
           'Consider adding enough detail to clearly summarize the article.',
       };
@@ -158,9 +206,13 @@ export class ArticleSeoService {
     if (value.length > 170) {
       return {
         key: 'meta-description',
+
         passed: false,
+
         label: 'Meta description',
+
         message: 'The meta description is long.',
+
         recommendation:
           'Consider shortening the description while preserving its meaning.',
       };
@@ -168,8 +220,11 @@ export class ArticleSeoService {
 
     return {
       key: 'meta-description',
+
       passed: true,
+
       label: 'Meta description',
+
       message:
         'Meta description length is within the recommended editorial range.',
     };
@@ -181,29 +236,40 @@ export class ArticleSeoService {
     if (!value) {
       return {
         key: 'slug',
+
         passed: false,
+
         label: 'URL slug',
+
         message: 'No article slug has been provided.',
+
         recommendation: 'Use a short, descriptive, readable URL slug.',
       };
     }
 
-    const validSlug = /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(value);
+    const validSlug = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
 
     if (!validSlug) {
       return {
         key: 'slug',
+
         passed: false,
+
         label: 'URL slug',
+
         message: 'The slug contains unnecessary characters or formatting.',
+
         recommendation: 'Use lowercase words separated by hyphens.',
       };
     }
 
     return {
       key: 'slug',
+
       passed: true,
+
       label: 'URL slug',
+
       message: 'The URL slug is clean and readable.',
     };
   }
@@ -217,9 +283,13 @@ export class ArticleSeoService {
     if (!focusKeyword) {
       return {
         key: 'focus-keyword',
+
         passed: false,
+
         label: 'Focus keyword',
+
         message: 'No focus keyword has been provided.',
+
         recommendation:
           'Define the main search phrase the article is intended to target.',
       };
@@ -231,9 +301,13 @@ export class ArticleSeoService {
     if (!title.includes(focusKeyword)) {
       return {
         key: 'focus-keyword',
+
         passed: false,
+
         label: 'Focus keyword',
+
         message: 'The focus keyword does not appear in the article title.',
+
         recommendation:
           'Consider naturally incorporating the primary phrase into the title.',
       };
@@ -242,9 +316,13 @@ export class ArticleSeoService {
     if (!normalizedText.includes(focusKeyword)) {
       return {
         key: 'focus-keyword',
+
         passed: false,
+
         label: 'Focus keyword',
+
         message: 'The focus keyword does not appear in the article content.',
+
         recommendation:
           'Use the phrase naturally where it is genuinely relevant.',
       };
@@ -252,8 +330,11 @@ export class ArticleSeoService {
 
     return {
       key: 'focus-keyword',
+
       passed: true,
+
       label: 'Focus keyword',
+
       message:
         'The focus keyword appears in both the title and article content.',
     };
@@ -263,9 +344,13 @@ export class ArticleSeoService {
     if (wordCount < 300) {
       return {
         key: 'word-count',
+
         passed: false,
+
         label: 'Content length',
+
         message: `The article currently contains ${wordCount} words.`,
+
         recommendation:
           'Consider expanding the article where additional useful information is appropriate.',
       };
@@ -273,8 +358,11 @@ export class ArticleSeoService {
 
     return {
       key: 'word-count',
+
       passed: true,
+
       label: 'Content length',
+
       message: `The article contains ${wordCount} words.`,
     };
   }
@@ -286,9 +374,13 @@ export class ArticleSeoService {
     if (h1Count !== 1) {
       return {
         key: 'heading-structure',
+
         passed: false,
+
         label: 'Heading structure',
+
         message: `The article contains ${h1Count} H1 headings.`,
+
         recommendation:
           'Use a single primary H1 and organize the remaining content with H2 and H3 headings.',
       };
@@ -297,9 +389,13 @@ export class ArticleSeoService {
     if (headingCount < 2) {
       return {
         key: 'heading-structure',
+
         passed: false,
+
         label: 'Heading structure',
+
         message: 'The article has very few headings.',
+
         recommendation:
           'Add useful subheadings where they improve readability and organization.',
       };
@@ -307,8 +403,11 @@ export class ArticleSeoService {
 
     return {
       key: 'heading-structure',
+
       passed: true,
+
       label: 'Heading structure',
+
       message: 'The article has a primary H1 and supporting headings.',
     };
   }
@@ -317,9 +416,13 @@ export class ArticleSeoService {
     if (internalLinkCount === 0) {
       return {
         key: 'internal-links',
+
         passed: false,
+
         label: 'Internal links',
+
         message: 'No internal links were detected.',
+
         recommendation:
           'Add relevant internal links to useful pages or related articles.',
       };
@@ -327,8 +430,11 @@ export class ArticleSeoService {
 
     return {
       key: 'internal-links',
+
       passed: true,
+
       label: 'Internal links',
+
       message: `${internalLinkCount} internal link(s) were detected.`,
     };
   }
@@ -340,9 +446,13 @@ export class ArticleSeoService {
     if (imageCount === 0) {
       return {
         key: 'images',
+
         passed: false,
+
         label: 'Images',
+
         message: 'No images were detected in the article.',
+
         recommendation:
           'Consider adding relevant imagery when it improves the article.',
       };
@@ -351,17 +461,24 @@ export class ArticleSeoService {
     if (imagesWithoutAlt > 0) {
       return {
         key: 'images',
+
         passed: false,
+
         label: 'Image accessibility',
+
         message: `${imagesWithoutAlt} image(s) are missing ALT text.`,
+
         recommendation: 'Add descriptive ALT text to relevant images.',
       };
     }
 
     return {
       key: 'images',
+
       passed: true,
+
       label: 'Image accessibility',
+
       message: 'All detected images contain ALT text.',
     };
   }
@@ -370,9 +487,13 @@ export class ArticleSeoService {
     if (!canonicalUrl?.trim()) {
       return {
         key: 'canonical-url',
+
         passed: false,
+
         label: 'Canonical URL',
+
         message: 'No canonical URL has been provided.',
+
         recommendation:
           'Provide a canonical URL when the article requires an explicit canonical reference.',
       };
@@ -380,8 +501,11 @@ export class ArticleSeoService {
 
     return {
       key: 'canonical-url',
+
       passed: true,
+
       label: 'Canonical URL',
+
       message: 'A canonical URL has been provided.',
     };
   }
@@ -401,6 +525,7 @@ export class ArticleSeoService {
     withoutAlt: number;
   } {
     const imagePattern = /<img\b[^>]*>/gi;
+
     const images = content.match(imagePattern) || [];
 
     let withoutAlt = 0;
@@ -415,6 +540,7 @@ export class ArticleSeoService {
 
     return {
       count: images.length,
+
       withoutAlt,
     };
   }
@@ -443,6 +569,7 @@ export class ArticleSeoService {
 
       if (href.startsWith('/') || href.startsWith('#')) {
         internal += 1;
+
         continue;
       }
 
@@ -453,7 +580,9 @@ export class ArticleSeoService {
 
     return {
       total,
+
       internal,
+
       external,
     };
   }
@@ -491,6 +620,7 @@ export class ArticleSeoService {
     }
 
     let count = 0;
+
     let position = 0;
 
     while (true) {
@@ -501,6 +631,7 @@ export class ArticleSeoService {
       }
 
       count += 1;
+
       position = index + search.length;
     }
 

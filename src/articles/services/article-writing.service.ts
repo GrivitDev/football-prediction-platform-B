@@ -11,6 +11,8 @@ import {
   sanitizeArticlePlainText,
 } from '../utils/article-html.util';
 
+import type { ArticleSeoAnalysis } from './article-seo.service';
+
 type AiTarget = 'whole-article' | 'title' | 'subtitle' | 'description';
 
 type AiAction =
@@ -25,23 +27,35 @@ type AiAction =
 
 export interface AiSeoSuggestion {
   seoTitle: string;
+
   seoDescription: string;
+
   suggestedSlug: string;
+
   focusKeyword: string;
+
+  revisedContentHtml: string;
+
+  changes: string[];
+
+  unresolvedIssues: string[];
 }
 
 export interface AiHeadingItem {
   level: 1 | 2 | 3;
+
   text: string;
 }
 
 export interface AiHeadingsSuggestion {
   headings: AiHeadingItem[];
+
   revisedContentHtml: string;
 }
 
 interface GroqChatResponse {
   id?: string;
+
   model?: string;
 
   choices?: Array<{
@@ -49,6 +63,7 @@ interface GroqChatResponse {
 
     message?: {
       role?: string;
+
       content?: string | null;
     };
 
@@ -57,7 +72,9 @@ interface GroqChatResponse {
 
   error?: {
     message?: string;
+
     type?: string;
+
     code?: string;
   };
 }
@@ -67,6 +84,7 @@ interface GroqResponseFormat {
 
   json_schema: {
     name: string;
+
     strict: true;
 
     schema: Record<string, unknown>;
@@ -75,8 +93,11 @@ interface GroqResponseFormat {
 
 export interface AiProcessResult {
   result: string;
+
   model: string;
+
   seo?: AiSeoSuggestion;
+
   headings?: AiHeadingsSuggestion;
 }
 
@@ -85,11 +106,13 @@ export class ArticleWritingService {
   private readonly logger = new Logger(ArticleWritingService.name);
 
   private readonly apiKey: string;
+
   private readonly model: string;
 
   private readonly baseUrl = 'https://api.groq.com/openai/v1/chat/completions';
 
   private readonly maxRetries = 3;
+
   private readonly requestTimeoutMs = 90_000;
 
   constructor(private readonly configService: ConfigService) {
@@ -106,12 +129,28 @@ export class ArticleWritingService {
 
   async process(
     content: string,
+
     action: AiAction,
+
     target: AiTarget = 'whole-article',
+
     title?: string,
+
     subtitle?: string,
+
     description?: string,
+
     focusKeyword?: string,
+
+    slug?: string,
+
+    seoTitle?: string,
+
+    seoDescription?: string,
+
+    canonicalUrl?: string,
+
+    seoAnalysis?: ArticleSeoAnalysis,
   ): Promise<AiProcessResult> {
     const normalizedContent = content.trim();
 
@@ -146,14 +185,36 @@ export class ArticleWritingService {
       );
     }
 
+    if (action === 'seo' && !seoAnalysis) {
+      throw new ServiceUnavailableException(
+        'SEO analysis data was not supplied to the AI service.',
+      );
+    }
+
     const prompt = this.buildPrompt(
       normalizedContent,
+
       action,
+
       target,
+
       title,
+
       subtitle,
+
       description,
+
       focusKeyword,
+
+      slug,
+
+      seoTitle,
+
+      seoDescription,
+
+      canonicalUrl,
+
+      seoAnalysis,
     );
 
     const responseFormat = this.getResponseFormat(action);
@@ -161,17 +222,24 @@ export class ArticleWritingService {
     this.logger.log(
       [
         'Groq request started:',
+
         `action=${action}`,
+
         `target=${target}`,
+
         `model=${this.model}`,
+
         `structured=${responseFormat ? 'yes' : 'no'}`,
       ].join(' '),
     );
 
     const rawResult = await this.generateWithRetry(
       prompt,
+
       action,
+
       target,
+
       responseFormat,
     );
 
@@ -198,22 +266,20 @@ export class ArticleWritingService {
       );
     }
 
-    this.logger.log(
-      ['Groq request completed:', `action=${action}`, `target=${target}`].join(
-        ' ',
-      ),
-    );
-
     return {
       result,
+
       model: this.model,
     };
   }
 
   private async generateWithRetry(
     prompt: string,
+
     action: AiAction,
+
     target: AiTarget,
+
     responseFormat?: GroqResponseFormat,
   ): Promise<string> {
     let lastError: unknown;
@@ -241,10 +307,15 @@ export class ArticleWritingService {
         this.logger.error(
           [
             `Groq attempt ${attempt} failed.`,
+
             `status=${status ?? 'unknown'}`,
+
             `action=${action}`,
+
             `target=${target}`,
+
             `model=${this.model}`,
+
             `message=${message}`,
           ].join(' | '),
         );
@@ -284,8 +355,6 @@ export class ArticleWritingService {
 
         const delay = this.getRetryDelay(attempt);
 
-        this.logger.warn(`Retrying Groq request in ${delay}ms.`);
-
         await this.sleep(delay);
       }
     }
@@ -301,52 +370,64 @@ export class ArticleWritingService {
 
   private async requestGroq(
     prompt: string,
+
     responseFormat?: GroqResponseFormat,
   ): Promise<GroqChatResponse> {
     const controller = new AbortController();
 
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, this.requestTimeoutMs);
+    const timeout = setTimeout(
+      () => {
+        controller.abort();
+      },
+
+      this.requestTimeoutMs,
+    );
 
     try {
-      const response = await fetch(this.baseUrl, {
-        method: 'POST',
+      const response = await fetch(
+        this.baseUrl,
 
-        headers: {
-          'Content-Type': 'application/json',
+        {
+          method: 'POST',
 
-          Authorization: `Bearer ${this.apiKey}`,
+          headers: {
+            'Content-Type': 'application/json',
+
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+
+          body: JSON.stringify({
+            model: this.model,
+
+            messages: [
+              {
+                role: 'system',
+
+                content:
+                  'You are a professional football article writing assistant. Follow the user instructions exactly. Produce natural, original editorial writing. Never invent factual claims. Return only the requested output.',
+              },
+
+              {
+                role: 'user',
+
+                content: prompt,
+              },
+            ],
+
+            max_tokens: 12_000,
+
+            temperature: 0.45,
+
+            ...(responseFormat
+              ? {
+                  response_format: responseFormat,
+                }
+              : {}),
+          }),
+
+          signal: controller.signal,
         },
-
-        body: JSON.stringify({
-          model: this.model,
-
-          messages: [
-            {
-              role: 'system',
-              content:
-                'You are a professional football article writing assistant. Follow the user instructions exactly. Produce natural, original editorial writing. Never invent factual claims. Return only the requested output.',
-            },
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-
-          max_tokens: 12_000,
-
-          temperature: 0.45,
-
-          ...(responseFormat
-            ? {
-                response_format: responseFormat,
-              }
-            : {}),
-        }),
-
-        signal: controller.signal,
-      });
+      );
 
       const bodyText = await response.text();
 
@@ -402,7 +483,7 @@ export class ArticleWritingService {
         type: 'json_schema',
 
         json_schema: {
-          name: 'article_seo_suggestions',
+          name: 'article_seo_corrections',
 
           strict: true,
 
@@ -437,6 +518,26 @@ export class ArticleWritingService {
                   focusKeyword: {
                     type: 'string',
                   },
+
+                  revisedContentHtml: {
+                    type: 'string',
+                  },
+
+                  changes: {
+                    type: 'array',
+
+                    items: {
+                      type: 'string',
+                    },
+                  },
+
+                  unresolvedIssues: {
+                    type: 'array',
+
+                    items: {
+                      type: 'string',
+                    },
+                  },
                 },
 
                 required: [
@@ -444,6 +545,9 @@ export class ArticleWritingService {
                   'seoDescription',
                   'suggestedSlug',
                   'focusKeyword',
+                  'revisedContentHtml',
+                  'changes',
+                  'unresolvedIssues',
                 ],
               },
             },
@@ -527,48 +631,91 @@ export class ArticleWritingService {
 
       seo?: {
         seoTitle?: unknown;
+
         seoDescription?: unknown;
+
         suggestedSlug?: unknown;
+
         focusKeyword?: unknown;
+
+        revisedContentHtml?: unknown;
+
+        changes?: unknown;
+
+        unresolvedIssues?: unknown;
       };
     };
 
     const result = sanitizeArticlePlainText(String(parsed.result || ''));
 
-    const seo = {
-      seoTitle: sanitizeArticlePlainText(String(parsed.seo?.seoTitle || '')),
+    const seoTitle = sanitizeArticlePlainText(
+      String(parsed.seo?.seoTitle || ''),
+    );
 
-      seoDescription: sanitizeArticlePlainText(
-        String(parsed.seo?.seoDescription || ''),
-      ),
+    const seoDescription = sanitizeArticlePlainText(
+      String(parsed.seo?.seoDescription || ''),
+    );
 
-      suggestedSlug: sanitizeArticlePlainText(
-        String(parsed.seo?.suggestedSlug || ''),
-      ),
+    const suggestedSlug = sanitizeArticlePlainText(
+      String(parsed.seo?.suggestedSlug || ''),
+    )
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
 
-      focusKeyword: sanitizeArticlePlainText(
-        String(parsed.seo?.focusKeyword || ''),
-      ),
-    };
+    const focusKeyword = sanitizeArticlePlainText(
+      String(parsed.seo?.focusKeyword || ''),
+    );
+
+    const revisedContentHtml = sanitizeArticleHtml(
+      String(parsed.seo?.revisedContentHtml || ''),
+    );
+
+    const changes = Array.isArray(parsed.seo?.changes)
+      ? parsed.seo.changes
+          .map((value) => sanitizeArticlePlainText(String(value)))
+          .filter(Boolean)
+      : [];
+
+    const unresolvedIssues = Array.isArray(parsed.seo?.unresolvedIssues)
+      ? parsed.seo.unresolvedIssues
+          .map((value) => sanitizeArticlePlainText(String(value)))
+          .filter(Boolean)
+      : [];
 
     if (
       !result ||
-      !seo.seoTitle ||
-      !seo.seoDescription ||
-      !seo.suggestedSlug ||
-      !seo.focusKeyword
+      !seoTitle ||
+      !seoDescription ||
+      !suggestedSlug ||
+      !focusKeyword ||
+      !revisedContentHtml
     ) {
       throw new ServiceUnavailableException(
-        'The AI service returned incomplete SEO suggestions.',
+        'The AI service returned incomplete SEO corrections.',
       );
     }
 
-    this.logger.log('Structured AI SEO response validated successfully.');
-
     return {
       result,
+
       model: this.model,
-      seo,
+
+      seo: {
+        seoTitle,
+
+        seoDescription,
+
+        suggestedSlug,
+
+        focusKeyword,
+
+        revisedContentHtml,
+
+        changes,
+
+        unresolvedIssues,
+      },
     };
   }
 
@@ -579,6 +726,7 @@ export class ArticleWritingService {
       headings?: {
         headings?: Array<{
           level?: unknown;
+
           text?: unknown;
         }>;
 
@@ -622,16 +770,14 @@ export class ArticleWritingService {
       );
     }
 
-    this.logger.log(
-      `Structured AI heading response validated successfully: headings=${headings.length}`,
-    );
-
     return {
       result,
+
       model: this.model,
 
       headings: {
         headings,
+
         revisedContentHtml,
       },
     };
@@ -643,10 +789,6 @@ export class ArticleWritingService {
     try {
       return JSON.parse(cleaned);
     } catch {
-      this.logger.error(
-        'Groq returned structured output that could not be parsed as JSON.',
-      );
-
       throw new ServiceUnavailableException(
         'The AI service returned an invalid structured response. Please try again.',
       );
@@ -746,12 +888,28 @@ export class ArticleWritingService {
 
   private buildPrompt(
     content: string,
+
     action: AiAction,
+
     target: AiTarget,
+
     title?: string,
+
     subtitle?: string,
+
     description?: string,
+
     focusKeyword?: string,
+
+    slug?: string,
+
+    seoTitle?: string,
+
+    seoDescription?: string,
+
+    canonicalUrl?: string,
+
+    seoAnalysis?: ArticleSeoAnalysis,
   ): string {
     const articleTitle = title?.trim() ? `Article title: ${title.trim()}` : '';
 
@@ -767,6 +925,20 @@ export class ArticleWritingService {
       ? `Focus keyword: ${focusKeyword.trim()}`
       : '';
 
+    const currentSlug = slug?.trim() ? `Current slug: ${slug.trim()}` : '';
+
+    const currentSeoTitle = seoTitle?.trim()
+      ? `Current SEO title: ${seoTitle.trim()}`
+      : '';
+
+    const currentSeoDescription = seoDescription?.trim()
+      ? `Current SEO description: ${seoDescription.trim()}`
+      : '';
+
+    const currentCanonical = canonicalUrl?.trim()
+      ? `Current canonical URL: ${canonicalUrl.trim()}`
+      : '';
+
     if (action === 'generate') {
       return this.buildGenerationPrompt(
         content,
@@ -779,39 +951,38 @@ export class ArticleWritingService {
     }
 
     if (action === 'seo') {
+      const analysisJson = JSON.stringify(seoAnalysis || {}, null, 2);
+
       return `
-You are assisting a football article editor with SEO.
+You are assisting a professional football article editor.
 
-Analyze the supplied article and produce practical SEO improvements.
+Your job is to correct the SEO problems identified by the platform's deterministic SEO analyzer.
 
-The response must contain:
+The SEO analyzer has already inspected the article.
 
-1. result:
-A concise human-readable explanation of the SEO recommendations.
+You MUST use its findings.
 
-2. seo.seoTitle:
-A search-friendly article SEO title.
+Do not ignore failed checks.
 
-3. seo.seoDescription:
-A concise and specific meta description.
+Do not invent facts.
 
-4. seo.suggestedSlug:
-A clean lowercase URL slug using hyphens only.
+Do not invent URLs.
 
-5. seo.focusKeyword:
-The single primary search phrase that best represents the article.
+Do not invent statistics.
 
-Requirements:
+Do not invent quotations.
 
-- Base the recommendations on the supplied article.
-- Keep the SEO title relevant to the actual article.
-- Keep the meta description truthful to the article.
-- Use a natural focus keyword.
-- Do not invent statistics, events, quotations, sources, names, dates, injuries, transfers, or other factual claims.
-- Do not claim that the recommendations guarantee rankings.
-- Do not invent internal URLs.
-- Do not include Markdown formatting in the structured fields.
-- Do not mention that you are an AI.
+Do not invent sources.
+
+Do not invent team information.
+
+Do not invent player information.
+
+Do not fabricate images.
+
+==================================================
+CURRENT ARTICLE DATA
+==================================================
 
 ${articleTitle}
 
@@ -821,9 +992,156 @@ ${articleDescription}
 
 ${keyword}
 
-Article:
+${currentSlug}
 
-${content}
+${currentSeoTitle}
+
+${currentSeoDescription}
+
+${currentCanonical}
+
+==================================================
+SEO ANALYZER RESULT
+==================================================
+
+${analysisJson}
+
+==================================================
+SEO CORRECTION RULES
+==================================================
+
+Correct every failed SEO check that can be safely corrected from
+the supplied article and metadata.
+
+SEO TITLE:
+
+- Produce one natural SEO title.
+- Keep it between 30 and 60 characters.
+- Make it directly relevant to the article.
+- Include the focus keyword naturally when appropriate.
+
+META DESCRIPTION:
+
+- Produce one truthful meta description.
+- Keep it between 120 and 170 characters.
+- Summarize the actual article.
+- Do not add facts that are not present.
+
+SLUG:
+
+- Use lowercase letters, numbers, and hyphens only.
+- Keep it concise and descriptive.
+- Do not use unnecessary words.
+
+FOCUS KEYWORD:
+
+- Use one primary search phrase.
+- Prefer the existing focus keyword when it is relevant.
+- It must appear naturally in the SEO title.
+- It must appear naturally in the article content.
+
+ARTICLE CONTENT:
+
+Return the complete revised article body as HTML.
+
+Correct the issues identified by the SEO analyzer when the correction
+can be safely made.
+
+Examples:
+
+- If word count is below the requirement, expand the article with
+  useful explanation based only on the existing subject matter.
+- If the focus keyword is absent from the body, add it naturally.
+- If heading structure is invalid, create one H1 and useful H2/H3
+  headings.
+- If images already exist without ALT text, add descriptive ALT text
+  based on the actual image context.
+- Preserve links that already exist.
+- Preserve meaningful formatting.
+- Do not invent internal URLs.
+- Do not invent external sources.
+- Do not invent canonical URLs.
+- Do not fabricate image URLs.
+
+INTERNAL LINKS:
+
+If the analyzer reports missing internal links and no valid internal
+URLs are supplied, do not create fake links.
+
+Explain this in unresolvedIssues.
+
+CANONICAL URL:
+
+If no valid canonical URL is supplied, do not invent one.
+
+Explain this in unresolvedIssues.
+
+IMAGES:
+
+Do not create fake image URLs or fake image references.
+
+If there are no images, explain that this requires editorial action
+in unresolvedIssues.
+
+==================================================
+EDITORIAL QUALITY
+==================================================
+
+Write naturally.
+
+Avoid robotic wording.
+
+Avoid keyword stuffing.
+
+Do not repeat the focus keyword unnaturally.
+
+Preserve the author's factual meaning.
+
+Do not remove useful information.
+
+Do not add unsupported claims.
+
+Do not mention that you are an AI.
+
+==================================================
+OUTPUT
+==================================================
+
+Return:
+
+1. result
+   A concise summary of what was corrected.
+
+2. seo.seoTitle
+   The corrected SEO title.
+
+3. seo.seoDescription
+   The corrected meta description.
+
+4. seo.suggestedSlug
+   The corrected slug.
+
+5. seo.focusKeyword
+   The primary focus keyword.
+
+6. seo.revisedContentHtml
+   The complete revised article body in HTML.
+
+7. seo.changes
+   A list of concrete changes actually made.
+
+8. seo.unresolvedIssues
+   A list of SEO problems that could not be safely fixed without
+   information that was not supplied.
+
+The revisedContentHtml must contain the complete article, not only
+the changed paragraphs.
+
+Do not use Markdown.
+
+Do not use Markdown code fences.
+
+Return only the structured response.
       `.trim();
     }
 
@@ -831,32 +1149,26 @@ ${content}
       return `
 You are assisting a football article editor with article structure.
 
-Analyze the supplied article and improve its heading hierarchy without changing the factual substance.
+Analyze the supplied article and improve its heading hierarchy
+without changing the factual substance.
 
 You must return:
 
-1. result:
-A concise explanation of the suggested heading structure.
-
-2. headings.headings:
-A structured heading list using only levels 1, 2, and 3.
-
-3. headings.revisedContentHtml:
-The complete article body in HTML with the improved heading structure applied.
+1. result
+2. headings.headings
+3. headings.revisedContentHtml
 
 Heading requirements:
 
-- Use exactly one H1 for the article.
+- Use exactly one H1.
 - Use H2 for major sections.
-- Use H3 only when a subsection is genuinely useful.
-- Keep headings concise, descriptive, and natural.
-- Do not invent new factual claims.
-- Do not remove meaningful article content.
-- Preserve paragraphs, lists, blockquotes, links, images, emphasis, and other meaningful formatting.
-- Only change heading structure and wording where needed.
-- Return the complete revised article HTML in revisedContentHtml.
+- Use H3 only when genuinely useful.
+- Keep headings concise and descriptive.
+- Do not invent facts.
+- Do not remove meaningful content.
+- Preserve paragraphs, lists, blockquotes, links, images and formatting.
+- Return the complete revised article HTML.
 - Do not use Markdown.
-- Do not include Markdown code fences.
 - Do not mention that you are an AI.
 
 ${articleTitle}
@@ -901,10 +1213,15 @@ ${content}
 
   private buildGenerationPrompt(
     topic: string,
+
     target: AiTarget,
+
     title?: string,
+
     subtitle?: string,
+
     description?: string,
+
     focusKeyword?: string,
   ): string {
     const articleTitle = title?.trim()

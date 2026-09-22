@@ -1,5 +1,3 @@
-// src/articles/controllers/article.controller.ts
-
 import {
   Body,
   Controller,
@@ -91,6 +89,46 @@ export class ArticleController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
   async processWithAi(@Body() dto: AiWritingDto) {
+    /*
+     * SEO is analyzer-driven.
+     *
+     * The platform performs its deterministic SEO analysis first.
+     * Groq then receives the exact failures and metrics so it can
+     * produce corrections based on the real current article state.
+     */
+    if (dto.action === 'seo') {
+      const seoAnalysis = this.articleSeoService.analyze({
+        title: dto.title?.trim() || 'Untitled article',
+
+        content: dto.content,
+
+        slug: dto.slug,
+
+        seoTitle: dto.seoTitle,
+
+        seoDescription: dto.seoDescription,
+
+        focusKeyword: dto.focusKeyword,
+
+        canonicalUrl: dto.canonicalUrl,
+      });
+
+      return this.articleWritingService.process(
+        dto.content,
+        dto.action,
+        dto.target,
+        dto.title,
+        dto.subtitle,
+        dto.description,
+        dto.focusKeyword,
+        dto.slug,
+        dto.seoTitle,
+        dto.seoDescription,
+        dto.canonicalUrl,
+        seoAnalysis,
+      );
+    }
+
     return this.articleWritingService.process(
       dto.content,
       dto.action,
@@ -99,6 +137,10 @@ export class ArticleController {
       dto.subtitle,
       dto.description,
       dto.focusKeyword,
+      dto.slug,
+      dto.seoTitle,
+      dto.seoDescription,
+      dto.canonicalUrl,
     );
   }
 

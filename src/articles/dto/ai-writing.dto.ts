@@ -1,5 +1,3 @@
-// src/articles/dto/ai-writing.dto.ts
-
 import {
   IsIn,
   IsOptional,
@@ -42,13 +40,36 @@ export class AiWritingDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(500)
+  @MaxLength(1000)
   description?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(100)
+  @MaxLength(200)
   focusKeyword?: string;
+
+  /*
+   * Current SEO state supplied to the AI.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  slug?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  seoTitle?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  seoDescription?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2048)
+  canonicalUrl?: string;
 
   @IsIn(['whole-article', 'title', 'subtitle', 'description'])
   target!: AiWritingTarget;
