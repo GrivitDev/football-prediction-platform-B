@@ -23,19 +23,19 @@ type AiAction =
   | 'seo'
   | 'headings';
 
-interface AiSeoSuggestion {
+export interface AiSeoSuggestion {
   seoTitle: string;
   seoDescription: string;
   suggestedSlug: string;
   focusKeyword: string;
 }
 
-interface AiHeadingItem {
+export interface AiHeadingItem {
   level: 1 | 2 | 3;
   text: string;
 }
 
-interface AiHeadingsSuggestion {
+export interface AiHeadingsSuggestion {
   headings: AiHeadingItem[];
   revisedContentHtml: string;
 }
@@ -73,7 +73,7 @@ interface GroqResponseFormat {
   };
 }
 
-interface AiProcessResult {
+export interface AiProcessResult {
   result: string;
   model: string;
   seo?: AiSeoSuggestion;
