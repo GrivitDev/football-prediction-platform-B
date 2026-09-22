@@ -14,7 +14,7 @@ export class ArticleSeo {
   @Prop({
     type: String,
     trim: true,
-    maxlength: 70,
+    maxlength: 300,
     default: null,
   })
   title!: string | null;
@@ -22,7 +22,7 @@ export class ArticleSeo {
   @Prop({
     type: String,
     trim: true,
-    maxlength: 170,
+    maxlength: 1000,
     default: null,
   })
   description!: string | null;
@@ -30,6 +30,7 @@ export class ArticleSeo {
   @Prop({
     type: String,
     trim: true,
+    maxlength: 200,
     default: null,
   })
   focusKeyword!: string | null;
@@ -37,6 +38,7 @@ export class ArticleSeo {
   @Prop({
     type: String,
     trim: true,
+    maxlength: 2048,
     default: null,
   })
   canonicalUrl!: string | null;
@@ -67,7 +69,7 @@ export class Article {
   @Prop({
     type: String,
     trim: true,
-    maxlength: 500,
+    maxlength: 1000,
     default: null,
   })
   description!: string | null;
@@ -79,7 +81,7 @@ export class Article {
   @Prop({
     type: String,
     trim: true,
-    maxlength: 500,
+    maxlength: 1000,
     default: null,
   })
   excerpt!: string | null;
@@ -89,6 +91,7 @@ export class Article {
     required: true,
     trim: true,
     lowercase: true,
+    maxlength: 300,
     unique: true,
     index: true,
   })

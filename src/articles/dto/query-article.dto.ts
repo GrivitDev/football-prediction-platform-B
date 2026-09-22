@@ -1,7 +1,5 @@
-// src/articles/dto/query-article.dto.ts
-
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 
 import { ArticleStatus } from '../enums/article-status.enum';
 
@@ -11,7 +9,7 @@ export class QueryArticleDto {
   search?: string;
 
   @IsOptional()
-  @IsString()
+  @IsEnum(ArticleStatus)
   status?: ArticleStatus;
 
   @IsOptional()

@@ -53,6 +53,30 @@ export interface AiHeadingsSuggestion {
   revisedContentHtml: string;
 }
 
+export interface AiGeneratedArticle {
+  title: string;
+
+  subtitle: string;
+
+  description: string;
+
+  excerpt: string;
+
+  slug: string;
+
+  seoTitle: string;
+
+  seoDescription: string;
+
+  focusKeyword: string;
+
+  canonicalUrl: string;
+
+  tags: string[];
+
+  contentHtml: string;
+}
+
 interface GroqChatResponse {
   id?: string;
 
@@ -95,6 +119,8 @@ export interface AiProcessResult {
   result: string;
 
   model: string;
+
+  generated?: AiGeneratedArticle;
 
   seo?: AiSeoSuggestion;
 
@@ -242,6 +268,10 @@ export class ArticleWritingService {
 
       responseFormat,
     );
+
+    if (action === 'generate') {
+      return this.parseGeneratedArticleResult(rawResult);
+    }
 
     if (action === 'seo') {
       return this.parseSeoResult(rawResult);
@@ -404,7 +434,7 @@ export class ArticleWritingService {
                 role: 'system',
 
                 content:
-                  'You are a professional football article writing assistant. Follow the user instructions exactly. Produce natural, original editorial writing. Never invent factual claims. Return only the requested output.',
+                  'You are a professional football article writing assistant. Follow the user instructions exactly. Produce natural, original editorial writing. Never invent factual claims. For structured requests, return only the requested JSON structure.',
               },
 
               {
@@ -478,6 +508,102 @@ export class ArticleWritingService {
   }
 
   private getResponseFormat(action: AiAction): GroqResponseFormat | undefined {
+    if (action === 'generate') {
+      return {
+        type: 'json_schema',
+
+        json_schema: {
+          name: 'generated_football_article',
+
+          strict: true,
+
+          schema: {
+            type: 'object',
+
+            additionalProperties: false,
+
+            properties: {
+              result: {
+                type: 'string',
+              },
+
+              generated: {
+                type: 'object',
+
+                additionalProperties: false,
+
+                properties: {
+                  title: {
+                    type: 'string',
+                  },
+
+                  subtitle: {
+                    type: 'string',
+                  },
+
+                  description: {
+                    type: 'string',
+                  },
+
+                  excerpt: {
+                    type: 'string',
+                  },
+
+                  slug: {
+                    type: 'string',
+                  },
+
+                  seoTitle: {
+                    type: 'string',
+                  },
+
+                  seoDescription: {
+                    type: 'string',
+                  },
+
+                  focusKeyword: {
+                    type: 'string',
+                  },
+
+                  canonicalUrl: {
+                    type: 'string',
+                  },
+
+                  tags: {
+                    type: 'array',
+
+                    items: {
+                      type: 'string',
+                    },
+                  },
+
+                  contentHtml: {
+                    type: 'string',
+                  },
+                },
+
+                required: [
+                  'title',
+                  'subtitle',
+                  'description',
+                  'excerpt',
+                  'slug',
+                  'seoTitle',
+                  'seoDescription',
+                  'focusKeyword',
+                  'canonicalUrl',
+                  'tags',
+                  'contentHtml',
+                ],
+              },
+            },
+
+            required: ['result', 'generated'],
+          },
+        },
+      };
+    }
+
     if (action === 'seo') {
       return {
         type: 'json_schema',
@@ -625,6 +751,124 @@ export class ArticleWritingService {
     return undefined;
   }
 
+  private parseGeneratedArticleResult(rawResult: string): AiProcessResult {
+    const parsed = this.parseStructuredJson(rawResult) as {
+      result?: unknown;
+
+      generated?: {
+        title?: unknown;
+
+        subtitle?: unknown;
+
+        description?: unknown;
+
+        excerpt?: unknown;
+
+        slug?: unknown;
+
+        seoTitle?: unknown;
+
+        seoDescription?: unknown;
+
+        focusKeyword?: unknown;
+
+        canonicalUrl?: unknown;
+
+        tags?: unknown;
+
+        contentHtml?: unknown;
+      };
+    };
+
+    const title = sanitizeArticlePlainText(
+      String(parsed.generated?.title || ''),
+    );
+
+    const subtitle = sanitizeArticlePlainText(
+      String(parsed.generated?.subtitle || ''),
+    );
+
+    const description = sanitizeArticlePlainText(
+      String(parsed.generated?.description || ''),
+    );
+
+    const excerpt = sanitizeArticlePlainText(
+      String(parsed.generated?.excerpt || ''),
+    );
+
+    const slug = this.normalizeSlug(
+      sanitizeArticlePlainText(String(parsed.generated?.slug || '')),
+    );
+
+    const seoTitle = sanitizeArticlePlainText(
+      String(parsed.generated?.seoTitle || ''),
+    );
+
+    const seoDescription = sanitizeArticlePlainText(
+      String(parsed.generated?.seoDescription || ''),
+    );
+
+    const focusKeyword = sanitizeArticlePlainText(
+      String(parsed.generated?.focusKeyword || ''),
+    );
+
+    const canonicalUrl = sanitizeArticlePlainText(
+      String(parsed.generated?.canonicalUrl || ''),
+    );
+
+    const tags = Array.isArray(parsed.generated?.tags)
+      ? parsed.generated.tags
+          .map((value) => sanitizeArticlePlainText(String(value)))
+          .filter(Boolean)
+      : [];
+
+    const contentHtml = sanitizeArticleHtml(
+      String(parsed.generated?.contentHtml || ''),
+    );
+
+    if (!title || !slug || !seoTitle || !seoDescription || !focusKeyword) {
+      throw new ServiceUnavailableException(
+        'The AI service returned incomplete generated article metadata.',
+      );
+    }
+
+    if (!contentHtml) {
+      throw new ServiceUnavailableException(
+        'The AI service returned an empty generated article body.',
+      );
+    }
+
+    return {
+      result: contentHtml,
+
+      model: this.model,
+
+      generated: {
+        title,
+
+        subtitle,
+
+        description,
+
+        excerpt,
+
+        slug,
+
+        seoTitle,
+
+        seoDescription,
+
+        focusKeyword,
+
+        canonicalUrl,
+
+        tags,
+
+        contentHtml,
+      },
+    };
+  }
+
   private parseSeoResult(rawResult: string): AiProcessResult {
     const parsed = this.parseStructuredJson(rawResult) as {
       result?: unknown;
@@ -656,12 +900,9 @@ export class ArticleWritingService {
       String(parsed.seo?.seoDescription || ''),
     );
 
-    const suggestedSlug = sanitizeArticlePlainText(
-      String(parsed.seo?.suggestedSlug || ''),
-    )
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '');
+    const suggestedSlug = this.normalizeSlug(
+      sanitizeArticlePlainText(String(parsed.seo?.suggestedSlug || '')),
+    );
 
     const focusKeyword = sanitizeArticlePlainText(
       String(parsed.seo?.focusKeyword || ''),
@@ -793,6 +1034,14 @@ export class ArticleWritingService {
         'The AI service returned an invalid structured response. Please try again.',
       );
     }
+  }
+
+  private normalizeSlug(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
   }
 
   private isRetryableStatus(status?: number): boolean {
@@ -961,8 +1210,6 @@ Your job is to correct the SEO problems identified by the platform's determinist
 The SEO analyzer has already inspected the article.
 
 You MUST use its findings.
-
-Do not ignore failed checks.
 
 Do not invent facts.
 
@@ -1225,19 +1472,19 @@ ${content}
     focusKeyword?: string,
   ): string {
     const articleTitle = title?.trim()
-      ? `Suggested article title: ${title.trim()}`
+      ? `Editor-provided title direction: ${title.trim()}`
       : '';
 
     const articleSubtitle = subtitle?.trim()
-      ? `Suggested article subtitle: ${subtitle.trim()}`
+      ? `Editor-provided subtitle direction: ${subtitle.trim()}`
       : '';
 
     const articleDescription = description?.trim()
-      ? `Article direction/description: ${description.trim()}`
+      ? `Editor-provided article direction: ${description.trim()}`
       : '';
 
     const keyword = focusKeyword?.trim()
-      ? `Focus keyword: ${focusKeyword.trim()}`
+      ? `Editor-provided focus keyword: ${focusKeyword.trim()}`
       : '';
 
     if (target !== 'whole-article') {
@@ -1249,8 +1496,7 @@ ${content}
     return `
 You are an experienced football journalist and editorial writer.
 
-Write a complete original football article based on the topic or
-instruction supplied by the editor.
+Generate a complete article package for a football publishing editor.
 
 TOPIC / EDITOR INSTRUCTION:
 ${topic}
@@ -1263,7 +1509,65 @@ ${articleDescription}
 
 ${keyword}
 
-Writing requirements:
+==================================================
+GENERATE THESE FIELDS
+==================================================
+
+TITLE
+
+Create a strong, natural, publication-ready article title.
+
+SUBTITLE
+
+Create a concise subtitle that accurately complements the title.
+Return an empty string only when a subtitle would genuinely add no value.
+
+DESCRIPTION
+
+Create a clear article description suitable for the editor's article
+metadata and summary field.
+
+EXCERPT
+
+Create a concise excerpt suitable for article cards and previews.
+
+SLUG
+
+Create a concise lowercase slug using letters, numbers and hyphens only.
+
+SEO TITLE
+
+Create a natural SEO title directly relevant to the article.
+Target approximately 30-60 characters where practical.
+
+SEO DESCRIPTION
+
+Create a truthful meta description summarizing the generated article.
+Target approximately 120-170 characters where practical.
+
+FOCUS KEYWORD
+
+Choose one primary search phrase that accurately represents the article.
+It must occur naturally in the SEO title and article body.
+
+CANONICAL URL
+
+Return an empty string.
+Do not invent a website domain or URL.
+
+TAGS
+
+Return a small set of relevant article tags.
+Use concise terms only.
+Do not invent names or facts.
+
+ARTICLE BODY
+
+Return the complete article body as HTML.
+
+==================================================
+WRITING REQUIREMENTS
+==================================================
 
 - Write like an experienced human football journalist.
 - Make the article informative, engaging, and natural.
@@ -1290,13 +1594,12 @@ Writing requirements:
 - Do not mention that you are an AI.
 - Do not mention these instructions.
 
-HTML requirements:
-
-Return the complete article body as HTML.
+HTML requirements for contentHtml:
 
 Use meaningful article HTML such as:
 
 <p>
+<h1>
 <h2>
 <h3>
 <ul>
@@ -1306,13 +1609,35 @@ Use meaningful article HTML such as:
 <strong>
 <em>
 
+Use exactly one H1 in the article body.
+Use H2 for major sections and H3 only when genuinely useful.
+
 Do not use Markdown.
-
 Do not return Markdown code fences.
+Do not add commentary before or after the structured response.
 
-Do not add commentary before or after the article.
+==================================================
+OUTPUT CONTRACT
+==================================================
 
-Only return the article HTML.
+Return only the requested structured JSON object.
+
+The generated object must contain:
+
+title
+subtitle
+description
+excerpt
+slug
+seoTitle
+seoDescription
+focusKeyword
+canonicalUrl
+tags
+contentHtml
+
+The result field should contain the complete generated article HTML
+for backward compatibility.
     `.trim();
   }
 

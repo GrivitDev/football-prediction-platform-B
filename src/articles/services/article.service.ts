@@ -72,8 +72,11 @@ export class ArticleService {
 
       seo: {
         title: dto.seoTitle?.trim() || null,
+
         description: dto.seoDescription?.trim() || null,
+
         focusKeyword: dto.focusKeyword?.trim() || null,
+
         canonicalUrl: dto.canonicalUrl?.trim() || null,
       },
 
@@ -109,7 +112,9 @@ export class ArticleService {
     totalPages: number;
   }> {
     const page = query.page ?? 1;
+
     const limit = query.limit ?? 20;
+
     const skip = (page - 1) * limit;
 
     const filter: QueryFilter<ArticleDocument> = {
@@ -131,6 +136,7 @@ export class ArticleService {
         .find(filter)
         .sort({
           publishedAt: -1,
+
           createdAt: -1,
         })
         .skip(skip)
@@ -142,9 +148,13 @@ export class ArticleService {
 
     return {
       data,
+
       total,
+
       page,
+
       limit,
+
       totalPages: Math.ceil(total / limit),
     };
   }
@@ -157,7 +167,9 @@ export class ArticleService {
     totalPages: number;
   }> {
     const page = query.page ?? 1;
+
     const limit = query.limit ?? 20;
+
     const skip = (page - 1) * limit;
 
     const filter: QueryFilter<ArticleDocument> = {};
@@ -181,6 +193,7 @@ export class ArticleService {
         .find(filter)
         .sort({
           updatedAt: -1,
+
           createdAt: -1,
         })
         .skip(skip)
@@ -192,9 +205,13 @@ export class ArticleService {
 
     return {
       data,
+
       total,
+
       page,
+
       limit,
+
       totalPages: Math.ceil(total / limit),
     };
   }
@@ -211,6 +228,18 @@ export class ArticleService {
     }
 
     const article = await this.articleModel.findOne(filter);
+
+    if (!article) {
+      throw new NotFoundException('Article not found.');
+    }
+
+    return article;
+  }
+
+  async findAdminOne(id: string): Promise<ArticleDocument> {
+    const objectId = this.toObjectId(id);
+
+    const article = await this.articleModel.findById(objectId);
 
     if (!article) {
       throw new NotFoundException('Article not found.');
@@ -315,6 +344,7 @@ export class ArticleService {
 
     if (dto.publishedAt !== undefined) {
       article.publishedAt = new Date(dto.publishedAt);
+
       article.status = ArticleStatus.PUBLISHED;
     }
 
@@ -341,6 +371,7 @@ export class ArticleService {
       {
         $set: {
           status: ArticleStatus.PUBLISHED,
+
           publishedAt: new Date(),
         },
       },
@@ -366,6 +397,7 @@ export class ArticleService {
       {
         $set: {
           status: ArticleStatus.DRAFT,
+
           publishedAt: null,
         },
       },
@@ -401,6 +433,7 @@ export class ArticleService {
     const article = await this.articleModel.findOneAndUpdate(
       {
         _id: objectId,
+
         status: ArticleStatus.PUBLISHED,
       },
       {
@@ -410,6 +443,7 @@ export class ArticleService {
       },
       {
         new: true,
+
         projection: {
           viewsCount: 1,
         },
@@ -433,6 +467,7 @@ export class ArticleService {
     const article = await this.articleModel.findOneAndUpdate(
       {
         _id: objectId,
+
         status: ArticleStatus.PUBLISHED,
       },
       {
@@ -442,6 +477,7 @@ export class ArticleService {
       },
       {
         new: true,
+
         projection: {
           likesCount: 1,
         },
@@ -468,6 +504,7 @@ export class ArticleService {
     }
 
     let slug = baseSlug;
+
     let suffix = 1;
 
     while (true) {
@@ -488,6 +525,7 @@ export class ArticleService {
       }
 
       suffix += 1;
+
       slug = `${baseSlug}-${suffix}`;
     }
   }
@@ -551,12 +589,19 @@ export class ArticleService {
 
       allowedAttributes: {
         p: ['style'],
+
         h1: ['style'],
+
         h2: ['style'],
+
         h3: ['style'],
+
         h4: ['style'],
+
         h5: ['style'],
+
         h6: ['style'],
+
         span: ['style'],
 
         a: ['href', 'target', 'rel', 'title'],
@@ -601,6 +646,7 @@ export class ArticleService {
           'font-family': [
             /^(Arial|Georgia|Times New Roman|Verdana|Tahoma|Trebuchet MS|Courier New|serif|sans-serif|monospace|system-ui)$/i,
           ],
+
           'font-size': [/^(12|14|16|18|20|22|24|26|28|30|32)px$/i],
         },
       },

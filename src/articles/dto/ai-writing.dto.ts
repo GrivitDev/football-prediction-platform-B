@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsIn,
   IsOptional,
   IsString,
@@ -45,6 +46,11 @@ export class AiWritingDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
+  excerpt?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(200)
   focusKeyword?: string;
 
@@ -70,6 +76,12 @@ export class AiWritingDto {
   @IsString()
   @MaxLength(2048)
   canonicalUrl?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
+  tags?: string[];
 
   @IsIn(['whole-article', 'title', 'subtitle', 'description'])
   target!: AiWritingTarget;

@@ -1,3 +1,5 @@
+// src/articles/controllers/article.controller.ts
+
 import {
   Body,
   Controller,
@@ -66,6 +68,20 @@ export class ArticleController {
     return this.articleService.findAdminAll(query);
   }
 
+  /**
+   * Admin article lookup.
+   *
+   * Unlike the public article endpoint, this returns both
+   * published and draft articles so the editor can load any
+   * article into the existing article form.
+   */
+  @Get('admin/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  async findAdminOne(@Param('id') id: string) {
+    return this.articleService.findAdminOne(id);
+  }
+
   @Get('slug/:slug')
   async findBySlug(@Param('slug') slug: string) {
     return this.articleService.findBySlug(slug);
@@ -115,35 +131,61 @@ export class ArticleController {
 
       return this.articleWritingService.process(
         dto.content,
+
         dto.action,
+
         dto.target,
+
         dto.title,
+
         dto.subtitle,
+
         dto.description,
+
         dto.focusKeyword,
+
         dto.slug,
+
         dto.seoTitle,
+
         dto.seoDescription,
+
         dto.canonicalUrl,
+
         seoAnalysis,
       );
     }
 
     return this.articleWritingService.process(
       dto.content,
+
       dto.action,
+
       dto.target,
+
       dto.title,
+
       dto.subtitle,
+
       dto.description,
+
       dto.focusKeyword,
+
       dto.slug,
+
       dto.seoTitle,
+
       dto.seoDescription,
+
       dto.canonicalUrl,
     );
   }
 
+  /**
+   * Public article lookup.
+   *
+   * Only published articles are returned.
+   */
   @Get(':id')
   async findOne(@Param('id') id: string) {
     return this.articleService.findOne(id, false);

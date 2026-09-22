@@ -1,5 +1,3 @@
-// src/articles/dto/create-article.dto.ts
-
 import {
   IsArray,
   IsDateString,
@@ -23,7 +21,7 @@ export class CreateArticleDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(500)
+  @MaxLength(1000)
   description?: string;
 
   /**
@@ -32,12 +30,12 @@ export class CreateArticleDto {
    */
   @IsOptional()
   @IsString()
-  @MaxLength(500)
+  @MaxLength(1000)
   excerpt?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(200)
+  @MaxLength(300)
   slug?: string;
 
   @IsString()
@@ -61,22 +59,22 @@ export class CreateArticleDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(70)
+  @MaxLength(300)
   seoTitle?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(170)
+  @MaxLength(1000)
   seoDescription?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(100)
+  @MaxLength(200)
   focusKeyword?: string;
 
   @IsOptional()
   @IsUrl()
-  @MaxLength(1000)
+  @MaxLength(2048)
   canonicalUrl?: string;
 
   @IsOptional()
