@@ -15,6 +15,16 @@ import {
 
 type AiTarget = 'whole-article' | 'title' | 'subtitle' | 'description';
 
+type AiAction =
+  | 'generate'
+  | 'improve'
+  | 'rewrite'
+  | 'humanize'
+  | 'shorten'
+  | 'expand'
+  | 'seo'
+  | 'headings';
+
 interface GroqChatResponse {
   id?: string;
   model?: string;
@@ -58,7 +68,7 @@ export class ArticleWritingService {
 
   async process(
     content: string,
-    action: string,
+    action: AiAction,
     target: AiTarget = 'whole-article',
     title?: string,
     subtitle?: string,
@@ -71,7 +81,11 @@ export class ArticleWritingService {
     const normalizedContent = content.trim();
 
     if (!normalizedContent) {
-      throw new ServiceUnavailableException('There is no content to process.');
+      throw new ServiceUnavailableException(
+        action === 'generate'
+          ? 'Please provide a topic or writing instruction.'
+          : 'There is no content to process.',
+      );
     }
 
     if (!this.apiKey) {
@@ -88,6 +102,12 @@ export class ArticleWritingService {
     ) {
       throw new ServiceUnavailableException(
         'SEO analysis and heading suggestions require the whole article.',
+      );
+    }
+
+    if (action === 'generate' && target !== 'whole-article') {
+      throw new ServiceUnavailableException(
+        'Article generation currently requires the whole-article target.',
       );
     }
 
@@ -134,7 +154,7 @@ export class ArticleWritingService {
 
   private async generateWithRetry(
     prompt: string,
-    action: string,
+    action: AiAction,
     target: AiTarget,
   ): Promise<string> {
     let lastError: unknown;
@@ -169,39 +189,24 @@ export class ArticleWritingService {
           ].join(' | '),
         );
 
-        /*
-         * 401 means the API key is invalid,
-         * missing, expired, or rejected.
-         */
         if (status === 401) {
           throw new ServiceUnavailableException(
             'The Groq API key is invalid or unavailable. Check GROQ_API_KEY in the server environment.',
           );
         }
 
-        /*
-         * 403 means the API key/project is not permitted
-         * to use the requested resource.
-         */
         if (status === 403) {
           throw new ServiceUnavailableException(
             'Groq access is denied for this API key or project. Check the Groq Console and API key permissions.',
           );
         }
 
-        /*
-         * 404 normally means the configured model
-         * or endpoint cannot be found.
-         */
         if (status === 404) {
           throw new ServiceUnavailableException(
             `The configured Groq model "${this.model}" was not found or is unavailable.`,
           );
         }
 
-        /*
-         * Other client-side errors should not be retried.
-         */
         if (
           status !== 429 &&
           status !== undefined &&
@@ -213,9 +218,6 @@ export class ArticleWritingService {
           );
         }
 
-        /*
-         * Retry transient rate-limit/server failures.
-         */
         if (!this.isRetryableStatus(status) || attempt > this.maxRetries) {
           break;
         }
@@ -260,7 +262,7 @@ export class ArticleWritingService {
             {
               role: 'system',
               content:
-                'You are a professional article writing assistant. Follow the user instructions exactly and return only the requested output.',
+                'You are a professional football article writing assistant. Follow the user instructions exactly. Produce natural, original editorial writing. Return only the requested output.',
             },
             {
               role: 'user',
@@ -270,7 +272,7 @@ export class ArticleWritingService {
 
           max_tokens: 12_000,
 
-          temperature: 0.2,
+          temperature: 0.45,
         }),
 
         signal: controller.signal,
@@ -336,7 +338,6 @@ export class ArticleWritingService {
 
   private getRetryDelay(attempt: number): number {
     const base = 1000 * Math.pow(2, attempt - 1);
-
     const jitter = Math.floor(Math.random() * 500);
 
     return base + jitter;
@@ -416,7 +417,7 @@ export class ArticleWritingService {
 
   private buildPrompt(
     content: string,
-    action: string,
+    action: AiAction,
     target: AiTarget,
     title?: string,
     subtitle?: string,
@@ -436,6 +437,17 @@ export class ArticleWritingService {
     const keyword = focusKeyword?.trim()
       ? `Focus keyword: ${focusKeyword.trim()}`
       : '';
+
+    if (action === 'generate') {
+      return this.buildGenerationPrompt(
+        content,
+        target,
+        title,
+        subtitle,
+        description,
+        focusKeyword,
+      );
+    }
 
     if (action === 'seo') {
       return `
@@ -525,6 +537,104 @@ ${content}
     `.trim();
   }
 
+  private buildGenerationPrompt(
+    topic: string,
+    target: AiTarget,
+    title?: string,
+    subtitle?: string,
+    description?: string,
+    focusKeyword?: string,
+  ): string {
+    const articleTitle = title?.trim()
+      ? `Suggested article title: ${title.trim()}`
+      : '';
+
+    const articleSubtitle = subtitle?.trim()
+      ? `Suggested article subtitle: ${subtitle.trim()}`
+      : '';
+
+    const articleDescription = description?.trim()
+      ? `Article direction/description: ${description.trim()}`
+      : '';
+
+    const keyword = focusKeyword?.trim()
+      ? `Focus keyword: ${focusKeyword.trim()}`
+      : '';
+
+    if (target !== 'whole-article') {
+      throw new ServiceUnavailableException(
+        'Generation must target the whole article.',
+      );
+    }
+
+    return `
+You are an experienced football journalist and editorial writer.
+
+Write a complete original football article based on the topic or
+instruction supplied by the editor.
+
+TOPIC / EDITOR INSTRUCTION:
+${topic}
+
+${articleTitle}
+${articleSubtitle}
+${articleDescription}
+${keyword}
+
+Writing requirements:
+
+- Write like an experienced human football journalist.
+- Make the article informative, engaging, and natural.
+- Explain the subject rather than simply repeating the topic.
+- Use football terminology naturally.
+- Develop a clear argument or line of explanation.
+- Vary sentence length and paragraph structure.
+- Avoid repetitive sentence patterns.
+- Avoid generic AI-style introductions and conclusions.
+- Avoid filler and unnecessary repetition.
+- Do not overuse phrases such as "in today's football", "it is
+  important to note", "ultimately", or similar generic wording.
+- Use clear paragraphs and appropriate H2 headings where useful.
+- Keep the article focused on the supplied topic.
+- Do not fabricate statistics, match results, player quotes,
+  manager quotes, sources, injuries, transfers, events, dates,
+  or claims about a specific team or person.
+- If the topic is general football analysis, keep the discussion
+  general rather than pretending that specific facts are known.
+- Do not cite fictional sources.
+- Do not claim that an invented observation came from a journalist,
+  coach, player, analyst, or source.
+- Do not include a references section unless the editor explicitly
+  supplied sources.
+- Do not mention that you are an AI.
+- Do not mention these instructions.
+
+HTML requirements:
+
+Return the complete article body as HTML.
+
+Use only meaningful article HTML such as:
+
+<p>
+<h2>
+<h3>
+<ul>
+<ol>
+<li>
+<blockquote>
+<strong>
+<em>
+
+Do not use Markdown.
+
+Do not return Markdown code fences.
+
+Do not add commentary before or after the article.
+
+Only return the article HTML.
+    `.trim();
+  }
+
   private getTargetInstructions(target: AiTarget): string {
     switch (target) {
       case 'title':
@@ -603,7 +713,7 @@ Only return the article HTML.
     }
   }
 
-  private getActionInstructions(action: string): string {
+  private getActionInstructions(action: AiAction): string {
     switch (action) {
       case 'rewrite':
         return `
@@ -611,6 +721,48 @@ Rewrite the target to make it clearer, more natural,
 professional, and readable.
 
 Keep the original meaning and factual claims.
+        `.trim();
+
+      case 'humanize':
+        return `
+Humanize the target while preserving its meaning and factual claims.
+
+The goal is natural editorial writing that reads as though it was
+written and edited by an experienced human football writer.
+
+Improve:
+
+- sentence rhythm
+- sentence-length variation
+- paragraph flow
+- transitions
+- word choice
+- natural expression
+- clarity
+- editorial voice
+
+Remove:
+
+- repetitive sentence structures
+- unnecessary filler
+- robotic phrasing
+- generic AI-style introductions
+- generic AI-style conclusions
+- excessive transition words
+- repeated explanations of the same point
+- unnatural formality
+- unnecessary phrases such as "it is important to note",
+  "in today's football", "ultimately", and similar filler
+
+Do not deliberately introduce spelling mistakes, grammatical errors,
+fake personal experiences, fake opinions, fake quotations, or false
+facts simply to make the writing appear human.
+
+Do not change factual claims.
+
+Do not remove useful football terminology.
+
+Preserve the author's intended meaning and editorial point of view.
         `.trim();
 
       case 'shorten':

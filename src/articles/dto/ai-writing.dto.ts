@@ -8,6 +8,22 @@ import {
   MinLength,
 } from 'class-validator';
 
+export type AiWritingTarget =
+  | 'whole-article'
+  | 'title'
+  | 'subtitle'
+  | 'description';
+
+export type AiWritingAction =
+  | 'generate'
+  | 'improve'
+  | 'rewrite'
+  | 'humanize'
+  | 'shorten'
+  | 'expand'
+  | 'seo'
+  | 'headings';
+
 export class AiWritingDto {
   @IsString()
   @MinLength(1)
@@ -35,8 +51,17 @@ export class AiWritingDto {
   focusKeyword?: string;
 
   @IsIn(['whole-article', 'title', 'subtitle', 'description'])
-  target!: 'whole-article' | 'title' | 'subtitle' | 'description';
+  target!: AiWritingTarget;
 
-  @IsIn(['improve', 'rewrite', 'shorten', 'expand', 'seo', 'headings'])
-  action!: string;
+  @IsIn([
+    'generate',
+    'improve',
+    'rewrite',
+    'humanize',
+    'shorten',
+    'expand',
+    'seo',
+    'headings',
+  ])
+  action!: AiWritingAction;
 }
