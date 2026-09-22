@@ -1,5 +1,3 @@
-// src/articles/services/article-writing.service.ts
-
 import {
   Injectable,
   Logger,
@@ -25,22 +23,61 @@ type AiAction =
   | 'seo'
   | 'headings';
 
+interface AiSeoSuggestion {
+  seoTitle: string;
+  seoDescription: string;
+  suggestedSlug: string;
+  focusKeyword: string;
+}
+
+interface AiHeadingItem {
+  level: 1 | 2 | 3;
+  text: string;
+}
+
+interface AiHeadingsSuggestion {
+  headings: AiHeadingItem[];
+  revisedContentHtml: string;
+}
+
 interface GroqChatResponse {
   id?: string;
   model?: string;
+
   choices?: Array<{
     index?: number;
+
     message?: {
       role?: string;
       content?: string | null;
     };
+
     finish_reason?: string;
   }>;
+
   error?: {
     message?: string;
     type?: string;
     code?: string;
   };
+}
+
+interface GroqResponseFormat {
+  type: 'json_schema';
+
+  json_schema: {
+    name: string;
+    strict: true;
+
+    schema: Record<string, unknown>;
+  };
+}
+
+interface AiProcessResult {
+  result: string;
+  model: string;
+  seo?: AiSeoSuggestion;
+  headings?: AiHeadingsSuggestion;
 }
 
 @Injectable()
@@ -63,6 +100,7 @@ export class ArticleWritingService {
       'openai/gpt-oss-120b';
 
     this.logger.log(`Groq model configured: ${this.model}`);
+
     this.logger.log(`Groq API key configured: ${this.apiKey ? 'yes' : 'no'}`);
   }
 
@@ -74,10 +112,7 @@ export class ArticleWritingService {
     subtitle?: string,
     description?: string,
     focusKeyword?: string,
-  ): Promise<{
-    result: string;
-    model: string;
-  }> {
+  ): Promise<AiProcessResult> {
     const normalizedContent = content.trim();
 
     if (!normalizedContent) {
@@ -121,16 +156,37 @@ export class ArticleWritingService {
       focusKeyword,
     );
 
+    const responseFormat = this.getResponseFormat(action);
+
     this.logger.log(
-      `Groq request started: action=${action}, target=${target}, model=${this.model}`,
+      [
+        'Groq request started:',
+        `action=${action}`,
+        `target=${target}`,
+        `model=${this.model}`,
+        `structured=${responseFormat ? 'yes' : 'no'}`,
+      ].join(' '),
     );
 
-    const rawResult = await this.generateWithRetry(prompt, action, target);
+    const rawResult = await this.generateWithRetry(
+      prompt,
+      action,
+      target,
+      responseFormat,
+    );
+
+    if (action === 'seo') {
+      return this.parseSeoResult(rawResult);
+    }
+
+    if (action === 'headings') {
+      return this.parseHeadingsResult(rawResult);
+    }
 
     const cleanedResult = this.cleanModelOutput(rawResult);
 
     const result =
-      target === 'whole-article' && action !== 'seo' && action !== 'headings'
+      target === 'whole-article'
         ? sanitizeArticleHtml(cleanedResult)
         : sanitizeArticlePlainText(cleanedResult);
 
@@ -143,7 +199,9 @@ export class ArticleWritingService {
     }
 
     this.logger.log(
-      `Groq request completed: action=${action}, target=${target}`,
+      ['Groq request completed:', `action=${action}`, `target=${target}`].join(
+        ' ',
+      ),
     );
 
     return {
@@ -156,12 +214,13 @@ export class ArticleWritingService {
     prompt: string,
     action: AiAction,
     target: AiTarget,
+    responseFormat?: GroqResponseFormat,
   ): Promise<string> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.maxRetries + 1; attempt += 1) {
       try {
-        const response = await this.requestGroq(prompt);
+        const response = await this.requestGroq(prompt, responseFormat);
 
         const result = response.choices?.[0]?.message?.content?.trim() || '';
 
@@ -176,6 +235,7 @@ export class ArticleWritingService {
         lastError = error;
 
         const status = this.getErrorStatus(error);
+
         const message = this.getErrorMessage(error);
 
         this.logger.error(
@@ -239,7 +299,10 @@ export class ArticleWritingService {
     );
   }
 
-  private async requestGroq(prompt: string): Promise<GroqChatResponse> {
+  private async requestGroq(
+    prompt: string,
+    responseFormat?: GroqResponseFormat,
+  ): Promise<GroqChatResponse> {
     const controller = new AbortController();
 
     const timeout = setTimeout(() => {
@@ -252,6 +315,7 @@ export class ArticleWritingService {
 
         headers: {
           'Content-Type': 'application/json',
+
           Authorization: `Bearer ${this.apiKey}`,
         },
 
@@ -262,7 +326,7 @@ export class ArticleWritingService {
             {
               role: 'system',
               content:
-                'You are a professional football article writing assistant. Follow the user instructions exactly. Produce natural, original editorial writing. Return only the requested output.',
+                'You are a professional football article writing assistant. Follow the user instructions exactly. Produce natural, original editorial writing. Never invent factual claims. Return only the requested output.',
             },
             {
               role: 'user',
@@ -273,6 +337,12 @@ export class ArticleWritingService {
           max_tokens: 12_000,
 
           temperature: 0.45,
+
+          ...(responseFormat
+            ? {
+                response_format: responseFormat,
+              }
+            : {}),
         }),
 
         signal: controller.signal,
@@ -297,6 +367,7 @@ export class ArticleWritingService {
 
         Object.assign(error, {
           status: response.status,
+
           response: {
             status: response.status,
           },
@@ -325,6 +396,263 @@ export class ArticleWritingService {
     }
   }
 
+  private getResponseFormat(action: AiAction): GroqResponseFormat | undefined {
+    if (action === 'seo') {
+      return {
+        type: 'json_schema',
+
+        json_schema: {
+          name: 'article_seo_suggestions',
+
+          strict: true,
+
+          schema: {
+            type: 'object',
+
+            additionalProperties: false,
+
+            properties: {
+              result: {
+                type: 'string',
+              },
+
+              seo: {
+                type: 'object',
+
+                additionalProperties: false,
+
+                properties: {
+                  seoTitle: {
+                    type: 'string',
+                  },
+
+                  seoDescription: {
+                    type: 'string',
+                  },
+
+                  suggestedSlug: {
+                    type: 'string',
+                  },
+
+                  focusKeyword: {
+                    type: 'string',
+                  },
+                },
+
+                required: [
+                  'seoTitle',
+                  'seoDescription',
+                  'suggestedSlug',
+                  'focusKeyword',
+                ],
+              },
+            },
+
+            required: ['result', 'seo'],
+          },
+        },
+      };
+    }
+
+    if (action === 'headings') {
+      return {
+        type: 'json_schema',
+
+        json_schema: {
+          name: 'article_heading_suggestions',
+
+          strict: true,
+
+          schema: {
+            type: 'object',
+
+            additionalProperties: false,
+
+            properties: {
+              result: {
+                type: 'string',
+              },
+
+              headings: {
+                type: 'object',
+
+                additionalProperties: false,
+
+                properties: {
+                  headings: {
+                    type: 'array',
+
+                    items: {
+                      type: 'object',
+
+                      additionalProperties: false,
+
+                      properties: {
+                        level: {
+                          type: 'integer',
+
+                          enum: [1, 2, 3],
+                        },
+
+                        text: {
+                          type: 'string',
+                        },
+                      },
+
+                      required: ['level', 'text'],
+                    },
+                  },
+
+                  revisedContentHtml: {
+                    type: 'string',
+                  },
+                },
+
+                required: ['headings', 'revisedContentHtml'],
+              },
+            },
+
+            required: ['result', 'headings'],
+          },
+        },
+      };
+    }
+
+    return undefined;
+  }
+
+  private parseSeoResult(rawResult: string): AiProcessResult {
+    const parsed = this.parseStructuredJson(rawResult) as {
+      result?: unknown;
+
+      seo?: {
+        seoTitle?: unknown;
+        seoDescription?: unknown;
+        suggestedSlug?: unknown;
+        focusKeyword?: unknown;
+      };
+    };
+
+    const result = sanitizeArticlePlainText(String(parsed.result || ''));
+
+    const seo = {
+      seoTitle: sanitizeArticlePlainText(String(parsed.seo?.seoTitle || '')),
+
+      seoDescription: sanitizeArticlePlainText(
+        String(parsed.seo?.seoDescription || ''),
+      ),
+
+      suggestedSlug: sanitizeArticlePlainText(
+        String(parsed.seo?.suggestedSlug || ''),
+      ),
+
+      focusKeyword: sanitizeArticlePlainText(
+        String(parsed.seo?.focusKeyword || ''),
+      ),
+    };
+
+    if (
+      !result ||
+      !seo.seoTitle ||
+      !seo.seoDescription ||
+      !seo.suggestedSlug ||
+      !seo.focusKeyword
+    ) {
+      throw new ServiceUnavailableException(
+        'The AI service returned incomplete SEO suggestions.',
+      );
+    }
+
+    this.logger.log('Structured AI SEO response validated successfully.');
+
+    return {
+      result,
+      model: this.model,
+      seo,
+    };
+  }
+
+  private parseHeadingsResult(rawResult: string): AiProcessResult {
+    const parsed = this.parseStructuredJson(rawResult) as {
+      result?: unknown;
+
+      headings?: {
+        headings?: Array<{
+          level?: unknown;
+          text?: unknown;
+        }>;
+
+        revisedContentHtml?: unknown;
+      };
+    };
+
+    const result = sanitizeArticlePlainText(String(parsed.result || ''));
+
+    const sourceHeadings = parsed.headings?.headings || [];
+
+    const headings = sourceHeadings
+      .map((heading) => {
+        const level = Number(heading.level);
+
+        const text = sanitizeArticlePlainText(String(heading.text || ''));
+
+        if (level !== 1 && level !== 2 && level !== 3) {
+          return null;
+        }
+
+        if (!text) {
+          return null;
+        }
+
+        return {
+          level: level,
+
+          text,
+        };
+      })
+      .filter((heading): heading is AiHeadingItem => Boolean(heading));
+
+    const revisedContentHtml = sanitizeArticleHtml(
+      String(parsed.headings?.revisedContentHtml || ''),
+    );
+
+    if (!result || !headings.length || !revisedContentHtml) {
+      throw new ServiceUnavailableException(
+        'The AI service returned incomplete heading suggestions.',
+      );
+    }
+
+    this.logger.log(
+      `Structured AI heading response validated successfully: headings=${headings.length}`,
+    );
+
+    return {
+      result,
+      model: this.model,
+
+      headings: {
+        headings,
+        revisedContentHtml,
+      },
+    };
+  }
+
+  private parseStructuredJson(value: string): unknown {
+    const cleaned = this.cleanModelOutput(value);
+
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      this.logger.error(
+        'Groq returned structured output that could not be parsed as JSON.',
+      );
+
+      throw new ServiceUnavailableException(
+        'The AI service returned an invalid structured response. Please try again.',
+      );
+    }
+  }
+
   private isRetryableStatus(status?: number): boolean {
     return (
       status === 408 ||
@@ -338,6 +666,7 @@ export class ArticleWritingService {
 
   private getRetryDelay(attempt: number): number {
     const base = 1000 * Math.pow(2, attempt - 1);
+
     const jitter = Math.floor(Math.random() * 500);
 
     return base + jitter;
@@ -451,23 +780,38 @@ export class ArticleWritingService {
 
     if (action === 'seo') {
       return `
-You are assisting an article writer with SEO.
+You are assisting a football article editor with SEO.
 
-Analyze the supplied article and provide practical recommendations.
+Analyze the supplied article and produce practical SEO improvements.
 
-Return exactly these sections:
+The response must contain:
 
-SEO TITLE:
-META DESCRIPTION:
-SUGGESTED SLUG:
-CONTENT GAPS:
-HEADING RECOMMENDATIONS:
-INTERNAL LINK OPPORTUNITIES:
-READABILITY RECOMMENDATIONS:
+1. result:
+A concise human-readable explanation of the SEO recommendations.
 
-Do not claim that any recommendation guarantees search ranking.
-Do not invent facts, statistics, sources, links, events, or quotations.
-Base every recommendation on the supplied article.
+2. seo.seoTitle:
+A search-friendly article SEO title.
+
+3. seo.seoDescription:
+A concise and specific meta description.
+
+4. seo.suggestedSlug:
+A clean lowercase URL slug using hyphens only.
+
+5. seo.focusKeyword:
+The single primary search phrase that best represents the article.
+
+Requirements:
+
+- Base the recommendations on the supplied article.
+- Keep the SEO title relevant to the actual article.
+- Keep the meta description truthful to the article.
+- Use a natural focus keyword.
+- Do not invent statistics, events, quotations, sources, names, dates, injuries, transfers, or other factual claims.
+- Do not claim that the recommendations guarantee rankings.
+- Do not invent internal URLs.
+- Do not include Markdown formatting in the structured fields.
+- Do not mention that you are an AI.
 
 ${articleTitle}
 
@@ -485,17 +829,35 @@ ${content}
 
     if (action === 'headings') {
       return `
-Analyze the supplied article and suggest a clear heading structure.
+You are assisting a football article editor with article structure.
 
-Return exactly this simple hierarchy:
+Analyze the supplied article and improve its heading hierarchy without changing the factual substance.
 
-H1:
-H2:
-H3:
+You must return:
 
-Do not rewrite the article.
-Do not invent facts.
-Use headings that accurately describe the existing content.
+1. result:
+A concise explanation of the suggested heading structure.
+
+2. headings.headings:
+A structured heading list using only levels 1, 2, and 3.
+
+3. headings.revisedContentHtml:
+The complete article body in HTML with the improved heading structure applied.
+
+Heading requirements:
+
+- Use exactly one H1 for the article.
+- Use H2 for major sections.
+- Use H3 only when a subsection is genuinely useful.
+- Keep headings concise, descriptive, and natural.
+- Do not invent new factual claims.
+- Do not remove meaningful article content.
+- Preserve paragraphs, lists, blockquotes, links, images, emphasis, and other meaningful formatting.
+- Only change heading structure and wording where needed.
+- Return the complete revised article HTML in revisedContentHtml.
+- Do not use Markdown.
+- Do not include Markdown code fences.
+- Do not mention that you are an AI.
 
 ${articleTitle}
 
@@ -577,8 +939,11 @@ TOPIC / EDITOR INSTRUCTION:
 ${topic}
 
 ${articleTitle}
+
 ${articleSubtitle}
+
 ${articleDescription}
+
 ${keyword}
 
 Writing requirements:
@@ -592,8 +957,8 @@ Writing requirements:
 - Avoid repetitive sentence patterns.
 - Avoid generic AI-style introductions and conclusions.
 - Avoid filler and unnecessary repetition.
-- Do not overuse phrases such as "in today's football", "it is
-  important to note", "ultimately", or similar generic wording.
+- Avoid phrases such as "in today's football", "it is important to note",
+  "ultimately", and similar generic wording.
 - Use clear paragraphs and appropriate H2 headings where useful.
 - Keep the article focused on the supplied topic.
 - Do not fabricate statistics, match results, player quotes,
@@ -604,8 +969,7 @@ Writing requirements:
 - Do not cite fictional sources.
 - Do not claim that an invented observation came from a journalist,
   coach, player, analyst, or source.
-- Do not include a references section unless the editor explicitly
-  supplied sources.
+- Do not include a references section unless the editor supplied sources.
 - Do not mention that you are an AI.
 - Do not mention these instructions.
 
@@ -613,7 +977,7 @@ HTML requirements:
 
 Return the complete article body as HTML.
 
-Use only meaningful article HTML such as:
+Use meaningful article HTML such as:
 
 <p>
 <h2>
@@ -797,7 +1161,7 @@ language error.
 
   private cleanModelOutput(value: string): string {
     return value
-      .replace(/^```(?:html|HTML|text|markdown)?\s*/i, '')
+      .replace(/^```(?:json|html|HTML|text|markdown)?\s*/i, '')
       .replace(/\s*```$/i, '')
       .trim();
   }
