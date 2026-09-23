@@ -1,60 +1,47 @@
 import { Injectable } from '@nestjs/common';
 
-import { FootballDataService } from './football-data.service';
+import { SportsDataReadService } from './services/sports-data-read.service';
 
 @Injectable()
 export class SportsService {
-  constructor(private readonly footballDataService: FootballDataService) {}
+  constructor(private readonly sportsDataReadService: SportsDataReadService) {}
 
-  // ============================================================
-  // LEAGUES
-  // ============================================================
-
-  getLeagues() {
-    return this.footballDataService.getLeagues();
+  async getLive() {
+    return this.sportsDataReadService.getLiveFixtures();
   }
 
-  // ============================================================
-  // LIVE MATCHES
-  // ============================================================
-
-  getLiveMatches() {
-    return this.footballDataService.getLiveMatches();
+  async getFixtures(competitionId?: string) {
+    return this.sportsDataReadService.getUpcomingFixtures(
+      undefined,
+      undefined,
+      competitionId,
+    );
   }
 
-  // ============================================================
-  // FIXTURES
-  // ============================================================
-
-  getFixtures(leagueCode: string) {
-    return this.footballDataService.getFixturesByLeague(leagueCode);
+  async getResults(competitionId?: string) {
+    return this.sportsDataReadService.getFinishedFixtures(
+      undefined,
+      undefined,
+      competitionId,
+    );
   }
 
-  // ============================================================
-  // MATCH DETAILS
-  // ============================================================
-
-  getMatchDetails(matchId: string) {
-    return this.footballDataService.getMatchDetails(matchId);
+  async getStandings(competitionId: string, season?: number) {
+    return this.sportsDataReadService.getLeagueTable(competitionId, season);
   }
 
-  // ============================================================
-  // RESULTS
-  // ============================================================
-
-  getFinishedMatches(leagueCode: string) {
-    return this.footballDataService.getFinishedMatches(leagueCode);
+  async getCompetitions(options?: {
+    activeOnly?: boolean;
+    predictionEnabled?: boolean;
+  }) {
+    return this.sportsDataReadService.getCompetitions(options);
   }
 
-  // ============================================================
-  // STANDINGS
-  // ============================================================
-
-  getStandings(leagueCode: string) {
-    return this.footballDataService.getStandings(leagueCode);
+  async getTeams(competitionId: string) {
+    return this.sportsDataReadService.getTeams(competitionId);
   }
 
-  getFinishedMatchesByIds(matchIds: string[]) {
-    return this.footballDataService.getFinishedMatchesByIds(matchIds);
+  async getActiveCompetitions() {
+    return this.sportsDataReadService.getActiveCompetitions();
   }
 }

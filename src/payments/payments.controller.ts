@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 
 import { PaymentsService } from './payments.service';
+
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -40,6 +41,7 @@ export class PaymentsController {
   ) {
     return this.paymentsService.createPayment({
       userId: user._id,
+
       email: user.email,
 
       type: body.type,
@@ -54,14 +56,17 @@ export class PaymentsController {
       proofMessage: body.proofMessage,
     });
   }
+
   @UseGuards(JwtAuthGuard)
   @Get('me')
   getMyPayments(@GetUser() user: any) {
     return this.paymentsService.getUserPayments(user._id);
   }
+
   // =========================
   // ADMIN APPROVE
   // =========================
+
   @Roles('admin')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Patch(':id/approve')
@@ -72,6 +77,7 @@ export class PaymentsController {
   // =========================
   // ADMIN REJECT
   // =========================
+
   @Roles('admin')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Patch(':id/reject')
@@ -82,6 +88,7 @@ export class PaymentsController {
   // =========================
   // ADMIN VIEWS
   // =========================
+
   @Roles('admin')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Get('pending')

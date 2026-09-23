@@ -1,134 +1,99 @@
 import {
-  Injectable,
-  ForbiddenException,
-  NotFoundException,
   BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
 } from '@nestjs/common';
+
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+
 import { Prediction, PredictionDocument } from './schemas/prediction.schema';
+
 import { CreatePredictionDto } from './dto/create-prediction.dto';
+
 import { UpdatePredictionDto } from './dto/update-prediction.dto';
+
+import { PredictionCalculationService } from './prediction-calculation.service';
 
 @Injectable()
 export class PredictionsService {
   constructor(
     @InjectModel(Prediction.name)
-    private predictionModel: Model<PredictionDocument>,
+    private readonly predictionModel: Model<PredictionDocument>,
+
+    private readonly calculationService: PredictionCalculationService,
   ) {}
 
-  // =========================
-  // PROBABILITY VALIDATION
-  // =========================
-  private validateProbabilities(dto: {
-    probabilities?: {
-      home: number;
-      draw: number;
-      away: number;
-    };
-  }) {
-    if (!dto.probabilities) return;
-
-    const total =
-      dto.probabilities.home + dto.probabilities.draw + dto.probabilities.away;
-
-    if (total !== 100) {
-      throw new BadRequestException('Probabilities must total 100%');
-    }
+  async calculate(dto: CreatePredictionDto) {
+    return this.calculationService.calculate(dto.matchId, dto.markets);
   }
 
-  // =========================
-  // AUTO PREDICTION ENGINE
-  // =========================
-  private getPredictionFromProbabilities(
-    home: number,
-    draw: number,
-    away: number,
-  ): 'HOME' | 'DRAW' | 'AWAY' {
-    const max = Math.max(home, draw, away);
-
-    if (max === home) return 'HOME';
-    if (max === away) return 'AWAY';
-    return 'DRAW';
-  }
-
-  // =========================
-  // NORMALIZE MARKETS
-  // =========================
-  private normalizeMarkets(markets: any[] = []) {
-    return markets
-      .filter((m) => m?.market)
-      .map((m) => ({
-        market: m.market.trim(),
-        selection: m.selection?.trim() || '',
-      }));
-  }
-  // =========================
-  // CREATE PREDICTION
-  // =========================
   async create(dto: CreatePredictionDto) {
     const existingPrediction = await this.predictionModel.findOne({
       matchId: dto.matchId,
-      deleted: false,
     });
 
-    if (existingPrediction) {
+    if (existingPrediction && !existingPrediction.deleted) {
       throw new BadRequestException(
         'A prediction already exists for this match',
       );
     }
-    this.validateProbabilities(dto);
 
-    const prediction = this.getPredictionFromProbabilities(
-      dto.probabilities.home,
-      dto.probabilities.draw,
-      dto.probabilities.away,
+    if (existingPrediction?.deleted) {
+      throw new BadRequestException(
+        'A deleted prediction already exists for this match. Restore or permanently remove it before creating another.',
+      );
+    }
+
+    const calculated = await this.calculationService.calculate(
+      dto.matchId,
+      dto.markets,
     );
 
     return this.predictionModel.create({
-      matchId: dto.matchId,
+      matchId: calculated.matchId,
 
-      leagueCode: dto.leagueCode,
+      leagueCode: calculated.leagueCode,
 
-      league: dto.league,
+      league: calculated.league,
 
-      homeTeam: dto.homeTeam,
+      homeTeam: calculated.homeTeam,
 
-      awayTeam: dto.awayTeam,
+      awayTeam: calculated.awayTeam,
 
-      homeTeamBadge: dto.homeTeamBadge,
+      homeTeamBadge: calculated.homeTeamBadge,
 
-      awayTeamBadge: dto.awayTeamBadge,
+      awayTeamBadge: calculated.awayTeamBadge,
 
-      prediction,
+      prediction: calculated.prediction,
 
-      probabilities: dto.probabilities,
+      probabilities: calculated.probabilities,
 
-      markets: this.normalizeMarkets(dto.markets),
+      markets: calculated.markets,
 
-      confidence: dto.confidence,
+      confidence: calculated.confidence,
 
       accessType: dto.accessType,
 
       price: dto.price ?? 0,
 
-      matchDate: dto.matchDate,
+      matchDate: calculated.matchDate,
 
-      kickoffTimestamp: new Date(dto.matchDate).getTime(),
+      kickoffTimestamp: calculated.kickoffTimestamp,
     });
   }
-  // =========================
-  // GET ALL
-  // =========================
+
   async findAll() {
     return this.predictionModel
-      .find({ deleted: false })
-      .sort({ createdAt: -1 });
+      .find({
+        deleted: false,
+      })
+      .sort({
+        createdAt: -1,
+      });
   }
 
-  // =========================
-  // GET ONE
-  // =========================
   async findOne(id: string) {
     const prediction = await this.predictionModel.findById(id);
 
@@ -139,9 +104,6 @@ export class PredictionsService {
     return prediction;
   }
 
-  // =========================
-  // UPDATE PREDICTION
-  // =========================
   async update(id: string, dto: UpdatePredictionDto) {
     const prediction = await this.findOne(id);
 
@@ -149,22 +111,55 @@ export class PredictionsService {
       throw new ForbiddenException('Prediction is locked after settlement');
     }
 
-    this.validateProbabilities(dto);
+    let calculated: Awaited<
+      ReturnType<PredictionCalculationService['calculate']>
+    > | null = null;
 
-    const updateData: any = {
-      ...dto,
-    };
-
-    if (dto.probabilities) {
-      updateData.prediction = this.getPredictionFromProbabilities(
-        dto.probabilities.home,
-        dto.probabilities.draw,
-        dto.probabilities.away,
+    if (dto.markets) {
+      calculated = await this.calculationService.calculate(
+        prediction.matchId,
+        dto.markets,
       );
     }
 
-    if (dto.markets) {
-      dto.markets = this.normalizeMarkets(dto.markets);
+    const updateData: Record<string, unknown> = {};
+
+    if (dto.accessType !== undefined) {
+      updateData.accessType = dto.accessType;
+    }
+
+    if (dto.price !== undefined) {
+      updateData.price = dto.price;
+    }
+
+    if (calculated) {
+      updateData.leagueCode = calculated.leagueCode;
+
+      updateData.league = calculated.league;
+
+      updateData.homeTeam = calculated.homeTeam;
+
+      updateData.awayTeam = calculated.awayTeam;
+
+      updateData.homeTeamBadge = calculated.homeTeamBadge;
+
+      updateData.awayTeamBadge = calculated.awayTeamBadge;
+
+      updateData.matchDate = calculated.matchDate;
+
+      updateData.kickoffTimestamp = calculated.kickoffTimestamp;
+
+      updateData.prediction = calculated.prediction;
+
+      updateData.probabilities = calculated.probabilities;
+
+      updateData.markets = calculated.markets;
+
+      updateData.confidence = calculated.confidence;
+    }
+
+    if (!Object.keys(updateData).length) {
+      return prediction;
     }
 
     return this.predictionModel.findByIdAndUpdate(
@@ -179,9 +174,6 @@ export class PredictionsService {
     );
   }
 
-  // =========================
-  // DELETE (SOFT)
-  // =========================
   async delete(id: string) {
     const prediction = await this.findOne(id);
 
@@ -191,14 +183,17 @@ export class PredictionsService {
 
     return this.predictionModel.findByIdAndUpdate(
       id,
-      { $set: { deleted: true } },
-      { new: true },
+      {
+        $set: {
+          deleted: true,
+        },
+      },
+      {
+        new: true,
+      },
     );
   }
 
-  // =========================
-  // USER VIEW
-  // =========================
   async getForUser(id: string, user: any) {
     const prediction = await this.findOne(id);
 
@@ -208,11 +203,10 @@ export class PredictionsService {
     };
   }
 
-  // =========================
-  // COUNT
-  // =========================
   async countPredictions() {
-    return this.predictionModel.countDocuments({ deleted: false });
+    return this.predictionModel.countDocuments({
+      deleted: false,
+    });
   }
 
   async findSettledWins() {
@@ -226,7 +220,8 @@ export class PredictionsService {
         settledAt: -1,
       })
       .limit(50)
-      .lean();
+      .lean()
+      .exec();
 
     return predictions.map((prediction) => ({
       ...prediction,
@@ -246,15 +241,11 @@ export class PredictionsService {
       access: {
         allowed: true,
 
-        state: 'subscription',
+        state: 'settled',
 
         purchased: false,
 
         plan: prediction.accessType,
-
-        released: true,
-
-        releaseAt: 0,
 
         message: null,
       },

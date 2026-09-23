@@ -14,6 +14,9 @@ import {
   primaryButton,
   secondaryButton,
 } from './templates/email-components';
+
+type SubscriptionPlan = 'regular' | 'vip' | 'premium';
+
 @Injectable()
 export class EmailService {
   private resend: Resend;
@@ -69,10 +72,7 @@ export class EmailService {
   "
 >
 
-<!-- Banner -->
-
 <tr>
-
 <td>
 
 <img
@@ -86,10 +86,7 @@ export class EmailService {
 />
 
 </td>
-
 </tr>
-
-<!-- Body -->
 
 <tr>
 
@@ -101,9 +98,7 @@ export class EmailService {
     color:#111827;
   "
 >
-
 Verify Your Email Address
-
 </h2>
 
 <p
@@ -113,13 +108,9 @@ Verify Your Email Address
     font-size:16px;
   "
 >
-
 Welcome to <strong>Honest Predict</strong>!
-
 <br><br>
-
 To complete your registration, please use the verification code below.
-
 </p>
 
 <div
@@ -142,9 +133,7 @@ To complete your registration, please use the verification code below.
     letter-spacing:2px;
   "
 >
-
 Verification Code
-
 </p>
 
 <div
@@ -156,9 +145,7 @@ Verification Code
     color:#2563eb;
   "
 >
-
 ${otp}
-
 </div>
 
 </div>
@@ -169,10 +156,8 @@ ${otp}
     line-height:1.8;
   "
 >
-
 This verification code will expire in
 <strong>5 minutes</strong>.
-
 </p>
 
 <p
@@ -181,9 +166,7 @@ This verification code will expire in
     line-height:1.8;
   "
 >
-
 For your security, never share this code with anyone.
-
 </p>
 
 <hr
@@ -201,17 +184,13 @@ For your security, never share this code with anyone.
     line-height:1.8;
   "
 >
-
 If you didn't create an Honest Predict account,
 you can safely ignore this email.
-
 </p>
 
 </td>
 
 </tr>
-
-<!-- Footer -->
 
 <tr>
 
@@ -230,9 +209,7 @@ you can safely ignore this email.
     font-size:13px;
   "
 >
-
 © ${new Date().getFullYear()} Honest Predict
-
 </p>
 
 <p
@@ -248,9 +225,7 @@ you can safely ignore this email.
     text-decoration:none;
   "
 >
-
 www.honestpredict.com
-
 </a>
 
 </p>
@@ -324,9 +299,6 @@ www.honestpredict.com
   "
 >
 
-
-<!-- Banner -->
-
 <tr>
 
 <td>
@@ -345,8 +317,6 @@ www.honestpredict.com
 
 </tr>
 
-<!-- Content -->
-
 <tr>
 
 <td style="padding:40px;">
@@ -357,9 +327,7 @@ www.honestpredict.com
     color:#111827;
   "
 >
-
 Reset Your Password
-
 </h2>
 
 <p
@@ -369,7 +337,6 @@ Reset Your Password
     font-size:16px;
   "
 >
-
 Hello,
 
 <br><br>
@@ -377,7 +344,6 @@ Hello,
 We received a request to reset the password for your Honest Predict account.
 
 If this was you, simply click the button below.
-
 </p>
 
 <div
@@ -400,9 +366,7 @@ If this was you, simply click the button below.
     display:inline-block;
   "
 >
-
 Reset Password
-
 </a>
 
 </div>
@@ -413,10 +377,8 @@ Reset Password
     line-height:1.7;
   "
 >
-
 This password reset link will expire in
 <strong>30 minutes</strong>.
-
 </p>
 
 <p
@@ -425,9 +387,7 @@ This password reset link will expire in
     line-height:1.7;
   "
 >
-
 If the button doesn't work, copy and paste this link into your browser:
-
 </p>
 
 <p
@@ -442,9 +402,7 @@ If the button doesn't work, copy and paste this link into your browser:
     color:#2563eb;
   "
 >
-
 ${resetLink}
-
 </a>
 
 </p>
@@ -464,18 +422,14 @@ ${resetLink}
     line-height:1.7;
   "
 >
-
 If you didn't request a password reset,
 you can safely ignore this email.
 Your password will remain unchanged.
-
 </p>
 
 </td>
 
 </tr>
-
-<!-- Footer -->
 
 <tr>
 
@@ -494,9 +448,7 @@ Your password will remain unchanged.
     font-size:13px;
   "
 >
-
 © ${new Date().getFullYear()} Honest Predict
-
 </p>
 
 <p
@@ -512,9 +464,7 @@ Your password will remain unchanged.
     text-decoration:none;
   "
 >
-
 www.honestpredict.com
-
 </a>
 
 </p>
@@ -537,6 +487,7 @@ www.honestpredict.com
 `,
     });
   }
+
   async sendPaymentReceivedEmail(data: {
     email: string;
     amount: number;
@@ -617,11 +568,11 @@ Our support team is always available if you have any questions regarding your pa
 
   async sendSubscriptionActivatedEmail(data: {
     email: string;
-    plan: 'regular' | 'vip';
+    plan: SubscriptionPlan;
     amount: number;
     currency: string;
     activatedDate: Date;
-    expiryDate: Date;
+    expiryDate: Date | null;
   }) {
     const dashboardUrl = 'https://www.honestpredict.com/dashboard';
 
@@ -630,7 +581,73 @@ Our support team is always available if you have any questions regarding your pa
     const symbol = data.currency === 'USD' ? '$' : '₦';
 
     const planName =
-      data.plan === 'vip' ? 'VIP Subscription' : 'Regular Subscription';
+      data.plan === 'premium'
+        ? 'Premium Subscription'
+        : data.plan === 'vip'
+          ? 'VIP Subscription'
+          : 'Regular Subscription';
+
+    const expiryText = data.expiryDate
+      ? data.expiryDate.toLocaleDateString('en-NG', {
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        })
+      : 'Lifetime';
+
+    const benefits =
+      data.plan === 'premium'
+        ? infoCard('Premium Benefits', [
+            {
+              label: '✓ Full Premium Access',
+              value: '',
+            },
+            {
+              label: '✓ Premium Predictions',
+              value: '',
+            },
+            {
+              label: '✓ VIP Features',
+              value: '',
+            },
+            {
+              label: '✓ Exclusive Member Access',
+              value: '',
+            },
+          ])
+        : data.plan === 'vip'
+          ? infoCard('VIP Benefits', [
+              {
+                label: '✓ Premium Predictions',
+                value: '',
+              },
+              {
+                label: '✓ VIP Markets',
+                value: '',
+              },
+              {
+                label: '✓ Expert Analysis',
+                value: '',
+              },
+              {
+                label: '✓ Early Access',
+                value: '',
+              },
+            ])
+          : infoCard('Regular Benefits', [
+              {
+                label: '✓ Regular Predictions',
+                value: '',
+              },
+              {
+                label: '✓ Member Features',
+                value: '',
+              },
+              {
+                label: '✓ Daily Tips',
+                value: '',
+              },
+            ]);
 
     return this.resend.emails.send({
       from: 'Honest Predict <subscriptions@honestpredict.com>',
@@ -684,53 +701,11 @@ ${infoCard('Subscription Summary', [
   },
   {
     label: 'Expires',
-    value: data.expiryDate.toLocaleDateString('en-NG', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    }),
+    value: expiryText,
   },
 ])}
 
-${
-  data.plan === 'vip'
-    ? `
-${infoCard('VIP Benefits', [
-  {
-    label: '✓ Premium Predictions',
-    value: '',
-  },
-  {
-    label: '✓ VIP Markets',
-    value: '',
-  },
-  {
-    label: '✓ Expert Analysis',
-    value: '',
-  },
-  {
-    label: '✓ Early Access',
-    value: '',
-  },
-])}
-`
-    : `
-${infoCard('Regular Benefits', [
-  {
-    label: '✓ Regular Predictions',
-    value: '',
-  },
-  {
-    label: '✓ Member Features',
-    value: '',
-  },
-  {
-    label: '✓ Daily Tips',
-    value: '',
-  },
-])}
-`
-}
+${benefits}
 
 ${primaryButton('📊 Go to Dashboard', dashboardUrl)}
 
@@ -786,7 +761,9 @@ ${dangerBox(`
 Your payment request has been rejected.
 
 Reason:
-<strong>${data.reason || 'No reason was provided by the administrator.'}</strong>
+<strong>${
+  data.reason || 'No reason was provided by the administrator.'
+}</strong>
 `)}
 
 ${infoCard('Payment Details', [
@@ -882,7 +859,7 @@ As a member of Honest Predict, you can:
 
 • Purchase premium predictions individually
 
-• Upgrade to a Regular or VIP subscription
+• Upgrade to a Regular, VIP or Premium subscription
 
 • Access expert football analysis
 
@@ -893,7 +870,7 @@ ${primaryButton('Go to Dashboard', dashboardUrl)}
 
 ${secondaryButton('Browse Predictions', predictionsUrl)}
 
-${secondaryButton('Upgrade to VIP', vipUrl)}
+${secondaryButton('View Subscription Plans', vipUrl)}
 
 ${paragraph(`
 Thank you for choosing Honest Predict.
@@ -907,7 +884,7 @@ We wish you success and hope you enjoy everything our platform has to offer.
 
   async sendSubscriptionExpiringEmail(data: {
     email: string;
-    plan: 'regular' | 'vip';
+    plan: SubscriptionPlan;
     expiryDate: Date;
     daysRemaining: number;
   }) {
@@ -983,7 +960,7 @@ We appreciate your continued support.
 
   async sendSubscriptionExpiredEmail(data: {
     email: string;
-    plan: 'regular' | 'vip';
+    plan: SubscriptionPlan;
     expiryDate: Date;
   }) {
     const renewalUrl = 'https://www.honestpredict.com/subscription';

@@ -1,0 +1,7 @@
+export enum CompetitionType {
+  LEAGUE = 'LEAGUE',
+
+  CLUB_COMPETITION = 'CLUB_COMPETITION',
+
+  INTERNATIONAL = 'INTERNATIONAL',
+}

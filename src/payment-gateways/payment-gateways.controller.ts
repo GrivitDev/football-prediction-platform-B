@@ -23,18 +23,8 @@ export class PaymentGatewaysController {
 
   // =====================================================
   // INITIALIZE PAYMENT
-  //
-  // User must be authenticated.
-  //
-  // IMPORTANT:
-  // The frontend does NOT send amount or currency.
-  //
-  // The backend determines:
-  // - user's currency
-  // - actual price
-  // - exchange rate
-  // - NGN gateway amount
   // =====================================================
+
   @UseGuards(JwtAuthGuard)
   @Post('initialize')
   initializePayment(

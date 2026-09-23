@@ -31,14 +31,6 @@ export class PromoReward {
   // CLAIM INFORMATION
   // ======================
 
-  /**
-   * Which reward claim this is.
-   *
-   * Example:
-   * Claim 1
-   * Claim 2
-   * Claim 3
-   */
   @Prop({
     required: true,
   })
@@ -58,10 +50,17 @@ export class PromoReward {
   // SUBSCRIPTION REWARD
   // ======================
 
-  @Prop()
-  plan?: 'regular' | 'vip';
+  @Prop({
+    enum: ['regular', 'vip', 'premium'],
+  })
+  plan?: 'regular' | 'vip' | 'premium';
 
-  @Prop()
+  /**
+   * 0 = lifetime when plan is premium.
+   */
+  @Prop({
+    min: 0,
+  })
   durationDays?: number;
 
   // ======================
@@ -106,9 +105,7 @@ export const PromoRewardSchema = SchemaFactory.createForClass(PromoReward);
 PromoRewardSchema.index(
   {
     promoId: 1,
-
     userId: 1,
-
     claimNumber: 1,
   },
   {

@@ -28,10 +28,6 @@ export class Promo {
   description?: string;
 
   // ======================
-  // PROMO STATUS
-  // ======================
-
-  // ======================
   // PROMO CODE
   // ======================
 
@@ -83,7 +79,6 @@ export class Promo {
   })
   requirement!: PromoRequirement;
 
-  // Number of qualified referrals required
   @Prop({
     required: true,
     default: 1,
@@ -94,11 +89,6 @@ export class Promo {
   // REPEAT SETTINGS
   // ======================
 
-  /**
-   * 1 = User can claim once
-   * 3 = User can claim 3 times
-   * 0 = Unlimited claims
-   */
   @Prop({
     default: 1,
     min: 0,
@@ -115,15 +105,26 @@ export class Promo {
   })
   rewardType!: RewardType;
 
-  // Subscription reward
+  // ======================
+  // SUBSCRIPTION REWARD
+  // ======================
 
-  @Prop()
-  rewardPlan?: 'regular' | 'vip';
+  @Prop({
+    enum: ['regular', 'vip', 'premium'],
+  })
+  rewardPlan?: 'regular' | 'vip' | 'premium';
 
-  @Prop()
+  /**
+   * 0 = lifetime for premium.
+   */
+  @Prop({
+    min: 0,
+  })
   rewardDurationDays?: number;
 
-  // Cash reward
+  // ======================
+  // CASH REWARD
+  // ======================
 
   @Prop()
   rewardAmount?: number;

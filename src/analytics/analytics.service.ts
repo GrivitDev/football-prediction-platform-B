@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 
 import { AnalyticsOverviewService } from './analytics-overview.service';
+
 import { AnalyticsRevenueService } from './analytics-revenue.service';
+
 import { AnalyticsLeaderboardService } from './analytics-leaderboard.service';
 
 @Injectable()

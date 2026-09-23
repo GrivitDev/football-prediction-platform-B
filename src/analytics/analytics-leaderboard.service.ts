@@ -37,13 +37,10 @@ export class AnalyticsLeaderboardService {
   async getLeaderboards() {
     const [
       topSubscribers,
-
       topVipSubscribers,
-
       topRegularSubscribers,
-
+      topPremiumSubscribers,
       topPredictionBuyers,
-
       topReferrers,
     ] = await Promise.all([
       this.getTopSubscribers(),
@@ -51,6 +48,8 @@ export class AnalyticsLeaderboardService {
       this.getTopVipSubscribers(),
 
       this.getTopRegularSubscribers(),
+
+      this.getTopPremiumSubscribers(),
 
       this.getTopPredictionBuyers(),
 
@@ -63,6 +62,8 @@ export class AnalyticsLeaderboardService {
       topVipSubscribers,
 
       topRegularSubscribers,
+
+      topPremiumSubscribers,
 
       topPredictionBuyers,
 
@@ -177,6 +178,48 @@ export class AnalyticsLeaderboardService {
       {
         $sort: {
           totalRegularSubscriptions: -1,
+
+          totalSpent: -1,
+        },
+      },
+
+      {
+        $limit: 5,
+      },
+
+      ...this.lookupUser(),
+    ]);
+  }
+
+  // ==========================================
+  // TOP PREMIUM SUBSCRIBERS
+  // ==========================================
+
+  private async getTopPremiumSubscribers() {
+    return this.subscriptionModel.aggregate([
+      {
+        $match: {
+          plan: 'premium',
+        },
+      },
+
+      {
+        $group: {
+          _id: '$userId',
+
+          totalPremiumSubscriptions: {
+            $sum: 1,
+          },
+
+          totalSpent: {
+            $sum: '$amount',
+          },
+        },
+      },
+
+      {
+        $sort: {
+          totalPremiumSubscriptions: -1,
 
           totalSpent: -1,
         },
@@ -349,6 +392,8 @@ export class AnalyticsLeaderboardService {
           totalVipSubscriptions: 1,
 
           totalRegularSubscriptions: 1,
+
+          totalPremiumSubscriptions: 1,
 
           totalPurchases: 1,
 

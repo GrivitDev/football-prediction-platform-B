@@ -36,7 +36,6 @@ import { AdsModule } from './ads/ads.module';
 import { InternalAdsModule } from './internal-ads/internal-ads.module';
 import { ReferralsModule } from './referrals/referrals.module';
 import { EmailModule } from './notifications/email.module';
-import { CommunityModule } from './community/community.module';
 import { PaymentGatewaysModule } from './payment-gateways/payment-gateways.module';
 import { ArticleModule } from './articles/article.module';
 
@@ -87,7 +86,6 @@ import { ArticleModule } from './articles/article.module';
     AdsModule,
     EmailModule,
     InternalAdsModule,
-    CommunityModule,
     PaymentGatewaysModule,
 
     ReferralsModule,

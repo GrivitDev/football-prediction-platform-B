@@ -19,7 +19,7 @@ export class InitializePaymentDto {
   type!: PaymentType;
 
   /**
-   * subscription => regular | vip
+   * subscription => regular | vip | premium
    * vip_upgrade => vip
    * prediction => purchase reference
    */

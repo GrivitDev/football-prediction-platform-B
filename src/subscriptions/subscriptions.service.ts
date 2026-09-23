@@ -1,38 +1,71 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
+
 import { InjectModel } from '@nestjs/mongoose';
+
 import { Model } from 'mongoose';
+
 import {
   Subscription,
   SubscriptionDocument,
 } from './schemas/subscription.schema';
+
 import { EmailService } from '../notifications/email.service';
+
+export type SubscriptionPlan = 'regular' | 'vip' | 'premium';
 
 @Injectable()
 export class SubscriptionsService {
   constructor(
     @InjectModel(Subscription.name)
-    private subscriptionModel: Model<SubscriptionDocument>,
-    private emailService: EmailService,
+    private readonly subscriptionModel: Model<SubscriptionDocument>,
+
+    private readonly emailService: EmailService,
   ) {}
 
   // =====================================
   // CALCULATE EXPIRY
   // =====================================
+
   private addDays(date: Date, days: number) {
     return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+  }
+
+  /**
+   * 0 days = lifetime.
+   */
+  private getExpiryDate(startDate: Date, durationDays: number): Date | null {
+    if (!Number.isFinite(durationDays) || durationDays <= 0) {
+      return null;
+    }
+
+    return this.addDays(startDate, durationDays);
   }
 
   // =====================================
   // GET ACTIVE SUBSCRIPTION
   // =====================================
+
   async getActiveSubscription(userId: string) {
     const now = new Date();
 
     return this.subscriptionModel
       .findOne({
         userId,
-        startDate: { $lte: now },
-        expiryDate: { $gt: now },
+
+        startDate: {
+          $lte: now,
+        },
+
+        $or: [
+          {
+            expiryDate: {
+              $gt: now,
+            },
+          },
+          {
+            expiryDate: null,
+          },
+        ],
       })
       .sort({
         startDate: -1,
@@ -42,10 +75,11 @@ export class SubscriptionsService {
   // =====================================
   // CREATE OR QUEUE SUBSCRIPTION
   // =====================================
+
   async createSubscription(data: {
     userId: string;
     email: string;
-    plan: 'regular' | 'vip';
+    plan: SubscriptionPlan;
     amount: number;
     durationDays: number;
   }) {
@@ -56,10 +90,11 @@ export class SubscriptionsService {
     // =====================================
     // NO ACTIVE SUBSCRIPTION
     // =====================================
+
     if (!existing) {
       const startDate = now;
 
-      const expiryDate = this.addDays(startDate, data.durationDays);
+      const expiryDate = this.getExpiryDate(startDate, data.durationDays);
 
       return this.subscriptionModel.create({
         userId: data.userId,
@@ -76,16 +111,18 @@ export class SubscriptionsService {
 
     // =====================================
     // SAME PLAN
-    //
-    // Extend from current expiry date.
-    //
-    // Regular -> Regular
-    // VIP -> VIP
     // =====================================
+
     if (existing.plan === data.plan) {
+      if (!existing.expiryDate) {
+        throw new BadRequestException(
+          'This lifetime subscription is already active',
+        );
+      }
+
       const startDate = existing.expiryDate;
 
-      const expiryDate = this.addDays(startDate, data.durationDays);
+      const expiryDate = this.getExpiryDate(startDate, data.durationDays);
 
       return this.subscriptionModel.create({
         userId: data.userId,
@@ -101,17 +138,27 @@ export class SubscriptionsService {
     }
 
     // =====================================
+    // LIFETIME PREMIUM
+    //
+    // Nothing can be queued after it.
+    // =====================================
+
+    if (!existing.expiryDate) {
+      throw new BadRequestException(
+        'Another subscription cannot be queued while a lifetime premium subscription is active',
+      );
+    }
+
+    // =====================================
     // DIFFERENT PLAN
     //
     // Current plan remains active.
     // New plan starts after current plan expires.
-    //
-    // Regular -> VIP
-    // VIP -> Regular
     // =====================================
+
     const startDate = existing.expiryDate;
 
-    const expiryDate = this.addDays(startDate, data.durationDays);
+    const expiryDate = this.getExpiryDate(startDate, data.durationDays);
 
     return this.subscriptionModel.create({
       userId: data.userId,
@@ -129,6 +176,7 @@ export class SubscriptionsService {
   // =====================================
   // CALCULATE VIP UPGRADE PRICE
   // =====================================
+
   async calculateUpgradePrice(
     userId: string,
     regularPrice: number,
@@ -141,6 +189,7 @@ export class SubscriptionsService {
     // =====================================
     // NO SUBSCRIPTION
     // =====================================
+
     if (!subscription) {
       return {
         currentPlan: 'free',
@@ -174,6 +223,7 @@ export class SubscriptionsService {
     // =====================================
     // ALREADY VIP
     // =====================================
+
     if (subscription.plan === 'vip') {
       return {
         currentPlan: 'vip',
@@ -204,7 +254,79 @@ export class SubscriptionsService {
       };
     }
 
+    // =====================================
+    // ALREADY PREMIUM
+    // =====================================
+
+    if (subscription.plan === 'premium') {
+      return {
+        currentPlan: 'premium',
+
+        currency,
+
+        regularPrice,
+
+        vipPrice,
+
+        subscriptionDurationDays,
+
+        daysRemaining: subscription.expiryDate
+          ? Math.max(
+              0,
+              Math.ceil(
+                (subscription.expiryDate.getTime() - Date.now()) /
+                  (1000 * 60 * 60 * 24),
+              ),
+            )
+          : 0,
+
+        regularDailyPrice: 0,
+
+        vipDailyPrice: 0,
+
+        upgradeDailyPrice: 0,
+
+        credit: 0,
+
+        upgradeCost: 0,
+
+        amount: 0,
+
+        canUpgrade: false,
+      };
+    }
+
     const now = new Date();
+
+    if (!subscription.expiryDate) {
+      return {
+        currentPlan: subscription.plan,
+
+        currency,
+
+        regularPrice,
+
+        vipPrice,
+
+        subscriptionDurationDays,
+
+        daysRemaining: 0,
+
+        regularDailyPrice: 0,
+
+        vipDailyPrice: 0,
+
+        upgradeDailyPrice: 0,
+
+        credit: 0,
+
+        upgradeCost: 0,
+
+        amount: 0,
+
+        canUpgrade: false,
+      };
+    }
 
     const millisecondsRemaining =
       subscription.expiryDate.getTime() - now.getTime();
@@ -214,18 +336,14 @@ export class SubscriptionsService {
       Math.ceil(millisecondsRemaining / (1000 * 60 * 60 * 24)),
     );
 
-    // Daily values in the selected currency
     const regularDailyPrice = regularPrice / subscriptionDurationDays;
 
     const vipDailyPrice = vipPrice / subscriptionDurationDays;
 
-    // Difference per remaining day
     const upgradeDailyPrice = vipDailyPrice - regularDailyPrice;
 
-    // Credit for unused Regular subscription
     const credit = regularDailyPrice * daysRemaining;
 
-    // Final amount to pay
     const amount = Math.max(0, vipPrice - credit);
 
     return {
@@ -256,26 +374,31 @@ export class SubscriptionsService {
       canUpgrade: subscription.plan === 'regular',
     };
   }
+
   // =====================================
   // ACTIVATE PLAN
   //
-  // Handles:
+  // Free -> Regular = activate now
+  // Free -> VIP = activate now
+  // Free -> Premium = activate now
   //
-  // Free -> Regular      = activate now
-  // Free -> VIP          = activate now
+  // Regular -> Regular = extend
+  // VIP -> VIP = extend
+  // Premium -> Premium = extend if finite
   //
-  // Regular -> Regular   = extend
-  // VIP -> VIP           = extend
+  // Regular -> VIP = immediate upgrade
+  // Regular -> Premium = immediate upgrade
+  // VIP -> Premium = immediate upgrade
   //
-  // VIP -> Regular       = queue after expiry
-  //
-  // Regular -> VIP       = activate immediately
-  //                        (current regular ends now)
+  // VIP -> Regular = queue
+  // Premium -> VIP = queue if premium has expiry
+  // Premium -> Regular = queue if premium has expiry
   // =====================================
+
   async activatePlan(data: {
     userId: string;
     email: string;
-    plan: 'regular' | 'vip';
+    plan: SubscriptionPlan;
     amount: number;
     durationDays: number;
   }) {
@@ -286,6 +409,7 @@ export class SubscriptionsService {
     // =====================================
     // NO ACTIVE SUBSCRIPTION
     // =====================================
+
     if (!existing) {
       return this.subscriptionModel.create({
         userId: data.userId,
@@ -295,7 +419,7 @@ export class SubscriptionsService {
         amount: data.amount,
 
         startDate: now,
-        expiryDate: this.addDays(now, data.durationDays),
+        expiryDate: this.getExpiryDate(now, data.durationDays),
 
         isActive: true,
 
@@ -306,10 +430,15 @@ export class SubscriptionsService {
 
     // =====================================
     // SAME PLAN
-    //
-    // Extend subscription
     // =====================================
+
     if (existing.plan === data.plan) {
+      if (!existing.expiryDate) {
+        throw new BadRequestException(
+          'This lifetime subscription is already active',
+        );
+      }
+
       return this.subscriptionModel.create({
         userId: data.userId,
         email: data.email,
@@ -318,7 +447,75 @@ export class SubscriptionsService {
         amount: data.amount,
 
         startDate: existing.expiryDate,
-        expiryDate: this.addDays(existing.expiryDate, data.durationDays),
+
+        expiryDate: this.getExpiryDate(existing.expiryDate, data.durationDays),
+
+        isActive: false,
+
+        expiringReminderSent: false,
+        expiredNotificationSent: false,
+      });
+    }
+
+    // =====================================
+    // UPGRADE TO PREMIUM
+    //
+    // Premium is the highest plan.
+    // Activate immediately.
+    // =====================================
+
+    if (data.plan === 'premium') {
+      if (existing.plan === 'premium') {
+        throw new BadRequestException('Premium subscription is already active');
+      }
+
+      existing.expiryDate = now;
+      existing.isActive = false;
+
+      await existing.save();
+
+      return this.subscriptionModel.create({
+        userId: data.userId,
+        email: data.email,
+
+        plan: 'premium',
+        amount: data.amount,
+
+        startDate: now,
+
+        expiryDate: this.getExpiryDate(now, data.durationDays),
+
+        isActive: true,
+
+        expiringReminderSent: false,
+        expiredNotificationSent: false,
+      });
+    }
+
+    // =====================================
+    // PREMIUM -> LOWER PLAN
+    //
+    // If premium is lifetime, nothing can
+    // start after it.
+    // =====================================
+
+    if (existing.plan === 'premium') {
+      if (!existing.expiryDate) {
+        throw new BadRequestException(
+          'A lower plan cannot be scheduled while lifetime premium is active',
+        );
+      }
+
+      return this.subscriptionModel.create({
+        userId: data.userId,
+        email: data.email,
+
+        plan: data.plan,
+        amount: data.amount,
+
+        startDate: existing.expiryDate,
+
+        expiryDate: this.getExpiryDate(existing.expiryDate, data.durationDays),
 
         isActive: false,
 
@@ -331,10 +528,8 @@ export class SubscriptionsService {
     // REGULAR -> VIP
     //
     // Upgrade immediately.
-    //
-    // End current subscription now.
-    // VIP starts immediately.
     // =====================================
+
     if (existing.plan === 'regular' && data.plan === 'vip') {
       existing.expiryDate = now;
       existing.isActive = false;
@@ -349,7 +544,8 @@ export class SubscriptionsService {
         amount: data.amount,
 
         startDate: now,
-        expiryDate: this.addDays(now, data.durationDays),
+
+        expiryDate: this.getExpiryDate(now, data.durationDays),
 
         isActive: true,
 
@@ -361,36 +557,61 @@ export class SubscriptionsService {
     // =====================================
     // VIP -> REGULAR
     //
-    // Never downgrade immediately.
-    //
-    // Queue Regular subscription
-    // after VIP expires.
+    // Queue after VIP expires.
     // =====================================
-    return this.subscriptionModel.create({
-      userId: data.userId,
-      email: data.email,
 
-      plan: 'regular',
-      amount: data.amount,
+    if (existing.plan === 'vip' && data.plan === 'regular') {
+      if (!existing.expiryDate) {
+        throw new BadRequestException(
+          'A regular subscription cannot be scheduled without a VIP expiry date',
+        );
+      }
 
-      startDate: existing.expiryDate,
-      expiryDate: this.addDays(existing.expiryDate, data.durationDays),
+      return this.subscriptionModel.create({
+        userId: data.userId,
+        email: data.email,
 
-      isActive: false,
+        plan: 'regular',
+        amount: data.amount,
 
-      expiringReminderSent: false,
-      expiredNotificationSent: false,
-    });
+        startDate: existing.expiryDate,
+
+        expiryDate: this.getExpiryDate(existing.expiryDate, data.durationDays),
+
+        isActive: false,
+
+        expiringReminderSent: false,
+        expiredNotificationSent: false,
+      });
+    }
+
+    // =====================================
+    // FALLBACK
+    // =====================================
+
+    throw new BadRequestException('Unsupported subscription transition');
   }
 
   // =====================================
   // USER PLAN CHECK
   // =====================================
-  async getUserPlan(userId: string): Promise<'free' | 'regular' | 'vip'> {
+
+  async getUserPlan(
+    userId: string,
+  ): Promise<'free' | 'regular' | 'vip' | 'premium'> {
     const sub = await this.getActiveSubscription(userId);
 
-    if (!sub) return 'free';
-    if (sub.plan === 'vip') return 'vip';
+    if (!sub) {
+      return 'free';
+    }
+
+    if (sub.plan === 'premium') {
+      return 'premium';
+    }
+
+    if (sub.plan === 'vip') {
+      return 'vip';
+    }
 
     return 'regular';
   }
@@ -398,6 +619,7 @@ export class SubscriptionsService {
   // =====================================
   // VIP CHECK
   // =====================================
+
   async isVip(userId: string) {
     const sub = await this.getActiveSubscription(userId);
 
@@ -405,8 +627,19 @@ export class SubscriptionsService {
   }
 
   // =====================================
+  // PREMIUM CHECK
+  // =====================================
+
+  async isPremium(userId: string) {
+    const sub = await this.getActiveSubscription(userId);
+
+    return !!sub && sub.plan === 'premium';
+  }
+
+  // =====================================
   // GET EXPIRED SUBSCRIPTIONS
   // =====================================
+
   async getExpiredSubscriptions() {
     const now = new Date();
 
@@ -416,13 +649,16 @@ export class SubscriptionsService {
       },
 
       expiryDate: {
+        $ne: null,
         $lt: now,
       },
     });
   }
+
   // =====================================
   // ADMIN SUMMARY
   // =====================================
+
   async getSubscriptionSummary(userId: string) {
     const now = new Date();
 
@@ -458,13 +694,15 @@ export class SubscriptionsService {
       };
     }
 
-    const daysRemaining = Math.max(
-      0,
-      Math.ceil(
-        (subscription.expiryDate.getTime() - now.getTime()) /
-          (1000 * 60 * 60 * 24),
-      ),
-    );
+    const daysRemaining = subscription.expiryDate
+      ? Math.max(
+          0,
+          Math.ceil(
+            (subscription.expiryDate.getTime() - now.getTime()) /
+              (1000 * 60 * 60 * 24),
+          ),
+        )
+      : null;
 
     return {
       hasSubscription: true,
@@ -486,6 +724,7 @@ export class SubscriptionsService {
   // =====================================
   // GET VIP USERS
   // =====================================
+
   async getVipUsers() {
     const now = new Date();
 
@@ -496,15 +735,50 @@ export class SubscriptionsService {
         $lte: now,
       },
 
-      expiryDate: {
-        $gt: now,
+      $or: [
+        {
+          expiryDate: {
+            $gt: now,
+          },
+        },
+        {
+          expiryDate: null,
+        },
+      ],
+    });
+  }
+
+  // =====================================
+  // GET PREMIUM USERS
+  // =====================================
+
+  async getPremiumUsers() {
+    const now = new Date();
+
+    return this.subscriptionModel.find({
+      plan: 'premium',
+
+      startDate: {
+        $lte: now,
       },
+
+      $or: [
+        {
+          expiryDate: {
+            $gt: now,
+          },
+        },
+        {
+          expiryDate: null,
+        },
+      ],
     });
   }
 
   // =====================================
   // FIND SUBSCRIPTIONS EXPIRING IN 3 DAYS
   // =====================================
+
   async getExpiringSubscriptions() {
     const now = new Date();
 
@@ -526,6 +800,7 @@ export class SubscriptionsService {
       },
 
       expiryDate: {
+        $ne: null,
         $gte: start,
         $lte: end,
       },
@@ -537,6 +812,7 @@ export class SubscriptionsService {
   // =====================================
   // FIND EXPIRED SUBSCRIPTIONS
   // =====================================
+
   async getSubscriptionsExpired() {
     const now = new Date();
 
@@ -546,6 +822,7 @@ export class SubscriptionsService {
       },
 
       expiryDate: {
+        $ne: null,
         $lt: now,
       },
 
@@ -556,6 +833,7 @@ export class SubscriptionsService {
   // =====================================
   // SEND EXPIRING EMAIL
   // =====================================
+
   async sendExpiringEmail(subscription: any) {
     await this.emailService.sendSubscriptionExpiringEmail({
       email: subscription.email,
@@ -575,6 +853,7 @@ export class SubscriptionsService {
   // =====================================
   // SEND EXPIRED EMAIL
   // =====================================
+
   async sendExpiredEmail(subscription: any) {
     await this.emailService.sendSubscriptionExpiredEmail({
       email: subscription.email,

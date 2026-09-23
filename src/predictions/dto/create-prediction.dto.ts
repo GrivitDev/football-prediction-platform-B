@@ -1,99 +1,38 @@
-// src/predictions/dto/create-prediction.dto.ts
-
 import {
-  IsString,
-  IsNumber,
   IsEnum,
+  IsNotEmpty,
+  IsNumber,
   IsOptional,
-  ValidateNested,
+  IsString,
   Min,
-  Max,
+  ValidateNested,
 } from 'class-validator';
-
 import { Type } from 'class-transformer';
-
-class ProbabilitiesDto {
-  @IsNumber()
-  home!: number;
-
-  @IsNumber()
-  draw!: number;
-
-  @IsNumber()
-  away!: number;
-}
 
 class MarketDto {
   @IsString()
+  @IsNotEmpty()
   market!: string;
 
-  @IsOptional()
   @IsString()
-  selection?: string;
-}
-
-class LeagueDto {
-  @IsString()
-  code!: string;
-
-  @IsString()
-  name!: string;
-
-  @IsString()
-  country!: string;
-
-  @IsOptional()
-  @IsString()
-  emblem?: string;
+  @IsNotEmpty()
+  selection!: string;
 }
 
 export class CreatePredictionDto {
   @IsString()
+  @IsNotEmpty()
   matchId!: string;
 
-  @IsString()
-  leagueCode!: string;
-
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => LeagueDto)
-  league?: LeagueDto;
-
-  @IsString()
-  homeTeam!: string;
-
-  @IsString()
-  awayTeam!: string;
-
-  @IsOptional()
-  @IsString()
-  homeTeamBadge?: string;
-
-  @IsOptional()
-  @IsString()
-  awayTeamBadge?: string;
-
-  @ValidateNested()
-  @Type(() => ProbabilitiesDto)
-  probabilities!: ProbabilitiesDto;
-
-  @IsNumber()
-  @Min(1)
-  @Max(100)
-  confidence!: number;
-
-  @IsEnum(['free', 'regular', 'vip'])
-  accessType!: 'free' | 'regular' | 'vip';
+  @IsEnum(['free', 'regular', 'vip', 'premium'])
+  accessType!: 'free' | 'regular' | 'vip' | 'premium';
 
   @IsOptional()
   @IsNumber()
+  @Min(0)
   price?: number;
 
-  @IsString()
-  matchDate!: string;
-
-  @IsOptional()
   @ValidateNested({ each: true })
   @Type(() => MarketDto)
-  markets?: MarketDto[];
+  markets!: MarketDto[];
 }

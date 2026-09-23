@@ -261,9 +261,35 @@ export class PromoEngineService {
     claimNumber: number,
   ) {
     const user = await this.usersService.findById(userId);
+
     if (!user) {
       throw new Error('User not found');
     }
+
+    if (
+      promo.rewardPlan !== 'regular' &&
+      promo.rewardPlan !== 'vip' &&
+      promo.rewardPlan !== 'premium'
+    ) {
+      throw new BadRequestException('Invalid subscription reward plan');
+    }
+
+    const durationDays = promo.rewardDurationDays;
+
+    if (
+      durationDays === undefined ||
+      !Number.isFinite(durationDays) ||
+      durationDays < 0
+    ) {
+      throw new BadRequestException('Invalid subscription reward duration');
+    }
+
+    if (promo.rewardPlan !== 'premium' && durationDays <= 0) {
+      throw new BadRequestException(
+        'Regular and VIP rewards require a duration greater than 0',
+      );
+    }
+
     const reward = await this.rewardModel.create({
       promoId: promo._id.toString(),
 
@@ -275,7 +301,7 @@ export class PromoEngineService {
 
       plan: promo.rewardPlan,
 
-      durationDays: promo.rewardDurationDays,
+      durationDays,
 
       status: PromoRewardStatus.APPROVED,
     });
@@ -285,11 +311,11 @@ export class PromoEngineService {
 
       email: user.email,
 
-      plan: promo.rewardPlan!,
+      plan: promo.rewardPlan,
 
       amount: 0,
 
-      durationDays: promo.rewardDurationDays!,
+      durationDays,
     });
 
     reward.status = PromoRewardStatus.PAID;

@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 
 import { SubscriptionsService } from '../../subscriptions/subscriptions.service';
+
 import { PredictionPurchasesService } from '../../prediction-purchases/prediction-purchases.service';
 
-import { PlanLevels } from '../constants/plan-levels';
-import { PredictionAccessRules } from '../constants/access-rules';
+import { PlanLevels, PlanType } from '../constants/plan-levels';
 
 interface User {
   _id: {
@@ -13,9 +13,7 @@ interface User {
 }
 
 interface Prediction {
-  accessType: 'free' | 'regular' | 'vip';
-
-  kickoffTimestamp: number;
+  accessType: PlanType;
 
   _id: {
     toString(): string;
@@ -30,52 +28,7 @@ export class AccessService {
     private readonly purchaseService: PredictionPurchasesService,
   ) {}
 
-  private getHoursLeft(kickoffTimestamp: number) {
-    return (kickoffTimestamp - Date.now()) / (1000 * 60 * 60);
-  }
-
-  private getReleaseData(
-    kickoffTimestamp: number,
-
-    releaseHoursBeforeKickoff: number,
-  ) {
-    const releaseAt =
-      kickoffTimestamp - releaseHoursBeforeKickoff * 60 * 60 * 1000;
-
-    return {
-      releaseAt,
-
-      released: Date.now() >= releaseAt,
-    };
-  }
-
-  async canAccessPrediction(
-    user: User | null,
-
-    prediction: Prediction,
-  ) {
-    let userPlan: 'free' | 'regular' | 'vip' = 'free';
-
-    if (user) {
-      userPlan = await this.subscriptionService.getUserPlan(
-        user._id.toString(),
-      );
-    }
-
-    const rule = PredictionAccessRules[userPlan];
-
-    const release = this.getReleaseData(
-      prediction.kickoffTimestamp,
-
-      rule.releaseHoursBeforeKickoff,
-    );
-
-    const hoursLeft = this.getHoursLeft(prediction.kickoffTimestamp);
-
-    // ==========================
-    // LOGIN REQUIRED
-    // ==========================
-
+  async canAccessPrediction(user: User | null, prediction: Prediction) {
     if (!user) {
       return {
         allowed: false,
@@ -84,23 +37,12 @@ export class AccessService {
 
         purchased: false,
 
-        ...release,
-
-        showProbabilities: false,
-
-        allowedMarkets: [],
-
         message: 'Login required',
       };
     }
 
-    // ==========================
-    // ONE TIME PURCHASE
-    // ==========================
-
     const purchased = await this.purchaseService.hasPurchased(
       user._id.toString(),
-
       prediction._id.toString(),
     );
 
@@ -112,21 +54,19 @@ export class AccessService {
 
         purchased: true,
 
-        ...release,
-
-        showProbabilities: true,
-
-        allowedMarkets: null,
+        message: null,
       };
     }
 
-    // ==========================
-    // SUBSCRIPTION LEVEL CHECK
-    // ==========================
+    const rawPlan = await this.subscriptionService.getUserPlan(
+      user._id.toString(),
+    );
 
-    const userLevel = PlanLevels[userPlan] ?? 0;
+    const userPlan = this.normalizePlan(rawPlan);
 
-    const predictionLevel = PlanLevels[prediction.accessType] ?? 0;
+    const userLevel = PlanLevels[userPlan];
+
+    const predictionLevel = PlanLevels[prediction.accessType];
 
     if (userLevel < predictionLevel) {
       return {
@@ -136,41 +76,9 @@ export class AccessService {
 
         purchased: false,
 
-        ...release,
-
-        showProbabilities: false,
-
-        allowedMarkets: [],
-
         message: `${prediction.accessType} subscription required`,
       };
     }
-
-    // ==========================
-    // RELEASE WINDOW CHECK
-    // ==========================
-
-    if (hoursLeft > rule.releaseHoursBeforeKickoff) {
-      return {
-        allowed: false,
-
-        state: 'locked',
-
-        purchased: false,
-
-        ...release,
-
-        showProbabilities: false,
-
-        allowedMarkets: [],
-
-        message: `Available ${rule.releaseHoursBeforeKickoff} hours before kickoff`,
-      };
-    }
-
-    // ==========================
-    // FULL ACCESS
-    // ==========================
 
     return {
       allowed: true,
@@ -179,11 +87,20 @@ export class AccessService {
 
       purchased: false,
 
-      ...release,
-
-      showProbabilities: rule.showProbabilities,
-
-      allowedMarkets: rule.allowedMarkets,
+      message: null,
     };
+  }
+
+  private normalizePlan(value: unknown): PlanType {
+    if (
+      value === 'free' ||
+      value === 'regular' ||
+      value === 'vip' ||
+      value === 'premium'
+    ) {
+      return value;
+    }
+
+    return 'free';
   }
 }

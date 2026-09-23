@@ -39,17 +39,29 @@ export class CreatePromoDto {
   @IsEnum(RewardType)
   rewardType!: RewardType;
 
-  // subscription reward
+  // ======================
+  // SUBSCRIPTION REWARD
+  // ======================
 
   @IsOptional()
   @IsString()
-  rewardPlan?: 'regular' | 'vip';
+  rewardPlan?: 'regular' | 'vip' | 'premium';
 
+  /**
+   * Regular/VIP must be greater than 0.
+   *
+   * Premium:
+   * 0 = lifetime
+   * >0 = limited duration
+   */
   @IsOptional()
   @IsNumber()
+  @Min(0)
   rewardDurationDays?: number;
 
-  // cash reward
+  // ======================
+  // CASH REWARD
+  // ======================
 
   @IsOptional()
   @IsNumber()

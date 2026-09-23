@@ -1,8 +1,11 @@
 import { Injectable } from '@nestjs/common';
+
 import { InjectModel } from '@nestjs/mongoose';
+
 import { Model } from 'mongoose';
 
 import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
+
 import { RevenueBreakdown } from './interfaces/revenue-breakdown.interface';
 
 @Injectable()
@@ -24,6 +27,8 @@ export class AnalyticsRevenueService {
 
       regularRevenue,
 
+      premiumRevenue,
+
       predictionRevenue,
 
       totalPayments,
@@ -37,11 +42,13 @@ export class AnalyticsRevenueService {
       // ==========================================
       // TOTAL REVENUE
       // ==========================================
+
       this.sumRevenue(approvedPayments),
 
       // ==========================================
       // VIP REVENUE
       // ==========================================
+
       this.sumRevenue({
         ...approvedPayments,
 
@@ -59,6 +66,7 @@ export class AnalyticsRevenueService {
       // ==========================================
       // REGULAR REVENUE
       // ==========================================
+
       this.sumRevenue({
         ...approvedPayments,
 
@@ -68,8 +76,21 @@ export class AnalyticsRevenueService {
       }),
 
       // ==========================================
+      // PREMIUM REVENUE
+      // ==========================================
+
+      this.sumRevenue({
+        ...approvedPayments,
+
+        type: 'subscription',
+
+        target: 'premium',
+      }),
+
+      // ==========================================
       // PREDICTION REVENUE
       // ==========================================
+
       this.sumRevenue({
         ...approvedPayments,
 
@@ -79,6 +100,7 @@ export class AnalyticsRevenueService {
       // ==========================================
       // PAYMENT COUNTS
       // ==========================================
+
       this.paymentModel.countDocuments(),
 
       this.paymentModel.countDocuments({
@@ -100,6 +122,8 @@ export class AnalyticsRevenueService {
       vipRevenue,
 
       regularRevenue,
+
+      premiumRevenue,
 
       predictionRevenue,
 

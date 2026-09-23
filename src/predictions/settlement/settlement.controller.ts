@@ -13,20 +13,24 @@ export class SettlementController {
   constructor(private readonly settlementService: SettlementService) {}
 
   // ==========================================================
-  // MANUAL ADMIN SETTLEMENT
+  // SETTLE FROM ESPN
   // ==========================================================
 
   @Roles('admin')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Post(':id')
-  settle(
-    @Param('id') id: string,
+  settle(@Param('id') id: string) {
+    return this.settlementService.settlePrediction(id, 'ESPN');
+  }
 
-    @Body()
-    body: {
-      result: 'HOME' | 'AWAY' | 'DRAW' | 'VOID';
-    },
-  ) {
-    return this.settlementService.settlePrediction(id, body.result);
+  // ==========================================================
+  // MANUAL VOID
+  // ==========================================================
+
+  @Roles('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Post(':id/void')
+  voidPrediction(@Param('id') id: string) {
+    return this.settlementService.settlePrediction(id, 'VOID');
   }
 }

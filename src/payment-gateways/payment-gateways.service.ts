@@ -28,6 +28,7 @@ export class PaymentGatewaysService {
   // ===================================================
   // INITIALIZE PAYMENT
   // ===================================================
+
   async initializePayment(dto: {
     userId: string;
     email: string;
@@ -35,10 +36,6 @@ export class PaymentGatewaysService {
     type: 'subscription' | 'prediction' | 'vip_upgrade';
     target: string;
   }) {
-    // =================================================
-    // GET ORIGINAL PRICE FROM BACKEND
-    // =================================================
-
     const pricing = await this.paymentsService.calculateGatewayPaymentAmount({
       userId: dto.userId,
       type: dto.type,
@@ -53,6 +50,7 @@ export class PaymentGatewaysService {
     // =================================================
 
     let gatewayAmount = originalAmount;
+
     let exchangeRate: number | undefined;
 
     if (originalCurrency === 'USD') {
@@ -60,6 +58,7 @@ export class PaymentGatewaysService {
         await this.exchangeRateService.convertUsdToNgn(originalAmount);
 
       gatewayAmount = conversion.amount;
+
       exchangeRate = conversion.rate;
     }
 
@@ -69,20 +68,23 @@ export class PaymentGatewaysService {
 
     const payment = await this.paymentsService.createGatewayPaymentRecord({
       userId: dto.userId,
+
       email: dto.email,
+
       gateway: dto.gateway,
+
       type: dto.type,
+
       target: dto.target,
 
-      // What the customer actually purchased
       amount: originalAmount,
+
       currency: originalCurrency,
 
-      // What Paystack/OPay actually receives
       gatewayAmount,
+
       gatewayCurrency: 'NGN',
 
-      // Rate used for conversion
       exchangeRate,
     });
 
@@ -91,10 +93,6 @@ export class PaymentGatewaysService {
     // =================================================
 
     const gateway = this.gatewayFactory.create(dto.gateway);
-
-    // =================================================
-    // SEND ONLY NGN TO GATEWAY
-    // =================================================
 
     if (payment.gatewayAmount == null) {
       throw new BadRequestException(
@@ -141,6 +139,7 @@ export class PaymentGatewaysService {
 
       return {
         success: true,
+
         status: 'approved',
 
         message:
@@ -158,6 +157,7 @@ export class PaymentGatewaysService {
     if (verification.status === 'pending') {
       return {
         success: false,
+
         status: 'pending',
 
         message:
@@ -177,6 +177,7 @@ export class PaymentGatewaysService {
 
     return {
       success: false,
+
       status: 'failed',
 
       message: verification.message ?? 'We could not confirm your payment.',
@@ -233,10 +234,8 @@ export class PaymentGatewaysService {
 
       email: user.email,
 
-      // Original customer amount
       amount: payment.amount,
 
-      // Original customer currency
       currency: payment.currency,
 
       type: payment.type,

@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/mongoose';
+
 import { Model } from 'mongoose';
 
 import { Prediction, PredictionDocument } from './schemas/prediction.schema';
@@ -9,19 +10,10 @@ import { AccessService } from './access/access.service';
 
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
+import { PlanLevels, PlanType } from './constants/plan-levels';
+
 interface User {
   _id: string;
-}
-
-interface AccessResult {
-  allowed: boolean;
-  state: string;
-  released: boolean;
-  releaseAt: number;
-  purchased: boolean;
-  message?: string | null;
-  showProbabilities: boolean;
-  allowedMarkets: readonly string[] | null;
 }
 
 @Injectable()
@@ -34,10 +26,6 @@ export class PredictionUserService {
 
     private readonly subscriptionService: SubscriptionsService,
   ) {}
-
-  // =====================================
-  // GET ALL USER PREDICTIONS
-  // =====================================
 
   async getUserPredictions(user: User | null, league?: string) {
     const query: Record<string, any> = {
@@ -57,21 +45,19 @@ export class PredictionUserService {
     );
   }
 
-  // =====================================
-  // FORMAT RESPONSE
-  // =====================================
-
   private async formatPrediction(
     user: User | null,
     prediction: PredictionDocument,
   ) {
-    const access: AccessResult = await this.accessService.canAccessPrediction(
+    const access = await this.accessService.canAccessPrediction(
       user,
       prediction,
     );
 
-    const userPlan = user
-      ? await this.subscriptionService.getUserPlan(user._id.toString())
+    const userPlan: PlanType = user
+      ? this.normalizePlan(
+          await this.subscriptionService.getUserPlan(user._id.toString()),
+        )
       : 'free';
 
     const base = {
@@ -104,10 +90,6 @@ export class PredictionUserService {
       confidence: prediction.confidence,
     };
 
-    // =====================================
-    // FULL ACCESS
-    // =====================================
-
     if (access.allowed) {
       return {
         ...base,
@@ -117,34 +99,22 @@ export class PredictionUserService {
 
           state: access.state,
 
-          purchased: access.purchased ?? false,
+          purchased: access.purchased,
 
           plan: userPlan,
-
-          released: access.released,
-
-          releaseAt: access.releaseAt,
 
           message: null,
         },
 
         data: {
           prediction: prediction.prediction,
-          probabilities: access.showProbabilities
-            ? prediction.probabilities
-            : null,
 
-          markets: this.filterMarkets(
-            prediction.markets,
-            access.allowedMarkets,
-          ),
+          probabilities: prediction.probabilities,
+
+          markets: prediction.markets,
         },
       };
     }
-
-    // =====================================
-    // LOCKED
-    // =====================================
 
     return {
       ...base,
@@ -154,13 +124,9 @@ export class PredictionUserService {
 
         state: access.state,
 
-        purchased: access.purchased ?? false,
+        purchased: access.purchased,
 
         plan: userPlan,
-
-        released: access.released,
-
-        releaseAt: access.releaseAt,
 
         message: access.message,
       },
@@ -170,34 +136,6 @@ export class PredictionUserService {
       data: null,
     };
   }
-
-  // =====================================
-  // FILTER MARKETS
-  // =====================================
-
-  private filterMarkets(
-    markets: Array<{ market: string; [key: string]: unknown }>,
-
-    allowedMarkets: readonly string[] | null,
-  ): Array<{ market: string; [key: string]: unknown }> {
-    // VIP
-    // No filtering
-    if (allowedMarkets === null) {
-      return markets;
-    }
-
-    // FREE
-    if (!allowedMarkets.length) {
-      return [];
-    }
-
-    // REGULAR
-    return markets.filter((market) => allowedMarkets.includes(market.market));
-  }
-
-  // =====================================
-  // SINGLE PREDICTION
-  // =====================================
 
   async getUserPredictionById(user: User | null, id: string) {
     const prediction = await this.predictionModel.findById(id);
@@ -209,43 +147,40 @@ export class PredictionUserService {
     return this.formatPrediction(user, prediction);
   }
 
-  // =====================================
-  // ACTIONS FOR FRONTEND
-  // =====================================
-
-  private getActions(userPlan: string, prediction: PredictionDocument) {
+  private getActions(userPlan: PlanType, prediction: PredictionDocument) {
     const actions: string[] = [];
 
     if (prediction.price > 0) {
       actions.push('buy_prediction');
     }
 
-    if (prediction.accessType === 'vip' && userPlan !== 'vip') {
-      actions.push('upgrade_vip');
-    }
+    const userLevel = PlanLevels[userPlan];
 
-    if (userPlan === 'free' && prediction.accessType === 'regular') {
-      actions.push('subscribe_regular');
-    }
+    const predictionLevel = PlanLevels[prediction.accessType];
 
-    if (userPlan === 'free' && prediction.accessType === 'vip') {
-      actions.push('subscribe_vip');
-    }
-
-    if (prediction.accessType === 'free') {
-      actions.push('wait_for_release');
+    if (userLevel < predictionLevel) {
+      actions.push(`upgrade_${prediction.accessType}`);
     }
 
     return actions;
   }
 
-  // =====================================
-  // AVAILABLE LEAGUES
-  // =====================================
-
   async getLeagues() {
     return this.predictionModel.distinct('leagueCode', {
       deleted: false,
     });
+  }
+
+  private normalizePlan(value: unknown): PlanType {
+    if (
+      value === 'free' ||
+      value === 'regular' ||
+      value === 'vip' ||
+      value === 'premium'
+    ) {
+      return value;
+    }
+
+    return 'free';
   }
 }

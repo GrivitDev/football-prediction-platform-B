@@ -1,0 +1,330 @@
+import { CollectionFrequency } from '../enums/collection-frequency.enum';
+import { CompetitionPriority } from '../enums/competition-priority.enum';
+import { CompetitionRegion } from '../enums/competition-region.enum';
+import { CompetitionType } from '../enums/competition-type.enum';
+import { PriorityLeague } from '../enums/priority-league.enum';
+import { PriorityClubCompetition } from '../enums/priority-club-competition.enum';
+import { PriorityInternationalCompetition } from '../enums/priority-international-competition.enum';
+import { SupportedCompetitionConfig } from '../interfaces/supported-competition-config.interface';
+import { FOOTBALL_DATA_COVERAGE } from './football-data-coverage.config';
+
+// ============================================================
+// FOOTBALL-DATA MAPPINGS
+// ============================================================
+
+const FOOTBALL_DATA_CODES: Record<string, string> = Object.fromEntries(
+  FOOTBALL_DATA_COVERAGE.map((coverage) => [
+    coverage.espnLeagueSlug,
+    coverage.code,
+  ]),
+);
+
+// ============================================================
+// PRIORITY COMPETITION DISPLAY NAMES
+// ============================================================
+
+const DISPLAY_NAMES: Record<string, string> = {
+  'eng.1': 'Premier League',
+  'eng.2': 'Championship',
+  'esp.1': 'La Liga',
+  'ita.1': 'Serie A',
+  'ger.1': 'Bundesliga',
+  'fra.1': 'Ligue 1',
+  'ned.1': 'Eredivisie',
+  'por.1': 'Primeira Liga',
+  'sco.1': 'Scottish Premiership',
+  'bel.1': 'Belgian Pro League',
+  'tur.1': 'Turkish Super Lig',
+  'nga.1': 'Nigeria Premier Football League',
+  'rsa.1': 'South African Premiership',
+  'bra.1': 'Brazilian Serie A',
+  'arg.1': 'Argentine Liga Profesional',
+  'mex.1': 'Liga MX',
+  'usa.1': 'MLS',
+  'ksa.1': 'Saudi Pro League',
+
+  'uefa.champions': 'UEFA Champions League',
+  'uefa.europa': 'UEFA Europa League',
+  'uefa.europa.conf': 'UEFA Conference League',
+  'caf.champions': 'CAF Champions League',
+  'caf.confed': 'CAF Confederation Cup',
+  'conmebol.libertadores': 'Copa Libertadores',
+  'conmebol.sudamericana': 'Copa Sudamericana',
+  'concacaf.champions': 'CONCACAF Champions Cup',
+
+  'fifa.world': 'FIFA World Cup',
+  'fifa.worldq': 'FIFA World Cup Qualifiers',
+  'caf.nations': 'Africa Cup of Nations',
+  'caf.nations_qual': 'Africa Cup of Nations Qualifiers',
+  'uefa.euro': 'UEFA European Championship',
+  'uefa.euroq': 'UEFA European Championship Qualifiers',
+  'uefa.nations': 'UEFA Nations League',
+  'conmebol.america': 'Copa America',
+  'concacaf.gold': 'CONCACAF Gold Cup',
+  'concacaf.nations.league': 'CONCACAF Nations League',
+  'afc.asian.cup': 'AFC Asian Cup',
+};
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+function createId(espnLeagueSlug: string): string {
+  return espnLeagueSlug.trim().toLowerCase();
+}
+
+function toDisplayName(espnLeagueSlug: string): string {
+  return (
+    DISPLAY_NAMES[espnLeagueSlug] ??
+    espnLeagueSlug
+      .split('.')
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ')
+  );
+}
+
+function getFootballDataMapping(espnLeagueSlug: string): {
+  footballDataCode?: string;
+} {
+  const code = FOOTBALL_DATA_CODES[espnLeagueSlug];
+
+  return code
+    ? {
+        footballDataCode: code,
+      }
+    : {};
+}
+
+function buildCompetition(
+  espnLeagueSlug: string,
+  type: CompetitionType,
+  region: CompetitionRegion,
+  priority: CompetitionPriority,
+  options?: {
+    predictionEnabled?: boolean;
+    oddsEnabled?: boolean;
+    seasonal?: boolean;
+    gender?: 'MEN' | 'WOMEN';
+    notes?: string;
+  },
+): SupportedCompetitionConfig {
+  return {
+    id: createId(espnLeagueSlug),
+
+    name: toDisplayName(espnLeagueSlug),
+
+    type,
+
+    region,
+
+    priority,
+
+    enabled: true,
+
+    predictionEnabled: options?.predictionEnabled ?? true,
+
+    oddsEnabled: options?.oddsEnabled ?? true,
+
+    collectionFrequency: CollectionFrequency.DAILY,
+
+    providers: {
+      ...getFootballDataMapping(espnLeagueSlug),
+
+      /**
+       * ESPN is now the canonical competition provider.
+       */
+      espnLeagueSlug,
+    },
+
+    seasonal: options?.seasonal ?? false,
+
+    gender: options?.gender ?? 'MEN',
+
+    notes: options?.notes,
+  };
+}
+
+// ============================================================
+// PRIORITY LEAGUES
+// ============================================================
+
+const PRIORITY_LEAGUES: SupportedCompetitionConfig[] = [
+  ...Object.values(PriorityLeague).map((league) => {
+    const eliteLeagues = new Set<string>([
+      PriorityLeague.PREMIER_LEAGUE,
+      PriorityLeague.LA_LIGA,
+      PriorityLeague.SERIE_A,
+      PriorityLeague.BUNDESLIGA,
+      PriorityLeague.LIGUE_1,
+    ]);
+
+    const highLeagues = new Set<string>([
+      PriorityLeague.CHAMPIONSHIP,
+      PriorityLeague.EREDIVISIE,
+      PriorityLeague.PRIMEIRA_LIGA,
+      PriorityLeague.SCOTTISH_PREMIERSHIP,
+      PriorityLeague.BELGIAN_PRO_LEAGUE,
+      PriorityLeague.TURKISH_SUPER_LIG,
+      PriorityLeague.NPFL,
+      PriorityLeague.SOUTH_AFRICA_PREMIER_DIVISION,
+      PriorityLeague.BRAZIL_SERIE_A,
+      PriorityLeague.ARGENTINA_PRIMERA,
+      PriorityLeague.LIGA_MX,
+      PriorityLeague.MLS,
+      PriorityLeague.SAUDI_PRO_LEAGUE,
+    ]);
+
+    const region =
+      league === PriorityLeague.NPFL
+        ? CompetitionRegion.NIGERIA
+        : league === PriorityLeague.SOUTH_AFRICA_PREMIER_DIVISION
+          ? CompetitionRegion.AFRICA
+          : league === PriorityLeague.BRAZIL_SERIE_A ||
+              league === PriorityLeague.ARGENTINA_PRIMERA
+            ? CompetitionRegion.SOUTH_AMERICA
+            : league === PriorityLeague.LIGA_MX || league === PriorityLeague.MLS
+              ? CompetitionRegion.NORTH_AMERICA
+              : league === PriorityLeague.SAUDI_PRO_LEAGUE
+                ? CompetitionRegion.ASIA
+                : CompetitionRegion.EUROPE;
+
+    const priority = eliteLeagues.has(league)
+      ? CompetitionPriority.ELITE
+      : highLeagues.has(league)
+        ? CompetitionPriority.HIGH
+        : CompetitionPriority.REGIONAL;
+
+    return buildCompetition(league, CompetitionType.LEAGUE, region, priority);
+  }),
+];
+
+// ============================================================
+// PRIORITY CLUB COMPETITIONS
+// ============================================================
+
+const PRIORITY_CLUB_COMPETITIONS: SupportedCompetitionConfig[] = Object.values(
+  PriorityClubCompetition,
+).map((competition) => {
+  const african =
+    competition === PriorityClubCompetition.CAF_CHAMPIONS_LEAGUE ||
+    competition === PriorityClubCompetition.CAF_CONFEDERATION_CUP;
+
+  const southAmerican =
+    competition === PriorityClubCompetition.COPA_LIBERTADORES ||
+    competition === PriorityClubCompetition.COPA_SUDAMERICANA;
+
+  const northAmerican =
+    competition === PriorityClubCompetition.CONCACAF_CHAMPIONS_CUP;
+
+  const elite =
+    competition === PriorityClubCompetition.UEFA_CHAMPIONS_LEAGUE ||
+    competition === PriorityClubCompetition.CAF_CHAMPIONS_LEAGUE ||
+    competition === PriorityClubCompetition.COPA_LIBERTADORES;
+
+  return buildCompetition(
+    competition,
+    CompetitionType.CLUB_COMPETITION,
+    african
+      ? CompetitionRegion.AFRICA
+      : southAmerican
+        ? CompetitionRegion.SOUTH_AMERICA
+        : northAmerican
+          ? CompetitionRegion.NORTH_AMERICA
+          : CompetitionRegion.EUROPE,
+    elite ? CompetitionPriority.ELITE : CompetitionPriority.HIGH,
+    {
+      seasonal: true,
+    },
+  );
+});
+
+// ============================================================
+// PRIORITY INTERNATIONAL COMPETITIONS
+// ============================================================
+
+const PRIORITY_INTERNATIONAL_COMPETITIONS: SupportedCompetitionConfig[] =
+  Object.values(PriorityInternationalCompetition).map((competition) => {
+    const african =
+      competition === PriorityInternationalCompetition.AFCON ||
+      competition === PriorityInternationalCompetition.AFCON_QUALIFIERS;
+
+    const southAmerican =
+      competition === PriorityInternationalCompetition.COPA_AMERICA;
+
+    const northAmerican =
+      competition === PriorityInternationalCompetition.CONCACAF_GOLD_CUP ||
+      competition === PriorityInternationalCompetition.CONCACAF_NATIONS_LEAGUE;
+
+    const asian =
+      competition === PriorityInternationalCompetition.AFC_ASIAN_CUP;
+
+    const elite =
+      competition === PriorityInternationalCompetition.FIFA_WORLD_CUP ||
+      competition ===
+        PriorityInternationalCompetition.FIFA_WORLD_CUP_QUALIFIERS ||
+      competition === PriorityInternationalCompetition.AFCON;
+
+    return buildCompetition(
+      competition,
+      CompetitionType.INTERNATIONAL,
+      african
+        ? CompetitionRegion.AFRICA
+        : southAmerican
+          ? CompetitionRegion.SOUTH_AMERICA
+          : northAmerican
+            ? CompetitionRegion.NORTH_AMERICA
+            : asian
+              ? CompetitionRegion.ASIA
+              : CompetitionRegion.WORLD,
+      elite ? CompetitionPriority.ELITE : CompetitionPriority.HIGH,
+      {
+        seasonal: true,
+      },
+    );
+  });
+
+// ============================================================
+// PRIORITY COMPETITIONS
+// ============================================================
+
+export const PRIORITY_COMPETITIONS: SupportedCompetitionConfig[] = [
+  ...PRIORITY_LEAGUES,
+  ...PRIORITY_CLUB_COMPETITIONS,
+  ...PRIORITY_INTERNATIONAL_COMPETITIONS,
+];
+
+export const PRIORITY_COMPETITIONS_BY_ID = new Map(
+  PRIORITY_COMPETITIONS.map((competition) => [competition.id, competition]),
+);
+
+export function getPriorityCompetition(
+  espnLeagueSlug: string,
+): SupportedCompetitionConfig | undefined {
+  return PRIORITY_COMPETITIONS_BY_ID.get(espnLeagueSlug.trim().toLowerCase());
+}
+
+// ============================================================
+// PRIORITY VALIDATION
+// ============================================================
+
+export function validatePriorityCompetitions(): void {
+  const expectedPriorityCompetitionCount = 37;
+
+  if (PRIORITY_COMPETITIONS.length !== expectedPriorityCompetitionCount) {
+    throw new Error(
+      `Expected ${expectedPriorityCompetitionCount} priority competitions, found ${PRIORITY_COMPETITIONS.length}`,
+    );
+  }
+
+  const ids = new Set<string>();
+
+  for (const competition of PRIORITY_COMPETITIONS) {
+    if (ids.has(competition.id)) {
+      throw new Error(`Duplicate priority competition ID: ${competition.id}`);
+    }
+
+    ids.add(competition.id);
+  }
+}
+
+validatePriorityCompetitions();

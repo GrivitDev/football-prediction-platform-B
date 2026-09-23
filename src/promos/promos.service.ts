@@ -13,14 +13,16 @@ import { Promo, PromoDocument } from './schemas/promo.schema';
 import { CreatePromoDto } from './dto/create-promo.dto';
 
 import { UpdatePromoDto } from './dto/update-promo.dto';
+
 import { PromoCampaignType } from './constants/promo-campaign-type';
+
 import { RewardType } from './constants/reward-types';
 
 @Injectable()
 export class PromosService {
   constructor(
     @InjectModel(Promo.name)
-    private promoModel: Model<PromoDocument>,
+    private readonly promoModel: Model<PromoDocument>,
   ) {}
 
   private async generatePromoCode(): Promise<string> {
@@ -36,6 +38,38 @@ export class PromosService {
         return code;
       }
     }
+  }
+
+  private validateSubscriptionReward(
+    rewardPlan: 'regular' | 'vip' | 'premium' | undefined,
+    rewardDurationDays: number | undefined,
+  ) {
+    if (!rewardPlan) {
+      throw new BadRequestException(
+        'Reward plan is required for subscription rewards',
+      );
+    }
+
+    if (
+      rewardDurationDays === undefined ||
+      !Number.isFinite(rewardDurationDays)
+    ) {
+      throw new BadRequestException(
+        'Reward duration is required for subscription rewards',
+      );
+    }
+
+    if (rewardDurationDays < 0) {
+      throw new BadRequestException('Reward duration cannot be negative');
+    }
+
+    if (rewardPlan !== 'premium' && rewardDurationDays <= 0) {
+      throw new BadRequestException(
+        'Regular and VIP subscription rewards require a duration greater than 0',
+      );
+    }
+
+    // premium + 0 = lifetime
   }
 
   // ==========================
@@ -72,17 +106,7 @@ export class PromosService {
     }
 
     if (dto.rewardType === RewardType.SUBSCRIPTION) {
-      if (!dto.rewardPlan) {
-        throw new BadRequestException(
-          'Reward plan is required for subscription rewards',
-        );
-      }
-
-      if (!dto.rewardDurationDays || dto.rewardDurationDays <= 0) {
-        throw new BadRequestException(
-          'Reward duration is required for subscription rewards',
-        );
-      }
+      this.validateSubscriptionReward(dto.rewardPlan, dto.rewardDurationDays);
     }
 
     if (dto.rewardType === RewardType.CASH) {
@@ -107,11 +131,13 @@ export class PromosService {
 
     return {
       ...promo.toObject(),
+
       registrationUrl: promoCode
         ? this.buildRegistrationUrl(promoCode)
         : undefined,
     };
   }
+
   // ==========================
   // GET ACTIVE PROMOS
   // ==========================
@@ -137,10 +163,13 @@ export class PromosService {
 
     const promos = await this.promoModel.find({
       campaignType: PromoCampaignType.DIRECT,
+
       isActive: true,
+
       startDate: {
         $lte: now,
       },
+
       endDate: {
         $gte: now,
       },
@@ -232,11 +261,15 @@ export class PromosService {
 
     return this.promoModel.findOne({
       _id: id,
+
       campaignType: PromoCampaignType.REFERRAL,
+
       isActive: true,
+
       startDate: {
         $lte: now,
       },
+
       endDate: {
         $gte: now,
       },
@@ -274,17 +307,7 @@ export class PromosService {
     const rewardAmount = dto.rewardAmount ?? existing.rewardAmount;
 
     if (rewardType === RewardType.SUBSCRIPTION) {
-      if (!rewardPlan) {
-        throw new BadRequestException(
-          'Reward plan is required for subscription rewards',
-        );
-      }
-
-      if (!rewardDurationDays || rewardDurationDays <= 0) {
-        throw new BadRequestException(
-          'Reward duration is required for subscription rewards',
-        );
-      }
+      this.validateSubscriptionReward(rewardPlan, rewardDurationDays);
     }
 
     if (rewardType === RewardType.CASH) {
@@ -300,6 +323,7 @@ export class PromosService {
       runValidators: true,
     });
   }
+
   // ==========================
   // DELETE / DISABLE
   // ==========================

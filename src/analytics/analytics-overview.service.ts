@@ -49,20 +49,12 @@ export class AnalyticsOverviewService {
 
   async getOverview() {
     const [
-      // ==========================
-      // USERS
-      // ==========================
-
       totalUsers,
       activeUsers,
       suspendedUsers,
       deletedUsers,
       verifiedUsers,
       unverifiedUsers,
-
-      // ==========================
-      // SUBSCRIPTIONS
-      // ==========================
 
       totalSubscriptions,
       activeSubscriptions,
@@ -73,13 +65,13 @@ export class AnalyticsOverviewService {
       regularSubscriptions,
       activeRegularSubscriptions,
 
-      // ==========================
-      // PREDICTIONS
-      // ==========================
+      premiumSubscriptions,
+      activePremiumSubscriptions,
 
       totalPredictions,
       vipPredictions,
       regularPredictions,
+      premiumPredictions,
       freePredictions,
 
       pendingPredictions,
@@ -87,26 +79,14 @@ export class AnalyticsOverviewService {
       lostPredictions,
       voidPredictions,
 
-      // ==========================
-      // ADS
-      // ==========================
-
       totalAds,
       activeAds,
       totalImpressions,
       totalClicks,
 
-      // ==========================
-      // PROMOS
-      // ==========================
-
       totalPromos,
       activePromos,
       expiredPromos,
-
-      // ==========================
-      // REFERRALS
-      // ==========================
 
       totalReferrals,
       rewardedReferrals,
@@ -115,6 +95,7 @@ export class AnalyticsOverviewService {
       // ==========================
       // USERS
       // ==========================
+
       this.userModel.countDocuments(),
 
       this.userModel.countDocuments({
@@ -141,6 +122,7 @@ export class AnalyticsOverviewService {
       // ==========================
       // SUBSCRIPTIONS
       // ==========================
+
       this.subscriptionModel.countDocuments(),
 
       this.subscriptionModel.countDocuments({
@@ -162,12 +144,21 @@ export class AnalyticsOverviewService {
 
       this.subscriptionModel.countDocuments({
         plan: 'regular',
+      }),
+
+      this.subscriptionModel.countDocuments({
+        plan: 'premium',
+      }),
+
+      this.subscriptionModel.countDocuments({
+        plan: 'premium',
         isActive: true,
       }),
 
       // ==========================
       // PREDICTIONS
       // ==========================
+
       this.predictionModel.countDocuments(),
 
       this.predictionModel.countDocuments({
@@ -176,6 +167,10 @@ export class AnalyticsOverviewService {
 
       this.predictionModel.countDocuments({
         accessType: 'regular',
+      }),
+
+      this.predictionModel.countDocuments({
+        accessType: 'premium',
       }),
 
       this.predictionModel.countDocuments({
@@ -201,6 +196,7 @@ export class AnalyticsOverviewService {
       // ==========================
       // ADS
       // ==========================
+
       this.adModel.countDocuments(),
 
       this.adModel.countDocuments({
@@ -211,6 +207,7 @@ export class AnalyticsOverviewService {
         {
           $group: {
             _id: null,
+
             total: {
               $sum: '$impressions',
             },
@@ -222,15 +219,18 @@ export class AnalyticsOverviewService {
         {
           $group: {
             _id: null,
+
             total: {
               $sum: '$clicks',
             },
           },
         },
       ]),
+
       // ==========================
       // PROMOS
       // ==========================
+
       this.promoModel.countDocuments(),
 
       this.promoModel.countDocuments({
@@ -246,6 +246,7 @@ export class AnalyticsOverviewService {
       // ==========================
       // REFERRALS
       // ==========================
+
       this.referralModel.countDocuments(),
 
       this.referralModel.countDocuments({
@@ -276,6 +277,9 @@ export class AnalyticsOverviewService {
 
         regularSubscriptions,
         activeRegularSubscriptions,
+
+        premiumSubscriptions,
+        activePremiumSubscriptions,
       },
 
       predictions: {
@@ -283,6 +287,7 @@ export class AnalyticsOverviewService {
 
         vipPredictions,
         regularPredictions,
+        premiumPredictions,
         freePredictions,
 
         pendingPredictions,
@@ -296,6 +301,7 @@ export class AnalyticsOverviewService {
         activeAds,
 
         impressions: totalImpressions[0]?.total ?? 0,
+
         clicks: totalClicks[0]?.total ?? 0,
 
         ctr:

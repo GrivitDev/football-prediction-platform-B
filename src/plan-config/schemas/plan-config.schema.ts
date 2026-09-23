@@ -10,6 +10,7 @@ export class PlanConfig {
   // ===========================
   // Nigeria Pricing
   // ===========================
+
   @Prop({
     default: 10000,
     min: 0,
@@ -21,6 +22,12 @@ export class PlanConfig {
     min: 0,
   })
   vipPrice!: number;
+
+  @Prop({
+    default: 100000,
+    min: 0,
+  })
+  premiumPrice!: number;
 
   @Prop({
     type: Object,
@@ -41,6 +48,7 @@ export class PlanConfig {
   // ===========================
   // International Pricing
   // ===========================
+
   @Prop({
     default: 10,
     min: 0,
@@ -52,6 +60,12 @@ export class PlanConfig {
     min: 0,
   })
   vipPriceUSD!: number;
+
+  @Prop({
+    default: 100,
+    min: 0,
+  })
+  premiumPriceUSD!: number;
 
   @Prop({
     type: Object,
@@ -70,13 +84,33 @@ export class PlanConfig {
   };
 
   // ===========================
-  // Common
+  // Subscription Durations
   // ===========================
+
+  /**
+   * Applies to Regular and VIP.
+   */
   @Prop({
     default: 30,
     min: 1,
   })
   subscriptionDurationDays!: number;
+
+  /**
+   * 0 = lifetime premium access.
+   *
+   * A positive value allows the admin
+   * to configure premium as a timed plan.
+   */
+  @Prop({
+    default: 0,
+    min: 0,
+  })
+  premiumDurationDays!: number;
+
+  // ===========================
+  // Plan Labels
+  // ===========================
 
   @Prop({
     type: Object,
@@ -84,12 +118,14 @@ export class PlanConfig {
       free: 'Free Plan',
       regular: 'Regular Plan',
       vip: 'VIP Plan',
+      premium: 'Premium Plan',
     },
   })
   planLabels!: {
     free: string;
     regular: string;
     vip: string;
+    premium: string;
   };
 }
 
