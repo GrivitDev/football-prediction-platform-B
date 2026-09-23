@@ -1,5 +1,3 @@
-// src/sports/providers/espn.service.ts
-
 import {
   BadRequestException,
   Injectable,
@@ -84,10 +82,6 @@ export class EspnService {
     const pageSize = this.getPageSize(firstPage, 25);
 
     for (let page = 2; page <= pageCount; page += 1) {
-      /*
-       * League catalogue pagination is retained because this is a
-       * different ESPN endpoint from the soccer scoreboard endpoint.
-       */
       const response = await this.getLeaguePage(page, pageSize);
 
       leagues.push(...this.extractCatalogueLeagues(response));
@@ -127,12 +121,11 @@ export class EspnService {
     const normalizedLeague = league.trim().toLowerCase();
 
     /*
-     * ESPN's league-specific soccer scoreboard endpoint currently
-     * accepts a single calendar date but rejects date ranges.
+     * Existing single-day/range behaviour is intentionally retained
+     * here for normal queue/runtime operations.
      *
-     * The requested collection window is therefore split into
-     * individual calendar-day requests. The caller still receives
-     * one combined EspnApiResponse covering the complete range.
+     * Startup historical bootstrap uses getFixturesRange(), which
+     * sends one ESPN scoreboard request for the complete date range.
      */
     if (dateFrom && dateTo) {
       const events: EspnEvent[] = [];
@@ -175,6 +168,49 @@ export class EspnService {
     return this.request<EspnApiResponse>(
       `${this.siteBaseUrl}/${encodeURIComponent(normalizedLeague)}/scoreboard`,
       'scoreboard',
+    );
+  }
+
+  // ============================================================
+  // 3B. LEAGUE SCOREBOARD — DATE RANGE
+  // ============================================================
+
+  /**
+   * Fetch an ESPN league scoreboard for an entire date range
+   * using ONE scoreboard request.
+   *
+   * Example:
+   *
+   * dates=20250801-20260923
+   *
+   * This method is intended for startup/backfill operations where
+   * requesting one calendar day at a time would create unnecessary
+   * provider calls.
+   *
+   * The existing getFixtures() method remains unchanged so the
+   * runtime queue behaviour is not altered here.
+   */
+  async getFixturesRange(
+    league: string,
+    dateFrom: string,
+    dateTo: string,
+  ): Promise<EspnApiResponse> {
+    this.validateLeague(league);
+
+    this.validateDateRange(dateFrom, dateTo);
+
+    const normalizedLeague = league.trim().toLowerCase();
+
+    const normalizedDateFrom = this.formatEspnDate(dateFrom);
+
+    const normalizedDateTo = this.formatEspnDate(dateTo);
+
+    return this.request<EspnApiResponse>(
+      `${this.siteBaseUrl}/${encodeURIComponent(normalizedLeague)}/scoreboard`,
+      'scoreboard',
+      {
+        dates: `${normalizedDateFrom}-${normalizedDateTo}`,
+      },
     );
   }
 

@@ -245,7 +245,7 @@ export class SportsStartupService implements OnModuleInit {
          * historical/current fixture population and refresh the
          * current + upcoming window continuously.
          */
-        const response = await this.espnService.getFixtures(
+        const response = await this.espnService.getFixturesRange(
           leagueId,
           seasonStartDate,
           todayDate,
