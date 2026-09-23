@@ -1,3 +1,5 @@
+// src/sports/schemas/espn-queue.schema.ts
+
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 

@@ -1,5 +1,8 @@
+// src/sports/interfaces/espn-queue.interface.ts
+
 export enum EspnQueueJobType {
   LEAGUE_REFRESH = 'LEAGUE_REFRESH',
+  FIXTURE_RECOVERY = 'FIXTURE_RECOVERY',
   UPCOMING_MATCH = 'UPCOMING_MATCH',
   FINISHED_MATCH = 'FINISHED_MATCH',
 }

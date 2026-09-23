@@ -11,10 +11,33 @@ import {
 
 @Injectable()
 export class EspnQueueService {
+  private startupReady = false;
+
   constructor(
     @InjectModel(EspnQueue.name)
     private readonly queueModel: Model<EspnQueueDocument>,
   ) {}
+
+  // ============================================================
+  // STARTUP READINESS
+  // ============================================================
+
+  /**
+   * The queue worker must not process jobs until startup has:
+   *
+   * catalogue
+   *   -> missing league details
+   *   -> ActiveCompetition synchronization
+   *   -> local fixture-gap inspection
+   *   -> recovery/summary jobs queued
+   */
+  isStartupReady(): boolean {
+    return this.startupReady;
+  }
+
+  markStartupReady(): void {
+    this.startupReady = true;
+  }
 
   // ============================================================
   // ADD LEAGUE REFRESH
@@ -31,6 +54,25 @@ export class EspnQueueService {
       jobType: EspnQueueJobType.LEAGUE_REFRESH,
       leagueId: params.leagueId,
       eventId: params.triggerEventId,
+      season: params.season,
+      priority: params.priority,
+      scheduledFor: params.scheduledFor ?? new Date(),
+    });
+  }
+
+  // ============================================================
+  // ADD FIXTURE RECOVERY
+  // ============================================================
+
+  async addFixtureRecoveryJob(params: {
+    leagueId: string;
+    season: number;
+    priority: number;
+    scheduledFor?: Date;
+  }): Promise<EspnQueueDocument> {
+    return this.addJob({
+      jobType: EspnQueueJobType.FIXTURE_RECOVERY,
+      leagueId: params.leagueId,
       season: params.season,
       priority: params.priority,
       scheduledFor: params.scheduledFor ?? new Date(),
@@ -105,17 +147,6 @@ export class EspnQueueService {
       .exec();
 
     if (existing) {
-      /*
-       * A completed job stays completed.
-       *
-       * This is important because:
-       *
-       * LEAGUE_REFRESH + triggerEventId
-       *
-       * represents one specific three-hour fixture trigger.
-       *
-       * It must not be recreated every five seconds.
-       */
       if (existing.status === EspnQueueStatus.COMPLETED) {
         return existing;
       }
@@ -128,7 +159,7 @@ export class EspnQueueService {
       }
 
       /*
-       * FAILED jobs can be re-queued by a future trigger.
+       * FAILED jobs can be re-queued.
        */
       existing.status = EspnQueueStatus.PENDING;
       existing.priority = params.priority;
@@ -322,7 +353,14 @@ export class EspnQueueService {
   // CLEANUP
   // ============================================================
 
-  async cleanupCompletedJobs(olderThanDays = 30): Promise<number> {
+  /**
+   * Completed queue jobs are temporary operational records.
+   *
+   * They are retained for 7 days for debugging/inspection and
+   * then removed. The actual sports/prediction data produced by
+   * the jobs remains in its respective MongoDB collections.
+   */
+  async cleanupCompletedJobs(olderThanDays = 7): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
 
     const result = await this.queueModel.deleteMany({
@@ -377,21 +415,29 @@ export class EspnQueueService {
     const league = leagueId.trim().toLowerCase();
 
     /*
-     * League refreshes are tied to the fixture that reached
-     * the three-hour threshold.
+     * LEAGUE_REFRESH:
      *
-     * Example:
-     *
-     * LEAGUE_REFRESH:eng.1:401882868
+     * one job per three-hour fixture trigger.
      */
     if (jobType === EspnQueueJobType.LEAGUE_REFRESH && eventId) {
       return [jobType, league, eventId.trim()].join(':');
     }
 
+    /*
+     * Match-specific jobs:
+     *
+     * UPCOMING_MATCH:league:event
+     * FINISHED_MATCH:league:event
+     */
     if (eventId) {
       return [jobType, league, eventId.trim()].join(':');
     }
 
+    /*
+     * League-level jobs:
+     *
+     * FIXTURE_RECOVERY:league:season
+     */
     return [jobType, league, season ?? 'current'].join(':');
   }
 }

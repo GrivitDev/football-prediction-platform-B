@@ -1,3 +1,5 @@
+// src/sports/services/espn-active-competition.service.ts
+
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -46,18 +48,6 @@ export class EspnActiveCompetitionService {
   // CATALOGUE DISCOVERY
   // ============================================================
 
-  /**
-   * Discover and store the complete ESPN league catalogue.
-   *
-   * This is intentionally the only normal operation that calls
-   * ESPN's league catalogue endpoint.
-   *
-   * Called:
-   * - once during startup
-   * - again during the monthly catalogue refresh
-   *
-   * Daily collection uses the stored catalogue instead.
-   */
   async synchronizeLeagueCatalogue(): Promise<EspnLeagueDocument[]> {
     const leagues = await this.espnService.getLeagues();
 
@@ -87,14 +77,12 @@ export class EspnActiveCompetitionService {
   // ============================================================
 
   /**
-   * Process every stored ESPN league sequentially.
+   * Existing full synchronization method.
    *
-   * Complete catalogue:
-   *   -> league details
-   *   -> current season
-   *   -> determine active season
-   *   -> active => synchronize ActiveCompetition
-   *   -> inactive => remove from ActiveCompetition
+   * This remains available for explicit full synchronization.
+   *
+   * Startup does NOT use this method because it would call
+   * ESPN's league-detail endpoint for every stored league.
    */
   async synchronizeLeagueDetails(): Promise<{
     processed: number;
@@ -151,12 +139,6 @@ export class EspnActiveCompetitionService {
       }
     }
 
-    /*
-     * Safety cleanup.
-     *
-     * Any competition remaining in ActiveCompetition but not
-     * present in the newly calculated active set is removed.
-     */
     const removed =
       await this.activeCompetitionService.removeMissingCompetitions(
         activeCompetitionIds,
@@ -184,15 +166,88 @@ export class EspnActiveCompetitionService {
   }
 
   /**
-   * Synchronize one stored league.
+   * Startup synchronization.
    *
-   * ESPN league detail is authoritative for the current season.
+   * Only leagues that do not yet have a successful detail
+   * synchronization are sent to ESPN.
    *
-   * IMPORTANT:
-   * - Every league remains in sports_espn_leagues.
-   * - Only an ACTIVE current season is written to ActiveCompetition.
-   * - Non-active competitions are removed from ActiveCompetition.
+   * Existing ActiveCompetition documents are deliberately left
+   * untouched when a league already has detail data.
    */
+  async synchronizeMissingLeagueDetails(): Promise<{
+    processed: number;
+    synchronized: number;
+    active: number;
+    inactive: number;
+    skipped: number;
+    failed: number;
+  }> {
+    const leagues = await this.getOrderedLeagues();
+
+    const missingDetails = leagues.filter(
+      (league) => !league.detailLastSyncedAt,
+    );
+
+    let processed = 0;
+    let synchronized = 0;
+    let active = 0;
+    let inactive = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const league of missingDetails) {
+      processed += 1;
+
+      try {
+        const result = await this.synchronizeLeagueDetail(league);
+
+        if (!result) {
+          skipped += 1;
+          continue;
+        }
+
+        synchronized += 1;
+
+        if (result.isActive) {
+          active += 1;
+        } else {
+          inactive += 1;
+        }
+      } catch (error) {
+        failed += 1;
+
+        this.logger.error(
+          `Failed to synchronize missing ESPN league detail ` +
+            `${league.leagueId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          error instanceof Error ? error.stack : undefined,
+        );
+      }
+    }
+
+    this.logger.log(
+      `ESPN missing league details synchronized: ` +
+        `catalogue=${leagues.length}, ` +
+        `missing=${missingDetails.length}, ` +
+        `processed=${processed}, ` +
+        `synchronized=${synchronized}, ` +
+        `active=${active}, ` +
+        `inactive=${inactive}, ` +
+        `skipped=${skipped}, ` +
+        `failed=${failed}`,
+    );
+
+    return {
+      processed,
+      synchronized,
+      active,
+      inactive,
+      skipped,
+      failed,
+    };
+  }
+
   async synchronizeLeagueDetail(league: EspnLeagueDocument): Promise<{
     isActive: boolean;
     season?: number;
@@ -229,9 +284,6 @@ export class EspnActiveCompetitionService {
 
     const normalizedSlug = this.normalizeLeagueId(detail.slug) || leagueSlug;
 
-    /*
-     * The catalogue leagueId remains the canonical MongoDB identity.
-     */
     const canonicalLeagueId =
       this.normalizeLeagueId(league.leagueId) || leagueSlug;
 
@@ -247,18 +299,10 @@ export class EspnActiveCompetitionService {
 
     const now = new Date();
 
-    /*
-     * Determine activity strictly from the current ESPN season.
-     */
     const isActive = season
       ? this.isSeasonActive(season.startDate, season.endDate, now)
       : false;
 
-    /*
-     * Always update the complete ESPN catalogue record.
-     *
-     * This collection is NOT the active competition collection.
-     */
     const update: Record<string, unknown> = {
       leagueId: canonicalLeagueId,
       slug: normalizedSlug,
@@ -269,7 +313,7 @@ export class EspnActiveCompetitionService {
       isPriority: Boolean(priorityConfig),
       isActive,
       payload: detail,
-      lastSyncedAt: now,
+      detailLastSyncedAt: now,
     };
 
     if (season) {
@@ -289,20 +333,9 @@ export class EspnActiveCompetitionService {
       },
     );
 
-    /*
-     * No current season.
-     *
-     * The league stays inside the ESPN catalogue,
-     * but it cannot belong to ActiveCompetition.
-     */
     if (!season) {
       await this.activeCompetitionService.removeByCompetitionId(
         canonicalLeagueId,
-      );
-
-      this.logger.debug(
-        `ESPN league ${normalizedSlug} has no current season; ` +
-          `removed from active competitions`,
       );
 
       return {
@@ -310,9 +343,6 @@ export class EspnActiveCompetitionService {
       };
     }
 
-    /*
-     * ONLY ACTIVE CURRENT SEASONS enter ActiveCompetition.
-     */
     if (isActive) {
       await this.activeCompetitionService.syncLeague({
         competitionId: canonicalLeagueId,
@@ -321,23 +351,14 @@ export class EspnActiveCompetitionService {
         type,
         region,
         priority,
-
         footballDataCode: priorityConfig?.providers?.footballDataCode,
-
         oddsApiSportKey: priorityConfig?.providers?.oddsApiSportKey,
-
         season: season.season,
         seasonStartDate: season.startDate,
         seasonEndDate: season.endDate,
-
         espnPayload: detail,
       });
     } else {
-      /*
-       * Future or finished season:
-       * keep it in ESPN catalogue but remove it from
-       * ActiveCompetition.
-       */
       await this.activeCompetitionService.removeByCompetitionId(
         canonicalLeagueId,
       );
@@ -410,11 +431,6 @@ export class EspnActiveCompetitionService {
     return this.sortLeaguesByPriority(leagues);
   }
 
-  /**
-   * Returns the complete stored ESPN catalogue.
-   *
-   * SELECTIVE leagues remain stored and available.
-   */
   async getOrderedLeagues(): Promise<EspnLeagueDocument[]> {
     const leagues = await this.espnLeagueModel.find().lean().exec();
 
@@ -519,20 +535,21 @@ export class EspnActiveCompetitionService {
             isPriority: Boolean(priorityConfig),
 
             /*
-             * Catalogue discovery does NOT determine
-             * current season activity.
-             *
-             * The existing isActive value is intentionally
-             * retained until synchronizeLeagueDetail()
-             * performs the authoritative season check.
+             * Catalogue synchronization must NOT overwrite the
+             * authoritative league-detail payload.
              */
-            payload: league,
             lastSyncedAt: now,
           },
 
           $setOnInsert: {
             firstSeenAt: now,
             isActive: false,
+
+            /*
+             * Only the initial catalogue insert receives the
+             * catalogue payload.
+             */
+            payload: league,
           },
         },
 
@@ -580,23 +597,14 @@ export class EspnActiveCompetitionService {
     endDate?: Date,
     now = new Date(),
   ): boolean {
-    /*
-     * A season must have a known start date.
-     */
     if (!startDate) {
       return false;
     }
 
-    /*
-     * Season has not started.
-     */
     if (now.getTime() < startDate.getTime()) {
       return false;
     }
 
-    /*
-     * Season has ended.
-     */
     if (endDate && now.getTime() > endDate.getTime()) {
       return false;
     }
@@ -653,7 +661,6 @@ export class EspnActiveCompetitionService {
   ): T[] {
     return [...leagues].sort((a, b) => {
       const priorityA = this.getPriorityRank(this.getStoredPriority(a));
-
       const priorityB = this.getPriorityRank(this.getStoredPriority(b));
 
       if (priorityA !== priorityB) {
@@ -668,7 +675,6 @@ export class EspnActiveCompetitionService {
       }
 
       const nameA = typeof a.name === 'string' ? a.name : '';
-
       const nameB = typeof b.name === 'string' ? b.name : '';
 
       return nameA.localeCompare(nameB);
@@ -753,13 +759,10 @@ export class EspnActiveCompetitionService {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
   }
 
-  /**
-   * Check whether the ESPN league catalogue has been populated.
-   *
-   * The ESPN league catalogue is the startup bootstrap gate.
-   * If at least one league exists, the initial bootstrap does not
-   * need to run again on server restart.
-   */
+  // ============================================================
+  // CATALOGUE STATE
+  // ============================================================
+
   async isLeagueCatalogueEmpty(): Promise<boolean> {
     const league = await this.espnLeagueModel
       .findOne({})
