@@ -87,8 +87,22 @@ import { EspnNews, EspnNewsDocument } from '../schemas/espn/espn-news.schema';
 export class SportsCollectionService {
   private readonly logger = new Logger(SportsCollectionService.name);
 
-  private readonly STARTUP_FIXTURE_FORWARD_DAYS = 4;
+  /**
+   * Full season/live-discovery collection window.
+   *
+   * season start
+   *      ->
+   * today + 8 days
+   */
+  private readonly STARTUP_FIXTURE_FORWARD_DAYS = 8;
 
+  /**
+   * Normal queue refresh window.
+   *
+   * today
+   *   ->
+   * today + 8 days
+   */
   private readonly LEAGUE_REFRESH_PAST_DAYS = 0;
 
   private readonly LEAGUE_REFRESH_FORWARD_DAYS = 8;
@@ -147,6 +161,101 @@ export class SportsCollectionService {
   ) {}
 
   // ============================================================
+  // ESPN — ACTIVE LEAGUE SYNCHRONIZATION
+  // ============================================================
+
+  /**
+   * Synchronize the complete ESPN data required for one active
+   * league.
+   *
+   * This is the shared collection path used by:
+   *
+   * 1. live discovery of a previously unknown league
+   * 2. startup recovery/reconciliation
+   *
+   * Range:
+   *
+   * season start
+   *      ->
+   * today + 8 days
+   *
+   * It collects:
+   *
+   * - fixtures
+   * - teams contained in those fixtures
+   * - standings
+   *
+   * The normal queue refresh does NOT use this method.
+   */
+  async synchronizeEspnActiveLeague(params: {
+    leagueId: string;
+    season?: number;
+    seasonStartDate?: Date;
+  }): Promise<{
+    fixtureIds: string[];
+    fixturesCollected: number;
+    standingsCollected: number;
+    dateFrom: string;
+    dateTo: string;
+  }> {
+    const normalizedLeagueId = this.normalizeLeagueId(params.leagueId);
+
+    if (!normalizedLeagueId) {
+      throw new Error('ESPN leagueId is required');
+    }
+
+    const now = new Date();
+
+    const dateFrom = this.toUtcDateOnly(params.seasonStartDate ?? now);
+
+    const dateTo = this.toUtcDateOnly(
+      new Date(
+        now.getTime() + this.STARTUP_FIXTURE_FORWARD_DAYS * 24 * 60 * 60 * 1000,
+      ),
+    );
+
+    const fixtureResponse = await this.espnService.getFixtures(
+      normalizedLeagueId,
+      dateFrom,
+      dateTo,
+    );
+
+    const fixtureResult = await this.collectEspnFixtures(
+      normalizedLeagueId,
+      fixtureResponse,
+    );
+
+    const resolvedSeason =
+      params.season ?? this.getSeasonFromFixtures(fixtureResponse);
+
+    let standingsCollected = 0;
+
+    const standingsResponse =
+      await this.espnService.getStandings(normalizedLeagueId);
+
+    standingsCollected = await this.collectEspnStandings(
+      normalizedLeagueId,
+      standingsResponse,
+      resolvedSeason,
+    );
+
+    this.logger.log(
+      `ESPN active league synchronized for ${normalizedLeagueId}: ` +
+        `${fixtureResult.collected} fixtures, ` +
+        `${standingsCollected} standings ` +
+        `(${dateFrom} -> ${dateTo})`,
+    );
+
+    return {
+      fixtureIds: fixtureResult.fixtureIds,
+      fixturesCollected: fixtureResult.collected,
+      standingsCollected,
+      dateFrom,
+      dateTo,
+    };
+  }
+
+  // ============================================================
   // ESPN — STARTUP SEASON FIXTURE COLLECTION
   // ============================================================
 
@@ -158,9 +267,10 @@ export class SportsCollectionService {
    *
    * season start date
    *        ->
-   * today + 4 days
+   * today + 8 days
    *
-   * This is intended for startup / full season bootstrap.
+   * This is intended for startup / recovery / full-season
+   * synchronization.
    */
   async collectEspnSeasonFixtures(params: {
     leagueId: string;
@@ -212,9 +322,9 @@ export class SportsCollectionService {
    *
    * Range:
    *
-   * yesterday
+   * today
    *     ->
-   * today + 6 days
+   * today + 8 days
    *
    * This method performs ONLY:
    *
@@ -288,9 +398,20 @@ export class SportsCollectionService {
     fixtureIds: string[];
     collected: number;
   }> {
+    const normalizedLeagueId = this.normalizeLeagueId(leagueId);
+
     const events = this.extractArray(response, ['events', 'items']);
 
     const fixtureIds: string[] = [];
+
+    const fixtureOperations: Parameters<
+      Model<EspnFixtureDocument>['bulkWrite']
+    >[0] = [];
+
+    const teamOperations: Parameters<Model<EspnTeamDocument>['bulkWrite']>[0] =
+      [];
+
+    const collectedAt = new Date();
 
     for (const event of events) {
       if (!event || typeof event !== 'object') {
@@ -353,15 +474,16 @@ export class SportsCollectionService {
 
       const payload = event as Record<string, unknown>;
 
-      await this.espnFixtureModel
-        .updateOne(
-          {
+      fixtureOperations.push({
+        updateOne: {
+          filter: {
             eventId,
           },
-          {
+
+          update: {
             $set: {
               eventId,
-              leagueId,
+              leagueId: normalizedLeagueId,
               season,
               fixtureDate,
               status,
@@ -404,18 +526,34 @@ export class SportsCollectionService {
 
               payload,
 
-              collectedAt: new Date(),
+              collectedAt,
             },
           },
-          {
-            upsert: true,
-          },
-        )
-        .exec();
 
-      await this.collectEspnTeams(leagueId, competitors);
+          upsert: true,
+        },
+      });
+
+      this.appendEspnTeamOperations(
+        teamOperations,
+        normalizedLeagueId,
+        competitors,
+        collectedAt,
+      );
 
       fixtureIds.push(eventId);
+    }
+
+    if (fixtureOperations.length > 0) {
+      await this.espnFixtureModel.bulkWrite(fixtureOperations, {
+        ordered: false,
+      });
+    }
+
+    if (teamOperations.length > 0) {
+      await this.espnTeamModel.bulkWrite(teamOperations, {
+        ordered: false,
+      });
     }
 
     return {
@@ -431,25 +569,26 @@ export class SportsCollectionService {
   /**
    * Synchronize the current ESPN global live scoreboard.
    *
-   * League resolution order:
+   * When a live event reveals a league that is not currently
+   * synchronized, the league is immediately resolved and, when
+   * its current season is active, fully synchronized:
    *
-   * 1. ActiveCompetition.espnLeagueSlug
-   * 2. Complete ESPN league catalogue
-   * 3. Refresh the complete ESPN catalogue from ESPN
-   * 4. Check the refreshed catalogue again
-   * 5. ESPN league-detail endpoint
-   * 6. Update ESPN catalogue
-   * 7. If the current season is active, synchronize
-   *    ActiveCompetition
-   * 8. Finally update the live ESPN fixture.
+   * season start
+   *      ->
+   * today + 8 days
    *
-   * Existing fixture data is only a final safety fallback.
+   * This includes fixtures, teams and standings.
+   *
+   * Normal queue refresh remains separate and only collects:
+   *
+   * today
+   *      ->
+   * today + 8 days
    *
    * This method does not:
    *
    * - create queue jobs
    * - collect summary
-   * - collect standings
    * - collect odds
    * - collect YouTube
    */
@@ -489,21 +628,10 @@ export class SportsCollectionService {
         continue;
       }
 
-      /*
-       * The live scoreboard gives us an ESPN league reference.
-       *
-       * IMPORTANT:
-       * This is NOT matched against ActiveCompetition.competitionId.
-       * ActiveCompetition is checked by espnLeagueSlug.
-       */
       const leagueReference = this.resolveLiveEventLeagueId(event, leagueMap);
 
       let leagueId: string | undefined;
 
-      /*
-       * First resolve through ActiveCompetition / complete
-       * ESPN catalogue / ESPN league detail.
-       */
       if (leagueReference) {
         try {
           leagueId = await this.resolveLiveLeague(leagueReference, fixtureDate);
@@ -517,15 +645,6 @@ export class SportsCollectionService {
         }
       }
 
-      /*
-       * Final safety fallback:
-       *
-       * If this event was already stored, its fixture leagueId is
-       * already an ESPN league slug because sports_espn_fixtures.leagueId
-       * is provider identity, not application competition identity.
-       *
-       * We still run it through the same resolver first.
-       */
       let existingFixture: {
         leagueId?: string;
         season?: number;
@@ -557,18 +676,11 @@ export class SportsCollectionService {
           }
         }
 
-        /*
-         * The stored fixture value is already the canonical ESPN
-         * provider league slug. Use it only as the final fallback.
-         */
         if (!leagueId) {
           leagueId = existingFixture?.leagueId;
         }
       }
 
-      /*
-       * Never create a fixture with an unresolved league.
-       */
       if (!leagueId) {
         this.logger.debug(
           `Skipping live ESPN event ${eventId}: unable to resolve ESPN league`,
@@ -603,7 +715,9 @@ export class SportsCollectionService {
         this.getNestedString(event, ['status', 'displayClock']) ??
         this.getNestedString(competition, ['status', 'displayClock']);
 
-      const normalizedLeagueId = leagueId.trim().toLowerCase();
+      const normalizedLeagueId = this.normalizeLeagueId(leagueId);
+
+      const collectedAt = new Date();
 
       await this.espnFixtureModel
         .updateOne(
@@ -662,13 +776,9 @@ export class SportsCollectionService {
                 this.getNestedString(competition, ['venue', 'fullName']) ??
                 this.getNestedString(competition, ['venue', 'name']),
 
-              /*
-               * Always replace the stored live payload with the
-               * newest ESPN event snapshot.
-               */
               payload: eventRecord,
 
-              collectedAt: new Date(),
+              collectedAt,
             },
           },
           {
@@ -677,6 +787,11 @@ export class SportsCollectionService {
         )
         .exec();
 
+      /*
+       * The live event itself is still written immediately so
+       * that the live scoreboard is not delayed by the larger
+       * league synchronization.
+       */
       await this.collectEspnTeams(normalizedLeagueId, competitors);
 
       liveEventIds.add(eventId);
@@ -684,10 +799,6 @@ export class SportsCollectionService {
       updated += 1;
     }
 
-    /*
-     * Clear fixtures that were previously live but are not present
-     * in the latest live scoreboard.
-     */
     const clearedResult = await this.espnFixtureModel
       .updateMany(
         {
@@ -736,6 +847,9 @@ export class SportsCollectionService {
    * 6. Update sports_espn_leagues.
    * 7. Synchronize ActiveCompetition when the current season
    *    is active.
+   * 8. If newly discovered/currently active, immediately collect:
+   *      season start -> today + 8 days
+   *      standings
    */
   private async resolveLiveLeague(
     leagueReference: string,
@@ -751,12 +865,8 @@ export class SportsCollectionService {
      * ============================================================
      * 1. ACTIVE COMPETITION
      * ============================================================
-     *
-     * ActiveCompetition.competitionId is application identity.
-     *
-     * ActiveCompetition.espnLeagueSlug is the ESPN identity that
-     * the live scoreboard should match.
      */
+
     const activeCompetition =
       await this.activeCompetitionService.getByEspnLeagueSlug(
         normalizedReference,
@@ -771,6 +881,7 @@ export class SportsCollectionService {
      * 2. COMPLETE ESPN CATALOGUE
      * ============================================================
      */
+
     let catalogueLeague =
       (await this.espnLeagueModel
         .findOne({
@@ -789,12 +900,8 @@ export class SportsCollectionService {
      * ============================================================
      * 3. UNKNOWN TO OUR CATALOGUE
      * ============================================================
-     *
-     * ESPN may have added a new league since startup/monthly
-     * catalogue synchronization.
-     *
-     * Refresh the complete ESPN catalogue.
      */
+
     if (!catalogueLeague) {
       const leagues = await this.espnService.getLeagues();
 
@@ -805,6 +912,7 @@ export class SportsCollectionService {
        * 4. CHECK THE CATALOGUE AGAIN
        * ==========================================================
        */
+
       catalogueLeague =
         (await this.espnLeagueModel
           .findOne({
@@ -820,12 +928,6 @@ export class SportsCollectionService {
           .exec());
     }
 
-    /*
-     * ESPN catalogue still does not know this league.
-     *
-     * Do not invent a league record and do not call getLeague()
-     * against an unconfirmed application identifier.
-     */
     if (!catalogueLeague) {
       this.logger.debug(
         `ESPN live league ${normalizedReference} was not found ` +
@@ -840,6 +942,7 @@ export class SportsCollectionService {
      * 5. AUTHORITATIVE ESPN LEAGUE DETAIL
      * ============================================================
      */
+
     const detailReference =
       this.normalizeLeagueId(catalogueLeague.slug) ||
       this.normalizeLeagueId(catalogueLeague.leagueId);
@@ -852,9 +955,10 @@ export class SportsCollectionService {
 
     /*
      * ============================================================
-     * 6. UPDATE COMPLETE ESPN CATALOGUE
+     * 6 + 7. UPDATE CATALOGUE / ACTIVE COMPETITION
      * ============================================================
      */
+
     const synchronizedLeague = await this.updateEspnLeagueFromDetail(
       catalogueLeague,
       detail,
@@ -862,9 +966,45 @@ export class SportsCollectionService {
     );
 
     /*
-     * The catalogue record's slug is the provider identity used
-     * by ESPN scoreboard endpoints and fixture documents.
+     * ============================================================
+     * 8. IMMEDIATE ACTIVE LEAGUE SYNCHRONIZATION
+     * ============================================================
+     *
+     * A live match can expose a league that was not present in
+     * ActiveCompetition when the application started.
+     *
+     * Once authoritative league detail confirms that its current
+     * season is active, immediately collect the complete required
+     * ESPN window and standings.
      */
+    if (synchronizedLeague.isActive && synchronizedLeague.season) {
+      const seasonStartDate = this.parseDate(detail.season?.startDate);
+
+      try {
+        await this.synchronizeEspnActiveLeague({
+          leagueId: synchronizedLeague.slug || synchronizedLeague.leagueId,
+
+          season: synchronizedLeague.season,
+
+          seasonStartDate,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Immediate ESPN active league synchronization failed for ` +
+            `${synchronizedLeague.slug}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+        );
+
+        /*
+         * Do not discard the successfully synchronized league
+         * identity just because fixture/standing collection
+         * failed. Startup reconciliation will be able to repair
+         * the incomplete state.
+         */
+      }
+    }
+
     return synchronizedLeague.slug;
   }
 
@@ -878,6 +1018,9 @@ export class SportsCollectionService {
     leagues: EspnLeaguePayload[],
   ): Promise<void> {
     const now = new Date();
+
+    const operations: Parameters<Model<EspnLeagueDocument>['bulkWrite']>[0] =
+      [];
 
     let stored = 0;
 
@@ -905,9 +1048,9 @@ export class SportsCollectionService {
 
       const country = this.extractCountryFromLeague(league);
 
-      const existing =
-        (await this.espnLeagueModel
-          .findOne({
+      operations.push({
+        updateOne: {
+          filter: {
             $or: [
               {
                 leagueId,
@@ -916,81 +1059,45 @@ export class SportsCollectionService {
                 slug,
               },
             ],
-          })
-          .select({
-            _id: 1,
-          })
-          .lean()
-          .exec()) ?? null;
+          },
 
-      if (existing) {
-        await this.espnLeagueModel
-          .updateOne(
-            {
-              _id: existing._id,
-            },
-            {
-              $set: {
-                leagueId,
-
-                slug,
-
-                name,
-
-                abbreviation: this.getStringValue(league.abbreviation),
-
-                country,
-
-                priority,
-
-                isPriority: Boolean(priorityConfig),
-
-                payload: league as unknown as Record<string, unknown>,
-
-                lastSyncedAt: now,
-              },
-            },
-          )
-          .exec();
-      } else {
-        await this.espnLeagueModel
-          .updateOne(
-            {
+          update: {
+            $set: {
               leagueId,
+
+              slug,
+
+              name,
+
+              abbreviation: this.getStringValue(league.abbreviation),
+
+              country,
+
+              priority,
+
+              isPriority: Boolean(priorityConfig),
+
+              payload: league as unknown as Record<string, unknown>,
+
+              lastSyncedAt: now,
             },
-            {
-              $set: {
-                leagueId,
 
-                slug,
-
-                name,
-
-                abbreviation: this.getStringValue(league.abbreviation),
-
-                country,
-
-                priority,
-
-                isPriority: Boolean(priorityConfig),
-
-                payload: league as unknown as Record<string, unknown>,
-
-                lastSyncedAt: now,
-              },
-
-              $setOnInsert: {
-                isActive: false,
-              },
+            $setOnInsert: {
+              isActive: false,
             },
-            {
-              upsert: true,
-            },
-          )
-          .exec();
-      }
+          },
+
+          upsert: true,
+        },
+      });
 
       stored += 1;
+    }
+
+    if (operations.length > 0) {
+      await this.espnLeagueModel.bulkWrite(operations, {
+        ordered: false,
+      });
     }
 
     this.logger.log(`ESPN live catalogue refresh stored ${stored} leagues`);
@@ -1084,16 +1191,14 @@ export class SportsCollectionService {
 
     if (season) {
       update.season = season.season;
+
       update.seasonStartDate = season.startDate;
+
       update.seasonEndDate = season.endDate;
     } else {
       update.isActive = false;
     }
 
-    /*
-     * Use the existing document identity so that a refreshed
-     * ESPN league ID/slug does not create a second catalogue row.
-     */
     await this.espnLeagueModel
       .updateOne(
         {
@@ -1109,11 +1214,8 @@ export class SportsCollectionService {
      * ============================================================
      * ACTIVE COMPETITION
      * ============================================================
-     *
-     * Catalogue storage is independent from ActiveCompetition.
-     *
-     * Only a currently active ESPN season belongs here.
      */
+
     if (season && isActive) {
       await this.activeCompetitionService.syncLeague({
         competitionId: canonicalLeagueId,
@@ -1144,20 +1246,11 @@ export class SportsCollectionService {
         espnPayload: detail,
       });
     } else {
-      /*
-       * The league remains in sports_espn_leagues but must not
-       * remain in the active competition collection.
-       */
       await this.activeCompetitionService.removeByCompetitionId(
         canonicalLeagueId,
       );
     }
 
-    /*
-     * Read the record back after the authoritative update.
-     *
-     * This ensures the caller uses the stored ESPN identity.
-     */
     const refreshed = await this.espnLeagueModel
       .findOne({
         _id: catalogueLeague._id,
@@ -1283,12 +1376,6 @@ export class SportsCollectionService {
     return map;
   }
 
-  /**
-   * Extracts the ESPN league reference from the live event.
-   *
-   * This method intentionally returns an ESPN-facing value only.
-   * It does not use ActiveCompetition.competitionId.
-   */
   private resolveLiveEventLeagueId(
     event: unknown,
     leagueMap: Map<string, string>,
@@ -1301,20 +1388,21 @@ export class SportsCollectionService {
 
     const competition = this.getFirstCompetition(event);
 
-    /*
-     * Direct ESPN league fields.
-     */
     const directCandidates: unknown[] = [
       this.getNestedString(event, ['league', 'slug']),
+
       this.getNestedString(event, ['league', 'id']),
 
       this.getNestedString(competition, ['league', 'slug']),
+
       this.getNestedString(competition, ['league', 'id']),
 
       this.getNestedString(event, ['sport', 'league', 'slug']),
+
       this.getNestedString(event, ['sport', 'league', 'id']),
 
       this.getNestedString(event, ['leagueId']),
+
       this.getNestedString(competition, ['leagueId']),
     ];
 
@@ -1333,22 +1421,12 @@ export class SportsCollectionService {
         return mapped;
       }
 
-      /*
-       * The value is explicitly supplied by an ESPN league field.
-       *
-       * It can now be checked against our ActiveCompetition and
-       * complete ESPN catalogue before any league detail request.
-       */
       return normalized;
     }
 
-    /*
-     * Some ESPN event UIDs encode the league:
-     *
-     * s:600~l:eng.1~e:123456789
-     */
     const uidCandidates = [
       this.toStringValue(eventRecord.uid),
+
       this.getNestedString(competition, ['uid']),
     ];
 
@@ -1374,12 +1452,11 @@ export class SportsCollectionService {
       return encodedLeagueId;
     }
 
-    /*
-     * Some payloads expose league references as ESPN URLs.
-     */
     const referenceCandidates: unknown[] = [
       this.getNestedValue(event, ['league', '$ref']),
+
       this.getNestedValue(competition, ['league', '$ref']),
+
       this.getNestedValue(event, ['sport', 'league', '$ref']),
     ];
 
@@ -1448,10 +1525,15 @@ export class SportsCollectionService {
     leagueId: string,
     competitors: unknown[],
   ): Promise<number> {
-    let collected = 0;
+    const normalizedLeagueId = this.normalizeLeagueId(leagueId);
+
+    const operations: Parameters<Model<EspnTeamDocument>['bulkWrite']>[0] = [];
+
+    const collectedAt = new Date();
 
     for (const competitor of competitors) {
       const competitorRecord = this.asRecord(competitor);
+
       const team = this.asRecord(competitorRecord?.team);
 
       const teamId = this.toStringValue(team?.id ?? competitorRecord?.id);
@@ -1460,16 +1542,18 @@ export class SportsCollectionService {
         continue;
       }
 
-      await this.espnTeamModel
-        .updateOne(
-          {
+      operations.push({
+        updateOne: {
+          filter: {
             teamId,
-            leagueId,
+            leagueId: normalizedLeagueId,
           },
-          {
+
+          update: {
             $set: {
               teamId,
-              leagueId,
+
+              leagueId: normalizedLeagueId,
 
               name: team?.name ?? team?.displayName ?? `Team ${teamId}`,
 
@@ -1490,19 +1574,22 @@ export class SportsCollectionService {
 
               payload: team ?? competitor,
 
-              collectedAt: new Date(),
+              collectedAt,
             },
           },
-          {
-            upsert: true,
-          },
-        )
-        .exec();
 
-      collected += 1;
+          upsert: true,
+        },
+      });
     }
 
-    return collected;
+    if (operations.length > 0) {
+      await this.espnTeamModel.bulkWrite(operations, {
+        ordered: false,
+      });
+    }
+
+    return operations.length;
   }
 
   // ============================================================
@@ -1525,17 +1612,30 @@ export class SportsCollectionService {
     const resolvedSeason =
       season ??
       this.toNumber(
-        (response as { season?: { year?: unknown } } | null)?.season?.year,
+        (
+          response as {
+            season?: {
+              year?: unknown;
+            };
+          } | null
+        )?.season?.year,
       ) ??
       new Date().getUTCFullYear();
 
+    const normalizedLeagueId = this.normalizeLeagueId(leagueId);
+
     const activeTeamIds = new Set<string>();
 
-    let collected = 0;
+    const operations: Parameters<Model<EspnStandingDocument>['bulkWrite']>[0] =
+      [];
+
+    const collectedAt = new Date();
 
     for (const entry of entries) {
       const entryRecord = this.asRecord(entry);
+
       const teamRecord = this.asRecord(entryRecord?.team);
+
       const teamId = this.toStringValue(teamRecord?.id ?? entryRecord?.teamId);
 
       if (!teamId) {
@@ -1553,17 +1653,22 @@ export class SportsCollectionService {
 
       const form = this.getStatisticDisplayValue(statistics, ['form']);
 
-      await this.espnStandingModel
-        .updateOne(
-          {
-            leagueId,
+      operations.push({
+        updateOne: {
+          filter: {
+            leagueId: normalizedLeagueId,
+
             season: resolvedSeason,
+
             teamId,
           },
-          {
+
+          update: {
             $set: {
-              leagueId,
+              leagueId: normalizedLeagueId,
+
               season: resolvedSeason,
+
               teamId,
 
               rank:
@@ -1595,29 +1700,38 @@ export class SportsCollectionService {
 
               payload: entry,
 
-              collectedAt: new Date(),
+              collectedAt,
             },
           },
-          {
-            upsert: true,
-          },
-        )
-        .exec();
 
-      collected += 1;
+          upsert: true,
+        },
+      });
     }
 
+    if (operations.length > 0) {
+      await this.espnStandingModel.bulkWrite(operations, {
+        ordered: false,
+      });
+    }
+
+    /*
+     * Remove teams that ESPN no longer returns for the
+     * current standings response.
+     */
     await this.espnStandingModel
       .deleteMany({
-        leagueId,
+        leagueId: normalizedLeagueId,
+
         season: resolvedSeason,
+
         teamId: {
           $nin: [...activeTeamIds],
         },
       })
       .exec();
 
-    return collected;
+    return operations.length;
   }
 
   // ============================================================
@@ -1723,8 +1837,11 @@ export class SportsCollectionService {
 
     return {
       received: articles.length,
+
       created,
+
       updated,
+
       skipped,
     };
   }
@@ -1968,16 +2085,19 @@ export class SportsCollectionService {
     const home =
       competitors.find((item) => {
         const competitor = this.asRecord(item);
+
         return competitor?.homeAway === 'home' || competitor?.isHome === true;
       }) ?? competitors[0];
 
     const away =
       competitors.find((item) => {
         const competitor = this.asRecord(item);
+
         return competitor?.homeAway === 'away' || competitor?.isAway === true;
       }) ?? competitors[1];
 
     const homeCompetitor = this.asRecord(home);
+
     const awayCompetitor = this.asRecord(away);
 
     const season =
@@ -1998,7 +2118,7 @@ export class SportsCollectionService {
           $set: {
             eventId,
 
-            leagueId: params.leagueId.trim().toLowerCase(),
+            leagueId: this.normalizeLeagueId(params.leagueId),
 
             season,
 
@@ -2477,7 +2597,9 @@ export class SportsCollectionService {
 
     return {
       season: seasonValue,
+
       startDate: this.parseDate(candidate.startDate),
+
       endDate: this.parseDate(candidate.endDate),
     };
   }
@@ -2575,6 +2697,65 @@ export class SportsCollectionService {
   // HELPERS
   // ============================================================
 
+  private appendEspnTeamOperations(
+    operations: Parameters<Model<EspnTeamDocument>['bulkWrite']>[0],
+    leagueId: string,
+    competitors: unknown[],
+    collectedAt: Date,
+  ): void {
+    for (const competitor of competitors) {
+      const competitorRecord = this.asRecord(competitor);
+
+      const team = this.asRecord(competitorRecord?.team);
+
+      const teamId = this.toStringValue(team?.id ?? competitorRecord?.id);
+
+      if (!teamId) {
+        continue;
+      }
+
+      operations.push({
+        updateOne: {
+          filter: {
+            teamId,
+            leagueId,
+          },
+
+          update: {
+            $set: {
+              teamId,
+
+              leagueId,
+
+              name: team?.name ?? team?.displayName ?? `Team ${teamId}`,
+
+              displayName: team?.displayName ?? team?.name ?? `Team ${teamId}`,
+
+              shortDisplayName:
+                team?.shortDisplayName ?? team?.name ?? `Team ${teamId}`,
+
+              abbreviation: team?.abbreviation,
+
+              location: team?.location,
+
+              logo: this.getTeamLogo(team),
+
+              colors: team?.color ?? team?.colors,
+
+              active: team?.isActive ?? true,
+
+              payload: team ?? competitor,
+
+              collectedAt,
+            },
+          },
+
+          upsert: true,
+        },
+      });
+    }
+  }
+
   private extractArray(value: unknown, keys: string[] = []): unknown[] {
     if (Array.isArray(value)) {
       return value;
@@ -2609,22 +2790,11 @@ export class SportsCollectionService {
       return [];
     }
 
-    // ============================================================
-    // DIRECT:
-    // standings: {
-    //   entries: [...]
-    // }
-    // ============================================================
-
     const directStandings = this.asRecord(root.standings);
 
     if (Array.isArray(directStandings?.entries)) {
       return directStandings.entries as EspnStandingEntry[];
     }
-
-    // ============================================================
-    // CHILD GROUPS
-    // ============================================================
 
     const children = Array.isArray(root.children)
       ? (root.children as unknown[])
@@ -2640,16 +2810,6 @@ export class SportsCollectionService {
       return entries;
     }
 
-    // ============================================================
-    // LEGACY / ALTERNATIVE:
-    //
-    // standings: [
-    //   {
-    //     entries: [...]
-    //   }
-    // ]
-    // ============================================================
-
     if (Array.isArray(root.standings)) {
       for (const group of root.standings as unknown[]) {
         this.collectStandingEntriesFromGroup(group, entries);
@@ -2659,10 +2819,6 @@ export class SportsCollectionService {
         return entries;
       }
     }
-
-    // ============================================================
-    // GROUPS
-    // ============================================================
 
     const groups = Array.isArray(root.groups) ? (root.groups as unknown[]) : [];
 
