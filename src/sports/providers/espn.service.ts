@@ -172,49 +172,6 @@ export class EspnService {
   }
 
   // ============================================================
-  // 3B. LEAGUE SCOREBOARD — DATE RANGE
-  // ============================================================
-
-  /**
-   * Fetch an ESPN league scoreboard for an entire date range
-   * using ONE scoreboard request.
-   *
-   * Example:
-   *
-   * dates=20250801-20260923
-   *
-   * This method is intended for startup/backfill operations where
-   * requesting one calendar day at a time would create unnecessary
-   * provider calls.
-   *
-   * The existing getFixtures() method remains unchanged so the
-   * runtime queue behaviour is not altered here.
-   */
-  async getFixturesRange(
-    league: string,
-    dateFrom: string,
-    dateTo: string,
-  ): Promise<EspnApiResponse> {
-    this.validateLeague(league);
-
-    this.validateDateRange(dateFrom, dateTo);
-
-    const normalizedLeague = league.trim().toLowerCase();
-
-    const normalizedDateFrom = this.formatEspnDate(dateFrom);
-
-    const normalizedDateTo = this.formatEspnDate(dateTo);
-
-    return this.request<EspnApiResponse>(
-      `${this.siteBaseUrl}/${encodeURIComponent(normalizedLeague)}/scoreboard`,
-      'scoreboard',
-      {
-        dates: `${normalizedDateFrom}-${normalizedDateTo}`,
-      },
-    );
-  }
-
-  // ============================================================
   // 4. RESULTS
   // ============================================================
 

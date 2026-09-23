@@ -33,7 +33,7 @@ export class SportsProviderRateLimitService {
 
   private readonly limits: Record<SportsProvider, ProviderLimitConfig> = {
     espn: {
-      minIntervalSeconds: 5,
+      minIntervalSeconds: 2,
     },
 
     'football-data': {
