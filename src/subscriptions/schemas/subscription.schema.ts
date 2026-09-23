@@ -29,6 +29,7 @@ export class Subscription {
    * null = lifetime subscription.
    */
   @Prop({
+    type: Date,
     default: null,
   })
   expiryDate!: Date | null;
