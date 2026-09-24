@@ -1,5 +1,3 @@
-// src/sports/schemas/espn-queue.schema.ts
-
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
@@ -18,7 +16,6 @@ export class EspnQueue {
   @Prop({
     required: true,
     unique: true,
-    index: true,
     trim: true,
   })
   jobKey!: string;

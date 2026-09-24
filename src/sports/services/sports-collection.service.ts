@@ -71,6 +71,8 @@ import {
   EspnStandingsResponse,
 } from '../providers/espn.interfaces';
 
+import { EspnQueueService } from './espn-queue.service';
+
 import { CompetitionPriority } from '../enums/competition-priority.enum';
 
 import { CompetitionRegion } from '../enums/competition-region.enum';
@@ -113,6 +115,8 @@ export class SportsCollectionService {
     private readonly activeCompetitionService: ActiveCompetitionService,
 
     private readonly priorityCompetitionService: PriorityCompetitionService,
+
+    private readonly espnQueueService: EspnQueueService,
 
     // ----------------------------------------------------------
     // ESPN
@@ -402,6 +406,64 @@ export class SportsCollectionService {
 
     const events = this.extractArray(response, ['events', 'items']);
 
+    const eventIds = events
+      .map((event) => {
+        if (!event || typeof event !== 'object') {
+          return undefined;
+        }
+
+        return this.toStringValue((event as { id?: unknown }).id);
+      })
+      .filter((eventId): eventId is string => Boolean(eventId));
+
+    const existingFixtures =
+      eventIds.length > 0
+        ? await this.espnFixtureModel
+            .find({
+              eventId: {
+                $in: eventIds,
+              },
+            })
+            .select({
+              eventId: 1,
+              'payload.summary': 1,
+              'payload.summaryCollectedAt': 1,
+            })
+            .lean()
+            .exec()
+        : [];
+
+    const existingSummaryMap = new Map<
+      string,
+      {
+        summary?: unknown;
+        summaryCollectedAt?: Date;
+      }
+    >();
+
+    for (const fixture of existingFixtures) {
+      if (!fixture.eventId) {
+        continue;
+      }
+
+      const payload =
+        fixture.payload && typeof fixture.payload === 'object'
+          ? fixture.payload
+          : undefined;
+
+      if (!payload) {
+        continue;
+      }
+
+      existingSummaryMap.set(fixture.eventId, {
+        summary: payload.summary,
+        summaryCollectedAt:
+          payload.summaryCollectedAt instanceof Date
+            ? payload.summaryCollectedAt
+            : undefined,
+      });
+    }
+
     const fixtureIds: string[] = [];
 
     const fixtureOperations: Parameters<
@@ -472,7 +534,24 @@ export class SportsCollectionService {
 
       const completed = this.isCompleted(event);
 
-      const payload = event as Record<string, unknown>;
+      const eventPayload = event as Record<string, unknown>;
+
+      const existingSummary = existingSummaryMap.get(eventId);
+
+      const payload: Record<string, unknown> = {
+        ...eventPayload,
+      };
+
+      if (
+        existingSummary &&
+        Object.prototype.hasOwnProperty.call(existingSummary, 'summary')
+      ) {
+        payload.summary = existingSummary.summary;
+
+        if (existingSummary.summaryCollectedAt) {
+          payload.summaryCollectedAt = existingSummary.summaryCollectedAt;
+        }
+      }
 
       fixtureOperations.push({
         updateOne: {
@@ -645,13 +724,13 @@ export class SportsCollectionService {
         }
       }
 
-      let existingFixture: {
+      let storedFixture: {
         leagueId?: string;
         season?: number;
       } | null = null;
 
       if (!leagueId) {
-        existingFixture = await this.espnFixtureModel
+        storedFixture = await this.espnFixtureModel
           .findOne({
             eventId,
           })
@@ -662,10 +741,10 @@ export class SportsCollectionService {
           .lean()
           .exec();
 
-        if (existingFixture?.leagueId) {
+        if (storedFixture?.leagueId) {
           try {
             leagueId = await this.resolveLiveLeague(
-              existingFixture.leagueId,
+              storedFixture.leagueId,
               fixtureDate,
             );
           } catch (error) {
@@ -677,7 +756,7 @@ export class SportsCollectionService {
         }
 
         if (!leagueId) {
-          leagueId = existingFixture?.leagueId;
+          leagueId = storedFixture?.leagueId;
         }
       }
 
@@ -706,7 +785,7 @@ export class SportsCollectionService {
       const season =
         this.toNumber(this.getNestedString(event, ['season', 'year'])) ??
         this.toNumber(this.getNestedString(competition, ['season', 'year'])) ??
-        existingFixture?.season ??
+        storedFixture?.season ??
         fixtureDate.getUTCFullYear();
 
       const status = this.extractStatus(event);
@@ -717,7 +796,43 @@ export class SportsCollectionService {
 
       const normalizedLeagueId = this.normalizeLeagueId(leagueId);
 
-      const collectedAt = new Date();
+      const existingPayloadFixture = await this.espnFixtureModel
+        .findOne({
+          eventId,
+        })
+        .select({
+          'payload.summary': 1,
+          'payload.summaryCollectedAt': 1,
+        })
+        .lean()
+        .exec();
+
+      const existingPayload =
+        existingPayloadFixture?.payload &&
+        typeof existingPayloadFixture.payload === 'object'
+          ? existingPayloadFixture.payload
+          : undefined;
+
+      const livePayload: Record<string, unknown> = {
+        ...eventRecord,
+      };
+
+      /*
+       * Preserve an already collected match summary.
+       *
+       * Live scoreboard updates must never erase FINISHED_MATCH
+       * summary data.
+       */
+      if (
+        existingPayload &&
+        Object.prototype.hasOwnProperty.call(existingPayload, 'summary')
+      ) {
+        livePayload.summary = existingPayload.summary;
+
+        if (existingPayload.summaryCollectedAt) {
+          livePayload.summaryCollectedAt = existingPayload.summaryCollectedAt;
+        }
+      }
 
       await this.espnFixtureModel
         .updateOne(
@@ -776,9 +891,9 @@ export class SportsCollectionService {
                 this.getNestedString(competition, ['venue', 'fullName']) ??
                 this.getNestedString(competition, ['venue', 'name']),
 
-              payload: eventRecord,
+              payload: livePayload,
 
-              collectedAt,
+              collectedAt: new Date(),
             },
           },
           {
@@ -788,9 +903,7 @@ export class SportsCollectionService {
         .exec();
 
       /*
-       * The live event itself is still written immediately so
-       * that the live scoreboard is not delayed by the larger
-       * league synchronization.
+       * Persist teams revealed by the live scoreboard.
        */
       await this.collectEspnTeams(normalizedLeagueId, competitors);
 
@@ -978,36 +1091,55 @@ export class SportsCollectionService {
      * ESPN window and standings.
      */
     if (synchronizedLeague.isActive && synchronizedLeague.season) {
-      const seasonStartDate = this.parseDate(detail.season?.startDate);
+      const priority = this.getQueuePriority(
+        this.getStoredPriority(catalogueLeague),
+      );
 
       try {
-        await this.synchronizeEspnActiveLeague({
+        await this.espnQueueService.addFixtureRecoveryJob({
           leagueId: synchronizedLeague.slug || synchronizedLeague.leagueId,
 
           season: synchronizedLeague.season,
 
-          seasonStartDate,
+          priority,
+
+          scheduledFor: new Date(),
         });
+
+        this.logger.debug(
+          `Queued ESPN fixture recovery for newly discovered active league ` +
+            `${synchronizedLeague.slug}: ` +
+            `season=${synchronizedLeague.season}`,
+        );
       } catch (error) {
         this.logger.warn(
-          `Immediate ESPN active league synchronization failed for ` +
+          `Failed to queue ESPN fixture recovery for newly discovered league ` +
             `${synchronizedLeague.slug}: ${
               error instanceof Error ? error.message : String(error)
             }`,
         );
-
-        /*
-         * Do not discard the successfully synchronized league
-         * identity just because fixture/standing collection
-         * failed. Startup reconciliation will be able to repair
-         * the incomplete state.
-         */
       }
     }
 
     return synchronizedLeague.slug;
   }
 
+  private getQueuePriority(priority: CompetitionPriority): number {
+    switch (priority) {
+      case CompetitionPriority.ELITE:
+        return 1;
+
+      case CompetitionPriority.HIGH:
+        return 2;
+
+      case CompetitionPriority.REGIONAL:
+        return 3;
+
+      case CompetitionPriority.SELECTIVE:
+      default:
+        return 4;
+    }
+  }
   /**
    * Persist ESPN's complete catalogue.
    *
@@ -2068,10 +2200,10 @@ export class SportsCollectionService {
       (Array.isArray(event.competitions) ? event.competitions : [])[0],
     );
 
-    const eventId = this.toStringValue(event?.id);
+    const eventId = this.toStringValue(event.id);
 
     const fixtureDate = this.parseDate(
-      event?.date ?? competition?.date ?? competition?.startDate,
+      event.date ?? competition?.date ?? competition?.startDate,
     );
 
     if (!eventId || !fixtureDate) {
@@ -2079,7 +2211,7 @@ export class SportsCollectionService {
     }
 
     const competitors: unknown[] = Array.isArray(competition?.competitors)
-      ? (competition.competitors as unknown[])
+      ? competition.competitors
       : [];
 
     const home =
@@ -2108,6 +2240,41 @@ export class SportsCollectionService {
     const status = this.extractStatus(event);
 
     const completed = this.isCompleted(event);
+
+    /*
+     * Preserve summary data already collected by
+     * FINISHED_MATCH.
+     */
+    const existingFixture = await this.espnFixtureModel
+      .findOne({
+        eventId,
+      })
+      .select({
+        'payload.summary': 1,
+        'payload.summaryCollectedAt': 1,
+      })
+      .lean()
+      .exec();
+
+    const existingPayload =
+      existingFixture?.payload && typeof existingFixture.payload === 'object'
+        ? existingFixture.payload
+        : undefined;
+
+    const detailPayload: Record<string, unknown> = {
+      ...event,
+    };
+
+    if (
+      existingPayload &&
+      Object.prototype.hasOwnProperty.call(existingPayload, 'summary')
+    ) {
+      detailPayload.summary = existingPayload.summary;
+
+      if (existingPayload.summaryCollectedAt) {
+        detailPayload.summaryCollectedAt = existingPayload.summaryCollectedAt;
+      }
+    }
 
     await this.espnFixtureModel
       .updateOne(
@@ -2158,7 +2325,7 @@ export class SportsCollectionService {
               this.getNestedString(competition, ['venue', 'fullName']) ??
               this.getNestedString(competition, ['venue', 'name']),
 
-            payload: event,
+            payload: detailPayload,
 
             collectedAt: new Date(),
           },
@@ -2171,7 +2338,6 @@ export class SportsCollectionService {
 
     await this.collectEspnTeams(params.leagueId, competitors);
   }
-
   // ============================================================
   // ESPN — CHECK STORED MATCH SUMMARY
   // ============================================================

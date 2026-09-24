@@ -159,7 +159,3 @@ EspnLeagueSchema.index({
 EspnLeagueSchema.index({
   lastFixtureDate: -1,
 });
-
-EspnLeagueSchema.index({
-  detailLastSyncedAt: 1,
-});

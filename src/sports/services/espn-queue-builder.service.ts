@@ -44,19 +44,11 @@ export class EspnQueueBuilderService {
   /**
    * Runs from the existing five-second queue worker poll.
    *
-   * The watcher does ONE thing:
+   * Its only responsibility is to create a fresh, event-specific
+   * LEAGUE_REFRESH trigger after a fixture reaches the
+   * three-hour threshold.
    *
-   * today's fixture
-   *      +
-   * three hours after kickoff
-   *      ↓
-   * LEAGUE_REFRESH
-   *
-   * It does not inspect FT/POST/completed status.
-   *
-   * It does not create FINISHED_MATCH.
-   *
-   * It does not call any provider.
+   * It does not call ESPN.
    */
   async watchThreeHourFixtures(): Promise<{
     checked: number;
@@ -66,11 +58,6 @@ export class EspnQueueBuilderService {
 
     const cutoff = new Date(now.getTime() - this.threeHourWindowMs);
 
-    /*
-     * Only inspect today's fixtures.
-     *
-     * No historical database scan.
-     */
     const startOfToday = new Date(now);
 
     startOfToday.setUTCHours(0, 0, 0, 0);
@@ -94,13 +81,6 @@ export class EspnQueueBuilderService {
       .lean()
       .exec();
 
-    /*
-     * Multiple fixtures can belong to the same league.
-     *
-     * One fresh scoreboard request is enough for that league,
-     * so within the current five-second check we keep only the
-     * latest fixture that has reached the three-hour threshold.
-     */
     const leagueTriggers = new Map<
       string,
       {
@@ -174,11 +154,7 @@ export class EspnQueueBuilderService {
         triggerEventId: trigger.eventId,
       });
 
-      /*
-       * addJob() returns the existing completed/pending job
-       * as well, so only count a newly pending trigger here.
-       */
-      if (String(job.status) === 'PENDING' && job.attempts === 0) {
+      if (String(job.status) === 'PENDING' && Number(job.attempts ?? 0) === 0) {
         queued += 1;
       }
     }
@@ -190,16 +166,85 @@ export class EspnQueueBuilderService {
   }
 
   // ============================================================
+  // DAILY LEAGUE REFRESH
+  // ============================================================
+
+  /**
+   * Creates one event-specific LEAGUE_REFRESH job per active
+   * league for the current Lagos calendar day.
+   *
+   * The date-based trigger is important because a normal
+   * league+season job would eventually become COMPLETED and
+   * would not represent the next rolling today -> today+8 window.
+   */
+  async buildDailyLeagueRefreshQueue(): Promise<{
+    active: number;
+    queued: number;
+    skipped: number;
+  }> {
+    const activeLeagues =
+      await this.espnActiveCompetitionService.getActiveLeagues();
+
+    const triggerEventId = `DAILY:${this.getLagosDateKey()}`;
+
+    let active = 0;
+    let queued = 0;
+    let skipped = 0;
+
+    for (const league of activeLeagues) {
+      if (!league.isActive) {
+        skipped += 1;
+        continue;
+      }
+
+      if (typeof league.season !== 'number') {
+        skipped += 1;
+
+        this.logger.warn(
+          `Skipping daily league refresh for ${league.leagueId}: missing season`,
+        );
+
+        continue;
+      }
+
+      const leagueId = (league.slug || league.leagueId).trim().toLowerCase();
+
+      if (!leagueId) {
+        skipped += 1;
+        continue;
+      }
+
+      active += 1;
+
+      const priority = this.getQueuePriority(this.getLeaguePriority(league));
+
+      const job = await this.espnQueueService.addLeagueRefreshJob({
+        leagueId,
+        season: league.season,
+        priority,
+        scheduledFor: new Date(),
+        triggerEventId,
+      });
+
+      if (String(job.status) === 'PENDING' && Number(job.attempts ?? 0) === 0) {
+        queued += 1;
+      }
+    }
+
+    return {
+      active,
+      queued,
+      skipped,
+    };
+  }
+
+  // ============================================================
   // UPCOMING MATCH QUEUE
   // ============================================================
 
   /**
    * Creates UPCOMING_MATCH jobs for fixtures within the
    * next four days.
-   *
-   * These jobs become executable immediately because their
-   * responsibility is to collect odds while the match is
-   * upcoming.
    */
   async buildUpcomingMatchQueue(): Promise<{
     upcoming: number;
@@ -249,14 +294,13 @@ export class EspnQueueBuilderService {
   // ============================================================
 
   /**
-   * Runs after a fresh scoreboard has been collected.
+   * Builds UPCOMING_MATCH jobs from the fixtures persisted by the
+   * league refresh.
    *
-   * UPCOMING_MATCH:
-   *   local fixtures within four days.
-   *
-   * FINISHED_MATCH:
-   *   only completed events from this fresh scoreboard
-   *   AND kickoff must already be at least three hours old.
+   * The worker now handles FINISHED_MATCH discovery from stored
+   * completed fixtures and synchronization state, so the
+   * scoreboard argument remains optional only for compatibility
+   * with older callers.
    */
   async buildLeagueMatchJobs(
     leagueId: string,
@@ -317,7 +361,11 @@ export class EspnQueueBuilderService {
     }
 
     /*
-     * Finished jobs ONLY come from the fresh scoreboard.
+     * Backward-compatible scoreboard handling.
+     *
+     * The current queue worker does not pass a scoreboard
+     * response here. Finished-match repair/creation is handled
+     * by stored fixture state instead.
      */
     if (scoreboardResponse) {
       const completedEventIds =
@@ -343,11 +391,6 @@ export class EspnQueueBuilderService {
           continue;
         }
 
-        /*
-         * FT/POST/completed alone is not enough.
-         *
-         * Kickoff must also be at least three hours old.
-         */
         if (
           !fixture.fixtureDate ||
           new Date(fixture.fixtureDate).getTime() + this.threeHourWindowMs >
@@ -418,12 +461,6 @@ export class EspnQueueBuilderService {
       return false;
     }
 
-    /*
-     * Execute immediately.
-     *
-     * This queue exists to collect odds while the fixture
-     * is upcoming, not at kickoff.
-     */
     const job = await this.espnQueueService.addUpcomingMatchJob({
       leagueId: fixture.leagueId,
       eventId: fixture.eventId,
@@ -456,13 +493,6 @@ export class EspnQueueBuilderService {
       return false;
     }
 
-    /*
-     * Finished jobs execute immediately once the fresh
-     * scoreboard has established that the fixture is both:
-     *
-     * 1. completed / FT / POST
-     * 2. at least three hours after kickoff
-     */
     const job = await this.espnQueueService.addFinishedMatchJob({
       leagueId: fixture.leagueId,
       eventId: fixture.eventId,
@@ -615,6 +645,17 @@ export class EspnQueueBuilderService {
     }
 
     return this.getQueuePriority(this.getLeaguePriority(league));
+  }
+
+  // ============================================================
+  // DATE KEY
+  // ============================================================
+
+  private getLagosDateKey(date = new Date()): string {
+    /*
+     * Africa/Lagos is UTC+1.
+     */
+    return new Date(date.getTime() + 60 * 60 * 1000).toISOString().slice(0, 10);
   }
 
   // ============================================================

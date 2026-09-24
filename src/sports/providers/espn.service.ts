@@ -39,6 +39,7 @@ export class EspnService {
   ) {
     this.http = axios.create({
       timeout: 15_000,
+
       headers: {
         Accept: 'application/json',
       },
@@ -65,6 +66,7 @@ export class EspnService {
       'leagues',
       {
         page: String(page),
+
         limit: String(limit),
       },
     );
@@ -106,9 +108,46 @@ export class EspnService {
   }
 
   // ============================================================
-  // 3. LEAGUE SCOREBOARD
+  // 3. SCOREBOARD — SINGLE DATE
   // ============================================================
 
+  /**
+   * Performs exactly ONE ESPN scoreboard request.
+   *
+   * The queue owns the date range and decides how many
+   * individual dates must be processed.
+   */
+  async getFixturesForDate(
+    league: string,
+    date: string,
+  ): Promise<EspnApiResponse> {
+    this.validateLeague(league);
+
+    if (!this.isValidDate(date)) {
+      throw new BadRequestException('date must be a valid YYYY-MM-DD date');
+    }
+
+    return this.request<EspnApiResponse>(
+      `${this.siteBaseUrl}/${encodeURIComponent(
+        league.trim().toLowerCase(),
+      )}/scoreboard`,
+      'scoreboard',
+      {
+        dates: this.formatEspnDate(date),
+      },
+    );
+  }
+
+  // ============================================================
+  // 4. LEAGUE SCOREBOARD
+  // ============================================================
+
+  /**
+   * Legacy range-capable method.
+   *
+   * Queue workflows should prefer getFixturesForDate()
+   * so each date is individually tracked.
+   */
   async getFixtures(
     league: string,
     dateFrom?: string,
@@ -120,27 +159,15 @@ export class EspnService {
 
     const normalizedLeague = league.trim().toLowerCase();
 
-    /*
-     * Existing single-day/range behaviour is intentionally retained
-     * here for normal queue/runtime operations.
-     *
-     * Startup historical bootstrap uses getFixturesRange(), which
-     * sends one ESPN scoreboard request for the complete date range.
-     */
     if (dateFrom && dateTo) {
       const events: EspnEvent[] = [];
 
       let currentDate = dateFrom;
 
       while (currentDate <= dateTo) {
-        const response = await this.request<EspnApiResponse>(
-          `${this.siteBaseUrl}/${encodeURIComponent(
-            normalizedLeague,
-          )}/scoreboard`,
-          'scoreboard',
-          {
-            dates: this.formatEspnDate(currentDate),
-          },
+        const response = await this.getFixturesForDate(
+          normalizedLeague,
+          currentDate,
         );
 
         events.push(...this.extractEvents(response));
@@ -154,15 +181,7 @@ export class EspnService {
     }
 
     if (dateFrom || dateTo) {
-      return this.request<EspnApiResponse>(
-        `${this.siteBaseUrl}/${encodeURIComponent(
-          normalizedLeague,
-        )}/scoreboard`,
-        'scoreboard',
-        {
-          dates: this.formatEspnDate(dateFrom ?? dateTo!),
-        },
-      );
+      return this.getFixturesForDate(normalizedLeague, dateFrom ?? dateTo!);
     }
 
     return this.request<EspnApiResponse>(
@@ -172,7 +191,7 @@ export class EspnService {
   }
 
   // ============================================================
-  // 4. RESULTS
+  // 5. RESULTS
   // ============================================================
 
   async getResults(
@@ -184,7 +203,7 @@ export class EspnService {
   }
 
   // ============================================================
-  // 5. STANDINGS
+  // 6. STANDINGS
   // ============================================================
 
   async getStandings(league: string): Promise<EspnStandingsResponse> {
@@ -245,6 +264,7 @@ export class EspnService {
 
     return this.request<EspnNewsResponse>(`${this.newsBaseUrl}/news`, 'news', {
       sport: 'soccer',
+
       limit: String(limit),
     });
   }
@@ -313,7 +333,9 @@ export class EspnService {
 
       leagues.push({
         id: leagueSlug,
+
         slug: leagueSlug,
+
         $ref: reference,
       });
     }
@@ -361,7 +383,9 @@ export class EspnService {
       if (!existing) {
         map.set(slug, {
           ...league,
+
           id: league.id ?? slug,
+
           slug,
         });
 
@@ -370,8 +394,11 @@ export class EspnService {
 
       map.set(slug, {
         ...existing,
+
         ...league,
+
         id: league.id ?? existing.id ?? slug,
+
         slug,
       });
     }
@@ -380,7 +407,7 @@ export class EspnService {
   }
 
   // ============================================================
-  // SCOREBOARD HELPERS
+  // RESPONSE HELPERS
   // ============================================================
 
   private getPageCount(response: EspnApiResponse): number {

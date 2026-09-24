@@ -9,28 +9,29 @@ import {
   EspnQueueStatus,
 } from '../interfaces/espn-queue.interface';
 
+import {
+  SportsSyncStateStatus,
+  SportsSyncUnitStatus,
+} from '../schemas/sports-sync-state.schema';
+
+import { SportsSyncStateService } from './sports-sync-state.service';
+
 @Injectable()
 export class EspnQueueService {
   private startupReady = false;
+  private normalOperationsReady = false;
 
   constructor(
     @InjectModel(EspnQueue.name)
     private readonly queueModel: Model<EspnQueueDocument>,
+
+    private readonly sportsSyncStateService: SportsSyncStateService,
   ) {}
 
   // ============================================================
   // STARTUP READINESS
   // ============================================================
 
-  /**
-   * The queue worker must not process jobs until startup has:
-   *
-   * catalogue
-   *   -> missing league details
-   *   -> ActiveCompetition synchronization
-   *   -> local fixture-gap inspection
-   *   -> recovery/summary jobs queued
-   */
   isStartupReady(): boolean {
     return this.startupReady;
   }
@@ -39,6 +40,13 @@ export class EspnQueueService {
     this.startupReady = true;
   }
 
+  isNormalOperationsReady(): boolean {
+    return this.normalOperationsReady;
+  }
+
+  markNormalOperationsReady(): void {
+    this.normalOperationsReady = true;
+  }
   // ============================================================
   // ADD LEAGUE REFRESH
   // ============================================================
@@ -133,21 +141,156 @@ export class EspnQueueService {
     priority: number;
     scheduledFor: Date;
   }): Promise<EspnQueueDocument> {
+    const leagueId = params.leagueId.trim().toLowerCase();
+
     const jobKey = this.buildJobKey(
       params.jobType,
-      params.leagueId,
+      leagueId,
       params.eventId,
       params.season,
     );
 
-    const existing = await this.queueModel
+    const trackingMode =
+      params.jobType === EspnQueueJobType.FIXTURE_RECOVERY
+        ? 'HISTORY'
+        : 'WINDOW';
+
+    /*
+     * The synchronization state is authoritative.
+     *
+     * It must be ensured before deciding what to do with the
+     * operational queue document.
+     */
+    const state = await this.sportsSyncStateService.ensureQueueState({
+      jobType: params.jobType,
+      leagueId,
+      season: params.season,
+      eventId: params.eventId,
+      priority: params.priority,
+      trackingMode,
+      queueJobKey: jobKey,
+    });
+
+    const stateComplete = this.isTrackedStateComplete(state);
+
+    let existing = await this.queueModel
       .findOne({
         jobKey,
       })
       .exec();
 
+    /*
+     * ----------------------------------------------------------
+     * EXISTING QUEUE DOCUMENT
+     * ----------------------------------------------------------
+     */
     if (existing) {
+      /*
+       * If the persistent state is already completely successful,
+       * the operational queue document should not run again.
+       */
+      if (stateComplete) {
+        if (existing.status !== EspnQueueStatus.COMPLETED) {
+          existing.status = EspnQueueStatus.COMPLETED;
+          existing.completedAt = existing.completedAt ?? new Date();
+
+          existing.startedAt = undefined;
+          existing.failedAt = undefined;
+          existing.nextAttemptAt = undefined;
+          existing.lastError = undefined;
+
+          existing = await existing.save();
+        }
+
+        return existing;
+      }
+
+      /*
+       * COMPLETED queue document + incomplete persistent state
+       * means the operational record is stale.
+       *
+       * Re-open it.
+       */
       if (existing.status === EspnQueueStatus.COMPLETED) {
+        return this.reopenJob(existing, params);
+      }
+
+      /*
+       * Already being handled.
+       */
+      if (
+        existing.status === EspnQueueStatus.PENDING ||
+        existing.status === EspnQueueStatus.PROCESSING
+      ) {
+        return existing;
+      }
+
+      /*
+       * FAILED jobs are operationally retryable while the
+       * synchronization state still contains incomplete units.
+       */
+      return this.reopenJob(existing, params);
+    }
+
+    /*
+     * ----------------------------------------------------------
+     * CREATE NEW QUEUE DOCUMENT
+     * ----------------------------------------------------------
+     */
+    try {
+      return await this.queueModel.create({
+        jobKey,
+
+        type: params.jobType,
+
+        leagueId,
+
+        eventId: params.eventId,
+
+        season: params.season,
+
+        priority: params.priority,
+
+        status: EspnQueueStatus.PENDING,
+
+        attempts: 0,
+
+        maxAttempts: 3,
+
+        scheduledFor: params.scheduledFor,
+      });
+    } catch (error) {
+      /*
+       * A unique-index race can happen if two callers try to
+       * create the same operational job simultaneously.
+       */
+      if (!this.isDuplicateKeyError(error)) {
+        throw error;
+      }
+
+      existing = await this.queueModel
+        .findOne({
+          jobKey,
+        })
+        .exec();
+
+      if (!existing) {
+        throw error;
+      }
+
+      if (stateComplete) {
+        if (existing.status !== EspnQueueStatus.COMPLETED) {
+          existing.status = EspnQueueStatus.COMPLETED;
+          existing.completedAt = existing.completedAt ?? new Date();
+
+          existing.startedAt = undefined;
+          existing.failedAt = undefined;
+          existing.nextAttemptAt = undefined;
+          existing.lastError = undefined;
+
+          return existing.save();
+        }
+
         return existing;
       }
 
@@ -158,74 +301,95 @@ export class EspnQueueService {
         return existing;
       }
 
-      /*
-       * FAILED jobs can be re-queued.
-       */
-      existing.status = EspnQueueStatus.PENDING;
-      existing.priority = params.priority;
-      existing.scheduledFor = params.scheduledFor;
-      existing.attempts = 0;
-      existing.startedAt = undefined;
-      existing.completedAt = undefined;
-      existing.failedAt = undefined;
-      existing.lastError = undefined;
-      existing.nextAttemptAt = undefined;
-
-      return existing.save();
+      return this.reopenJob(existing, params);
     }
-
-    return this.queueModel.create({
-      jobKey,
-      type: params.jobType,
-      leagueId: params.leagueId,
-      eventId: params.eventId,
-      season: params.season,
-      priority: params.priority,
-      status: EspnQueueStatus.PENDING,
-      attempts: 0,
-      maxAttempts: 3,
-      scheduledFor: params.scheduledFor,
-    });
   }
 
   // ============================================================
   // GET NEXT JOB
   // ============================================================
 
-  async getNextJob(): Promise<EspnQueueDocument | null> {
+  async getNextJob(params?: {
+    jobTypes?: EspnQueueJobType[];
+    includeFailed?: boolean;
+  }): Promise<EspnQueueDocument | null> {
     const now = new Date();
 
-    return this.queueModel
-      .findOneAndUpdate(
+    const includeFailed = params?.includeFailed === true;
+
+    const statuses = includeFailed
+      ? [EspnQueueStatus.PENDING, EspnQueueStatus.FAILED]
+      : [EspnQueueStatus.PENDING];
+
+    const query: Record<string, unknown> = {
+      status:
+        statuses.length === 1
+          ? statuses[0]
+          : {
+              $in: statuses,
+            },
+
+      $or: [
         {
           status: EspnQueueStatus.PENDING,
 
-          $or: [
-            {
-              nextAttemptAt: {
-                $exists: false,
-              },
+          nextAttemptAt: {
+            $exists: false,
+          },
 
-              scheduledFor: {
-                $lte: now,
-              },
-            },
-
-            {
-              nextAttemptAt: {
-                $lte: now,
-              },
-            },
-          ],
+          scheduledFor: {
+            $lte: now,
+          },
         },
+
+        {
+          status: EspnQueueStatus.PENDING,
+
+          nextAttemptAt: {
+            $lte: now,
+          },
+        },
+
+        ...(includeFailed
+          ? [
+              {
+                status: EspnQueueStatus.FAILED,
+
+                nextAttemptAt: {
+                  $lte: now,
+                },
+              },
+            ]
+          : []),
+      ],
+    };
+
+    if (params?.jobTypes && params.jobTypes.length > 0) {
+      query.type = {
+        $in: params.jobTypes,
+      };
+    }
+
+    return this.queueModel
+      .findOneAndUpdate(
+        query,
         {
           $set: {
             status: EspnQueueStatus.PROCESSING,
+
             startedAt: now,
           },
 
           $inc: {
             attempts: 1,
+          },
+
+          $unset: {
+            nextAttemptAt: 1,
+
+            failedAt: 1,
+
+            completedAt: 1,
           },
         },
         {
@@ -253,12 +417,15 @@ export class EspnQueueService {
       {
         $set: {
           status: EspnQueueStatus.COMPLETED,
+
           completedAt: new Date(),
         },
 
         $unset: {
           nextAttemptAt: 1,
+
           startedAt: 1,
+
           lastError: 1,
         },
       },
@@ -282,15 +449,19 @@ export class EspnQueueService {
         },
         {
           $set: {
-            status: EspnQueueStatus.PENDING,
-            nextAttemptAt: new Date(Date.now() + retryDelayMs),
+            status: EspnQueueStatus.FAILED,
+
             lastError: message,
+
+            failedAt: new Date(),
+
+            nextAttemptAt: new Date(Date.now() + retryDelayMs),
           },
 
           $unset: {
             startedAt: 1,
+
             completedAt: 1,
-            failedAt: 1,
           },
         },
       );
@@ -305,13 +476,17 @@ export class EspnQueueService {
       {
         $set: {
           status: EspnQueueStatus.FAILED,
+
           lastError: message,
+
           failedAt: new Date(),
+
           completedAt: new Date(),
         },
 
         $unset: {
           nextAttemptAt: 1,
+
           startedAt: 1,
         },
       },
@@ -325,18 +500,32 @@ export class EspnQueueService {
   async recoverStaleJobs(staleMinutes = 15): Promise<number> {
     const cutoff = new Date(Date.now() - staleMinutes * 60_000);
 
-    const result = await this.queueModel.updateMany(
-      {
+    const staleJobs = await this.queueModel
+      .find({
         status: EspnQueueStatus.PROCESSING,
 
         startedAt: {
           $lte: cutoff,
         },
+      })
+      .exec();
+
+    if (staleJobs.length === 0) {
+      return 0;
+    }
+
+    const result = await this.queueModel.updateMany(
+      {
+        _id: {
+          $in: staleJobs.map((job) => job._id),
+        },
       },
       {
         $set: {
           status: EspnQueueStatus.PENDING,
+
           nextAttemptAt: new Date(),
+
           lastError: 'Recovered stale processing job',
         },
 
@@ -346,6 +535,27 @@ export class EspnQueueService {
       },
     );
 
+    for (const job of staleJobs) {
+      const stateKey = this.sportsSyncStateService.getQueueStateKey({
+        jobType: job.type,
+
+        leagueId: job.leagueId,
+
+        season: job.season,
+
+        eventId: job.eventId,
+      });
+
+      try {
+        await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
+      } catch {
+        /*
+         * The operational queue remains recoverable even if an
+         * old synchronization-state record does not exist.
+         */
+      }
+    }
+
     return result.modifiedCount;
   }
 
@@ -353,13 +563,6 @@ export class EspnQueueService {
   // CLEANUP
   // ============================================================
 
-  /**
-   * Completed queue jobs are temporary operational records.
-   *
-   * They are retained for 7 days for debugging/inspection and
-   * then removed. The actual sports/prediction data produced by
-   * the jobs remains in its respective MongoDB collections.
-   */
   async cleanupCompletedJobs(olderThanDays = 7): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
 
@@ -403,6 +606,59 @@ export class EspnQueueService {
   }
 
   // ============================================================
+  // INTERNAL JOB REOPEN
+  // ============================================================
+
+  private async reopenJob(
+    job: EspnQueueDocument,
+    params: {
+      priority: number;
+      scheduledFor: Date;
+    },
+  ): Promise<EspnQueueDocument> {
+    job.status = EspnQueueStatus.PENDING;
+
+    job.priority = params.priority;
+
+    job.scheduledFor = params.scheduledFor;
+
+    job.attempts = 0;
+
+    job.startedAt = undefined;
+
+    job.completedAt = undefined;
+
+    job.failedAt = undefined;
+
+    job.lastError = undefined;
+
+    job.nextAttemptAt = undefined;
+
+    return job.save();
+  }
+
+  private isTrackedStateComplete(state: {
+    units: Array<{
+      status: SportsSyncUnitStatus;
+    }>;
+  }): boolean {
+    return (
+      state.units.length > 0 &&
+      state.units.every((unit) => unit.status === SportsSyncUnitStatus.SUCCESS)
+    );
+  }
+
+  private isDuplicateKeyError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    const record = error as Record<string, unknown>;
+
+    return record.code === 11000;
+  }
+
+  // ============================================================
   // JOB KEY
   // ============================================================
 
@@ -414,30 +670,14 @@ export class EspnQueueService {
   ): string {
     const league = leagueId.trim().toLowerCase();
 
-    /*
-     * LEAGUE_REFRESH:
-     *
-     * one job per three-hour fixture trigger.
-     */
     if (jobType === EspnQueueJobType.LEAGUE_REFRESH && eventId) {
       return [jobType, league, eventId.trim()].join(':');
     }
 
-    /*
-     * Match-specific jobs:
-     *
-     * UPCOMING_MATCH:league:event
-     * FINISHED_MATCH:league:event
-     */
     if (eventId) {
       return [jobType, league, eventId.trim()].join(':');
     }
 
-    /*
-     * League-level jobs:
-     *
-     * FIXTURE_RECOVERY:league:season
-     */
     return [jobType, league, season ?? 'current'].join(':');
   }
 }

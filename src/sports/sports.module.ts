@@ -19,6 +19,7 @@ import { EspnActiveCompetitionService } from './services/espn-active-competition
 import { EspnQueueService } from './services/espn-queue.service';
 import { EspnQueueBuilderService } from './services/espn-queue-builder.service';
 import { EspnQueueWorkerService } from './services/espn-queue-worker.service';
+import { SportsSyncStateService } from './services/sports-sync-state.service';
 
 import { SportsCollectionService } from './services/sports-collection.service';
 import { SportsDataReadService } from './services/sports-data-read.service';
@@ -60,6 +61,11 @@ import {
 import { EspnTeam, EspnTeamSchema } from './schemas/espn/espn-team.schema';
 
 import { EspnQueue, EspnQueueSchema } from './schemas/espn-queue.schema';
+
+import {
+  SportsSyncState,
+  SportsSyncStateSchema,
+} from './schemas/sports-sync-state.schema';
 
 import {
   FootballDataCompetition,
@@ -117,6 +123,7 @@ import {
   YouTubeHighlight,
   YouTubeHighlightSchema,
 } from './schemas/youtube-highlight.schema';
+
 import { SportsDerivedDataBootstrapService } from './services/sports-derived-data-bootstrap.service';
 
 @Module({
@@ -155,6 +162,11 @@ import { SportsDerivedDataBootstrapService } from './services/sports-derived-dat
       {
         name: EspnQueue.name,
         schema: EspnQueueSchema,
+      },
+
+      {
+        name: SportsSyncState.name,
+        schema: SportsSyncStateSchema,
       },
 
       {
@@ -244,6 +256,7 @@ import { SportsDerivedDataBootstrapService } from './services/sports-derived-dat
     EspnQueueService,
     EspnQueueBuilderService,
     EspnQueueWorkerService,
+    SportsSyncStateService,
 
     // Collection / read
     SportsCollectionService,
@@ -276,6 +289,7 @@ import { SportsDerivedDataBootstrapService } from './services/sports-derived-dat
     TeamPerformanceProfileService,
     HeadToHeadService,
     MatchDerivedDataService,
+    SportsSyncStateService,
   ],
 })
 export class SportsModule {}
