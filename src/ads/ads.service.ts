@@ -134,7 +134,7 @@ export class AdsService {
       updateData,
 
       {
-        new: true,
+        returnDocument: 'after',
       },
     );
 
@@ -289,7 +289,7 @@ export class AdsService {
       },
 
       {
-        new: true,
+        returnDocument: 'after',
       },
     );
 
@@ -317,7 +317,7 @@ export class AdsService {
       },
 
       {
-        new: true,
+        returnDocument: 'after',
       },
     );
 

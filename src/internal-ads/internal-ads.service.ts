@@ -30,7 +30,7 @@ export class InternalAdsService {
 
   async update(id: string, updateAdDto: UpdateInternalAdDto) {
     const ad = await this.internalAdModel.findByIdAndUpdate(id, updateAdDto, {
-      new: true,
+      returnDocument: 'after',
     });
 
     if (!ad) {

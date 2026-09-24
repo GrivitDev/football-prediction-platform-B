@@ -376,7 +376,7 @@ export class ArticleService {
         },
       },
       {
-        new: true,
+        returnDocument: 'after',
       },
     );
 
@@ -402,7 +402,7 @@ export class ArticleService {
         },
       },
       {
-        new: true,
+        returnDocument: 'after',
       },
     );
 
@@ -442,7 +442,7 @@ export class ArticleService {
         },
       },
       {
-        new: true,
+        returnDocument: 'after',
 
         projection: {
           viewsCount: 1,
@@ -476,7 +476,7 @@ export class ArticleService {
         },
       },
       {
-        new: true,
+        returnDocument: 'after',
 
         projection: {
           likesCount: 1,

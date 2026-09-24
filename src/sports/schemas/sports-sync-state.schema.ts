@@ -288,10 +288,6 @@ SportsSyncStateSchema.index({
 });
 
 SportsSyncStateSchema.index({
-  taskKey: 1,
-});
-
-SportsSyncStateSchema.index({
   nextRunAt: 1,
   kind: 1,
 });

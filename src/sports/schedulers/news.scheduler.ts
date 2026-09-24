@@ -7,6 +7,7 @@ import { EspnActiveCompetitionService } from '../services/espn-active-competitio
 import { EspnQueueBuilderService } from '../services/espn-queue-builder.service';
 import { SportsCollectionService } from '../services/sports-collection.service';
 import { SportsSyncStateService } from '../services/sports-sync-state.service';
+import { EspnQueueService } from '../services/espn-queue.service';
 
 @Injectable()
 export class NewsScheduler {
@@ -43,6 +44,8 @@ export class NewsScheduler {
 
     private readonly espnQueueBuilderService: EspnQueueBuilderService,
 
+    private readonly espnQueueService: EspnQueueService,
+
     private readonly sportsCollectionService: SportsCollectionService,
 
     private readonly sportsSyncStateService: SportsSyncStateService,
@@ -57,6 +60,10 @@ export class NewsScheduler {
     timeZone: 'Africa/Lagos',
   })
   async refreshLiveMatches(): Promise<void> {
+    if (!this.espnQueueService.isStartupReady()) {
+      return;
+    }
+
     if (this.liveMatchesRunning) {
       return;
     }
@@ -211,6 +218,14 @@ export class NewsScheduler {
     timeZone: 'Africa/Lagos',
   })
   async queueDailyLeagueRefreshes(): Promise<void> {
+    if (!this.espnQueueService.isStartupReady()) {
+      return;
+    }
+
+    if (!this.espnQueueService.isNormalOperationsReady()) {
+      return;
+    }
+
     if (this.dailyLeagueRefreshRunning) {
       this.logger.warn(
         'Skipping daily ESPN league-refresh queue seed because another run is already active',
@@ -281,6 +296,10 @@ export class NewsScheduler {
     timeZone: 'Africa/Lagos',
   })
   async refreshEspnCatalogue(): Promise<void> {
+    if (!this.espnQueueService.isStartupReady()) {
+      return;
+    }
+
     if (this.catalogueRefreshRunning) {
       this.logger.warn(
         'Skipping monthly ESPN catalogue refresh because another catalogue refresh is already running',
@@ -364,6 +383,10 @@ export class NewsScheduler {
 
     nextRunAt: Date;
   }): Promise<void> {
+    if (!this.espnQueueService.isStartupReady()) {
+      return;
+    }
+
     if (this.running) {
       this.logger.warn(
         `Skipping ${params.period} ESPN news collection because another news collection is already running`,
@@ -422,7 +445,6 @@ export class NewsScheduler {
       this.running = false;
     }
   }
-
   // ============================================================
   // CRON STATE
   // ============================================================

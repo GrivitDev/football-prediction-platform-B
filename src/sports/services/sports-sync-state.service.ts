@@ -100,7 +100,7 @@ export class SportsSyncStateService {
         },
         {
           upsert: true,
-          new: true,
+          returnDocument: 'after',
           setDefaultsOnInsert: true,
         },
       )
@@ -595,7 +595,7 @@ export class SportsSyncStateService {
         },
         {
           upsert: true,
-          new: true,
+          returnDocument: 'after',
           setDefaultsOnInsert: true,
         },
       )
