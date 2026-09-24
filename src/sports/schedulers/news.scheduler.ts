@@ -60,7 +60,7 @@ export class NewsScheduler {
     timeZone: 'Africa/Lagos',
   })
   async refreshLiveMatches(): Promise<void> {
-    if (!this.espnQueueService.isStartupReady()) {
+    if (!this.espnQueueService.isNormalOperationsReady()) {
       return;
     }
 
@@ -218,7 +218,7 @@ export class NewsScheduler {
     timeZone: 'Africa/Lagos',
   })
   async queueDailyLeagueRefreshes(): Promise<void> {
-    if (!this.espnQueueService.isStartupReady()) {
+    if (!this.espnQueueService.isNormalOperationsReady()) {
       return;
     }
 
@@ -296,7 +296,7 @@ export class NewsScheduler {
     timeZone: 'Africa/Lagos',
   })
   async refreshEspnCatalogue(): Promise<void> {
-    if (!this.espnQueueService.isStartupReady()) {
+    if (!this.espnQueueService.isNormalOperationsReady()) {
       return;
     }
 
@@ -383,7 +383,7 @@ export class NewsScheduler {
 
     nextRunAt: Date;
   }): Promise<void> {
-    if (!this.espnQueueService.isStartupReady()) {
+    if (!this.espnQueueService.isNormalOperationsReady()) {
       return;
     }
 

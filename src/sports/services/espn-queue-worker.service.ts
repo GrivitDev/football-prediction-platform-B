@@ -45,8 +45,6 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
   private cleanupTimer?: NodeJS.Timeout;
 
-  private startupWaitLogged = false;
-
   private lastStaleRecoveryAt = 0;
 
   constructor(
@@ -83,7 +81,19 @@ export class EspnQueueWorkerService implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    this.logger.log('ESPN queue worker initialized');
+    this.logger.log(
+      'ESPN queue worker initialized and waiting for startup release',
+    );
+  }
+
+  start(): void {
+    if (this.timer || this.cleanupTimer) {
+      return;
+    }
+
+    this.logger.log(
+      'ESPN queue worker released. Starting normal queue processing.',
+    );
 
     this.scheduleNextPoll(0);
 
@@ -141,59 +151,17 @@ export class EspnQueueWorkerService implements OnModuleInit {
       return;
     }
 
-    if (!this.espnQueueService.isStartupReady()) {
-      if (!this.startupWaitLogged) {
-        this.logger.log(
-          'ESPN queue worker waiting for startup initialization to complete',
-        );
-
-        this.startupWaitLogged = true;
-      }
-
+    if (!this.espnQueueService.isNormalOperationsReady()) {
       this.scheduleNextPoll();
 
       return;
     }
-
-    this.startupWaitLogged = false;
 
     this.polling = true;
 
     try {
       await this.recoverStaleJobsIfDue();
 
-      /*
-       * ==========================================================
-       * BOOTSTRAP PHASE
-       * ==========================================================
-       *
-       * Only these jobs are allowed to execute:
-       *
-       * FIXTURE_RECOVERY
-       * FINISHED_MATCH
-       *
-       * LEAGUE_REFRESH and UPCOMING_MATCH are deliberately blocked.
-       */
-      if (!this.espnQueueService.isNormalOperationsReady()) {
-        await this.processNextJob({
-          jobTypes: [
-            EspnQueueJobType.FIXTURE_RECOVERY,
-            EspnQueueJobType.FINISHED_MATCH,
-          ],
-
-          includeFailed: true,
-        });
-
-        await this.releaseNormalOperationsIfBootstrapComplete();
-
-        return;
-      }
-
-      /*
-       * ==========================================================
-       * NORMAL OPERATIONS
-       * ==========================================================
-       */
       await this.espnQueueBuilderService.watchThreeHourFixtures();
 
       await this.processNextJob();
@@ -209,7 +177,6 @@ export class EspnQueueWorkerService implements OnModuleInit {
       this.scheduleNextPoll();
     }
   }
-
   // ============================================================
   // STALE RECOVERY
   // ============================================================
@@ -441,42 +408,6 @@ export class EspnQueueWorkerService implements OnModuleInit {
       );
 
       throw error;
-    }
-  }
-
-  private async releaseNormalOperationsIfBootstrapComplete(): Promise<void> {
-    const incompleteBootstrapStates =
-      await this.sportsSyncStateService.getIncompleteQueueStates([
-        EspnQueueJobType.FIXTURE_RECOVERY,
-        EspnQueueJobType.FINISHED_MATCH,
-      ]);
-
-    if (incompleteBootstrapStates.length > 0) {
-      return;
-    }
-
-    this.espnQueueService.markNormalOperationsReady();
-
-    this.logger.log(
-      'ESPN bootstrap synchronization is completely finished. Normal operations are now released.',
-    );
-
-    try {
-      const result =
-        await this.espnQueueBuilderService.buildDailyLeagueRefreshQueue();
-
-      this.logger.log(
-        `Initial normal ESPN league refresh queue created after bootstrap: ` +
-          `active=${result.active}, ` +
-          `queued=${result.queued}, ` +
-          `skipped=${result.skipped}`,
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to create initial normal ESPN league refresh queue after bootstrap: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
     }
   }
 
