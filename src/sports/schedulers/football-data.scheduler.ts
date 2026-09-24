@@ -8,9 +8,20 @@ import { FootballDataService } from '../providers/football-data.service';
 
 import { SportsCollectionService } from '../services/sports-collection.service';
 
+import { SystemMonitorService } from '../../system-monitor/system-monitor.service';
+
+const FOOTBALL_DATA_CRON_EXPRESSION = '0 0 1 * * *';
+const FOOTBALL_DATA_TIME_ZONE = 'Africa/Lagos';
+
 @Injectable()
 export class FootballDataScheduler {
   private readonly logger = new Logger(FootballDataScheduler.name);
+
+  private readonly cronKey = 'football-data-daily-sync';
+
+  private readonly cronExpression = FOOTBALL_DATA_CRON_EXPRESSION;
+
+  private readonly timeZone = FOOTBALL_DATA_TIME_ZONE;
 
   private dailyRunning = false;
 
@@ -18,6 +29,8 @@ export class FootballDataScheduler {
     private readonly footballDataService: FootballDataService,
 
     private readonly sportsCollectionService: SportsCollectionService,
+
+    private readonly systemMonitorService: SystemMonitorService,
   ) {}
 
   /**
@@ -25,9 +38,9 @@ export class FootballDataScheduler {
    *
    * ESPN does not use this scheduler.
    */
-  @Cron('0 0 1 * * *', {
+  @Cron(FOOTBALL_DATA_CRON_EXPRESSION, {
     name: 'football-data-daily-sync',
-    timeZone: 'Africa/Lagos',
+    timeZone: FOOTBALL_DATA_TIME_ZONE,
   })
   async syncDaily(): Promise<void> {
     if (this.dailyRunning) {
@@ -37,78 +50,89 @@ export class FootballDataScheduler {
     this.dailyRunning = true;
 
     try {
-      const available = await this.footballDataService.getCompetitions();
+      await this.systemMonitorService.trackCron(
+        {
+          key: this.cronKey,
 
-      const providerCompetitions = available.competitions ?? [];
+          module: 'sports',
 
-      const coverageByCode = new Map(
-        FOOTBALL_DATA_COVERAGE.map((coverage) => [
-          coverage.code.trim().toUpperCase(),
-          coverage,
-        ]),
-      );
+          name: 'Football-Data Daily Sync',
 
-      const supported = providerCompetitions.filter((competition) => {
-        const code = competition.code?.trim().toUpperCase();
+          expression: this.cronExpression,
 
-        return Boolean(code && coverageByCode.has(code));
-      });
+          timeZone: this.timeZone,
+        },
 
-      for (const competition of supported) {
-        await this.sportsCollectionService.collectFootballDataCompetition(
-          competition,
-        );
-      }
+        async () => {
+          const available = await this.footballDataService.getCompetitions();
 
-      const codes = supported
-        .map((competition) => competition.code?.trim().toUpperCase())
-        .filter((code): code is string => Boolean(code));
+          const providerCompetitions = available.competitions ?? [];
 
-      if (codes.length > 0) {
-        await this.syncCurrentMatches(codes);
-      }
+          const coverageByCode = new Map(
+            FOOTBALL_DATA_COVERAGE.map((coverage) => [
+              coverage.code.trim().toUpperCase(),
+              coverage,
+            ]),
+          );
 
-      for (const competition of supported) {
-        const code = competition.code?.trim().toUpperCase();
+          const supported = providerCompetitions.filter((competition) => {
+            const code = competition.code?.trim().toUpperCase();
 
-        if (!code || typeof competition.id !== 'number') {
-          continue;
-        }
+            return Boolean(code && coverageByCode.has(code));
+          });
 
-        const standingsResponse = await this.footballDataService.getStandings(
-          String(competition.id),
-        );
+          for (const competition of supported) {
+            await this.sportsCollectionService.collectFootballDataCompetition(
+              competition,
+            );
+          }
 
-        /*
-         * getStandings() returns a response wrapper.
-         *
-         * The collection layer consumes the actual
-         * standing tables, not the wrapper itself.
-         */
-        await this.sportsCollectionService.collectFootballDataStandings(
-          standingsResponse.standings ?? [],
-          competition,
-          competition.id,
-        );
+          const codes = supported
+            .map((competition) => competition.code?.trim().toUpperCase())
+            .filter((code): code is string => Boolean(code));
 
-        const teamsResponse = await this.footballDataService.getTeams(code);
+          if (codes.length > 0) {
+            await this.syncCurrentMatches(codes);
+          }
 
-        await this.sportsCollectionService.collectFootballDataTeams(
-          teamsResponse.teams ?? [],
-          competition.id,
-          code,
-        );
-      }
+          for (const competition of supported) {
+            const code = competition.code?.trim().toUpperCase();
 
-      this.logger.log(
-        `Football-Data daily synchronization completed: ` +
-          `${providerCompetitions.length} provider competitions, ` +
-          `${supported.length} supported competitions`,
+            if (!code || typeof competition.id !== 'number') {
+              continue;
+            }
+
+            const standingsResponse =
+              await this.footballDataService.getStandings(
+                String(competition.id),
+              );
+
+            await this.sportsCollectionService.collectFootballDataStandings(
+              standingsResponse.standings ?? [],
+              competition,
+              competition.id,
+            );
+
+            const teamsResponse = await this.footballDataService.getTeams(code);
+
+            await this.sportsCollectionService.collectFootballDataTeams(
+              teamsResponse.teams ?? [],
+              competition.id,
+              code,
+            );
+          }
+
+          this.logger.log(
+            `Football-Data daily synchronization completed: ` +
+              `${providerCompetitions.length} provider competitions, ` +
+              `${supported.length} supported competitions`,
+          );
+        },
       );
     } catch (error) {
       this.logger.error(
         'Football-Data daily synchronization failed',
-        error instanceof Error ? error.stack : String(error),
+        error instanceof Error ? (error.stack ?? error.message) : String(error),
       );
     } finally {
       this.dailyRunning = false;

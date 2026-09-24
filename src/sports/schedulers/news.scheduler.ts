@@ -9,6 +9,8 @@ import { SportsCollectionService } from '../services/sports-collection.service';
 import { SportsSyncStateService } from '../services/sports-sync-state.service';
 import { EspnQueueService } from '../services/espn-queue.service';
 
+import { SystemMonitorService } from '../../system-monitor/system-monitor.service';
+
 @Injectable()
 export class NewsScheduler {
   private readonly logger = new Logger(NewsScheduler.name);
@@ -49,6 +51,8 @@ export class NewsScheduler {
     private readonly sportsCollectionService: SportsCollectionService,
 
     private readonly sportsSyncStateService: SportsSyncStateService,
+
+    private readonly systemMonitorService: SystemMonitorService,
   ) {}
 
   // ============================================================
@@ -75,30 +79,46 @@ export class NewsScheduler {
     const nextRunAt = this.nextEveryFiveSeconds();
 
     try {
-      await this.startCronTracking({
-        taskKey,
+      await this.systemMonitorService.trackCron(
+        {
+          key: taskKey,
 
-        cronExpression: this.liveCronExpression,
+          module: 'sports',
 
-        nextRunAt,
-      });
+          name: 'ESPN Live Matches',
 
-      const response = await this.espnService.getLiveMatches();
+          expression: this.liveCronExpression,
 
-      const result =
-        await this.sportsCollectionService.collectEspnLiveMatches(response);
+          timeZone: this.timeZone,
+        },
 
-      await this.sportsSyncStateService.markCronSuccess({
-        taskKey,
+        async () => {
+          await this.startCronTracking({
+            taskKey,
 
-        nextRunAt,
-      });
+            cronExpression: this.liveCronExpression,
 
-      this.logger.debug(
-        `ESPN live scoreboard refreshed: ` +
-          `received=${result.received}, ` +
-          `updated=${result.updated}, ` +
-          `cleared=${result.cleared}`,
+            nextRunAt,
+          });
+
+          const response = await this.espnService.getLiveMatches();
+
+          const result =
+            await this.sportsCollectionService.collectEspnLiveMatches(response);
+
+          await this.sportsSyncStateService.markCronSuccess({
+            taskKey,
+
+            nextRunAt,
+          });
+
+          this.logger.debug(
+            `ESPN live scoreboard refreshed: ` +
+              `received=${result.received}, ` +
+              `updated=${result.updated}, ` +
+              `cleared=${result.cleared}`,
+          );
+        },
       );
     } catch (error) {
       try {
@@ -142,6 +162,8 @@ export class NewsScheduler {
 
       taskKey: 'espn-news-morning',
 
+      name: 'ESPN Morning News',
+
       cronExpression: this.morningCronExpression,
 
       nextRunAt: this.nextDailyAt(8, 0),
@@ -161,6 +183,8 @@ export class NewsScheduler {
       period: 'afternoon',
 
       taskKey: 'espn-news-afternoon',
+
+      name: 'ESPN Afternoon News',
 
       cronExpression: this.afternoonCronExpression,
 
@@ -182,6 +206,8 @@ export class NewsScheduler {
 
       taskKey: 'espn-news-evening',
 
+      name: 'ESPN Evening News',
+
       cronExpression: this.eveningCronExpression,
 
       nextRunAt: this.nextDailyAt(20, 0),
@@ -201,6 +227,8 @@ export class NewsScheduler {
       period: 'night',
 
       taskKey: 'espn-news-night',
+
+      name: 'ESPN Night News',
 
       cronExpression: this.nightCronExpression,
 
@@ -222,10 +250,6 @@ export class NewsScheduler {
       return;
     }
 
-    if (!this.espnQueueService.isNormalOperationsReady()) {
-      return;
-    }
-
     if (this.dailyLeagueRefreshRunning) {
       this.logger.warn(
         'Skipping daily ESPN league-refresh queue seed because another run is already active',
@@ -241,28 +265,44 @@ export class NewsScheduler {
     const nextRunAt = this.nextDailyAt(0, 5);
 
     try {
-      await this.startCronTracking({
-        taskKey,
+      await this.systemMonitorService.trackCron(
+        {
+          key: taskKey,
 
-        cronExpression: this.dailyLeagueRefreshCronExpression,
+          module: 'sports',
 
-        nextRunAt,
-      });
+          name: 'ESPN Daily League Refresh Queue',
 
-      const result =
-        await this.espnQueueBuilderService.buildDailyLeagueRefreshQueue();
+          expression: this.dailyLeagueRefreshCronExpression,
 
-      await this.sportsSyncStateService.markCronSuccess({
-        taskKey,
+          timeZone: this.timeZone,
+        },
 
-        nextRunAt,
-      });
+        async () => {
+          await this.startCronTracking({
+            taskKey,
 
-      this.logger.log(
-        `Daily ESPN league-refresh queue seed completed: ` +
-          `active=${result.active}, ` +
-          `queued=${result.queued}, ` +
-          `skipped=${result.skipped}`,
+            cronExpression: this.dailyLeagueRefreshCronExpression,
+
+            nextRunAt,
+          });
+
+          const result =
+            await this.espnQueueBuilderService.buildDailyLeagueRefreshQueue();
+
+          await this.sportsSyncStateService.markCronSuccess({
+            taskKey,
+
+            nextRunAt,
+          });
+
+          this.logger.log(
+            `Daily ESPN league-refresh queue seed completed: ` +
+              `active=${result.active}, ` +
+              `queued=${result.queued}, ` +
+              `skipped=${result.skipped}`,
+          );
+        },
       );
     } catch (error) {
       try {
@@ -315,38 +355,54 @@ export class NewsScheduler {
     const nextRunAt = this.nextMonthlyAt(2, 0);
 
     try {
-      await this.startCronTracking({
-        taskKey,
+      await this.systemMonitorService.trackCron(
+        {
+          key: taskKey,
 
-        cronExpression: this.monthlyCronExpression,
+          module: 'sports',
 
-        nextRunAt,
-      });
+          name: 'ESPN Monthly Catalogue Refresh',
 
-      this.logger.log('Starting monthly ESPN league catalogue refresh');
+          expression: this.monthlyCronExpression,
 
-      const leagues =
-        await this.espnActiveCompetitionService.synchronizeLeagueCatalogue();
+          timeZone: this.timeZone,
+        },
 
-      this.logger.log(
-        `Monthly ESPN league catalogue synchronized: ${leagues.length} leagues`,
-      );
+        async () => {
+          await this.startCronTracking({
+            taskKey,
 
-      const result =
-        await this.espnActiveCompetitionService.synchronizeLeagueDetails();
+            cronExpression: this.monthlyCronExpression,
 
-      await this.sportsSyncStateService.markCronSuccess({
-        taskKey,
+            nextRunAt,
+          });
 
-        nextRunAt,
-      });
+          this.logger.log('Starting monthly ESPN league catalogue refresh');
 
-      this.logger.log(
-        `Monthly ESPN league season refresh completed: ` +
-          `processed=${result.processed}, ` +
-          `synchronized=${result.synchronized}, ` +
-          `skipped=${result.skipped}, ` +
-          `failed=${result.failed}`,
+          const leagues =
+            await this.espnActiveCompetitionService.synchronizeLeagueCatalogue();
+
+          this.logger.log(
+            `Monthly ESPN league catalogue synchronized: ${leagues.length} leagues`,
+          );
+
+          const result =
+            await this.espnActiveCompetitionService.synchronizeLeagueDetails();
+
+          await this.sportsSyncStateService.markCronSuccess({
+            taskKey,
+
+            nextRunAt,
+          });
+
+          this.logger.log(
+            `Monthly ESPN league season refresh completed: ` +
+              `processed=${result.processed}, ` +
+              `synchronized=${result.synchronized}, ` +
+              `skipped=${result.skipped}, ` +
+              `failed=${result.failed}`,
+          );
+        },
       );
     } catch (error) {
       try {
@@ -379,6 +435,8 @@ export class NewsScheduler {
 
     taskKey: string;
 
+    name: string;
+
     cronExpression: string;
 
     nextRunAt: Date;
@@ -398,31 +456,47 @@ export class NewsScheduler {
     this.running = true;
 
     try {
-      await this.startCronTracking({
-        taskKey: params.taskKey,
+      await this.systemMonitorService.trackCron(
+        {
+          key: params.taskKey,
 
-        cronExpression: params.cronExpression,
+          module: 'sports',
 
-        nextRunAt: params.nextRunAt,
-      });
+          name: params.name,
 
-      const response = await this.espnService.getNews();
+          expression: params.cronExpression,
 
-      const result =
-        await this.sportsCollectionService.collectEspnNews(response);
+          timeZone: this.timeZone,
+        },
 
-      await this.sportsSyncStateService.markCronSuccess({
-        taskKey: params.taskKey,
+        async () => {
+          await this.startCronTracking({
+            taskKey: params.taskKey,
 
-        nextRunAt: params.nextRunAt,
-      });
+            cronExpression: params.cronExpression,
 
-      this.logger.log(
-        `ESPN ${params.period} news collection completed: ` +
-          `received=${result.received}, ` +
-          `created=${result.created}, ` +
-          `updated=${result.updated}, ` +
-          `skipped=${result.skipped}`,
+            nextRunAt: params.nextRunAt,
+          });
+
+          const response = await this.espnService.getNews();
+
+          const result =
+            await this.sportsCollectionService.collectEspnNews(response);
+
+          await this.sportsSyncStateService.markCronSuccess({
+            taskKey: params.taskKey,
+
+            nextRunAt: params.nextRunAt,
+          });
+
+          this.logger.log(
+            `ESPN ${params.period} news collection completed: ` +
+              `received=${result.received}, ` +
+              `created=${result.created}, ` +
+              `updated=${result.updated}, ` +
+              `skipped=${result.skipped}`,
+          );
+        },
       );
     } catch (error) {
       try {
@@ -445,6 +519,7 @@ export class NewsScheduler {
       this.running = false;
     }
   }
+
   // ============================================================
   // CRON STATE
   // ============================================================

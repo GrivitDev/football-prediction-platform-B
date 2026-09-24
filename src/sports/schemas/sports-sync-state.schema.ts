@@ -1,7 +1,10 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
-export type SportsSyncStateDocument = HydratedDocument<SportsSyncState>;
+export type SportsSyncStateDocument = HydratedDocument<SportsSyncState> & {
+  createdAt: Date;
+  updatedAt: Date;
+};
 
 export enum SportsSyncStateKind {
   QUEUE = 'QUEUE',

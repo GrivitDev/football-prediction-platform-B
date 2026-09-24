@@ -652,4 +652,56 @@ export class SportsController {
       sortOrder,
     });
   }
+
+  // ============================================================
+  // ADMIN: SPORTS SYNC STATES
+  // PROTECTED
+  // ============================================================
+
+  @Roles('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Get('admin/sync-states')
+  async getAdminSportsSyncStates(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('kind') kind?: string,
+    @Query('type') type?: string,
+    @Query('status') status?: string,
+    @Query('stateKey') stateKey?: string,
+    @Query('leagueId') leagueId?: string,
+    @Query('season') season?: string,
+    @Query('eventId') eventId?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: 'asc' | 'desc',
+  ): Promise<unknown> {
+    return this.sportsDataReadService.getAdminSportsSyncStates({
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+      kind,
+      type,
+      status,
+      stateKey,
+      leagueId,
+      season: season ? Number(season) : undefined,
+      eventId,
+      sortBy,
+      sortOrder,
+    });
+  }
+
+  @Roles('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Get('admin/sync-states/summary')
+  async getAdminSportsSyncStateSummary(): Promise<unknown> {
+    return this.sportsDataReadService.getAdminSportsSyncStateSummary();
+  }
+
+  @Roles('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Get('admin/sync-states/:stateKey')
+  async getAdminSportsSyncState(
+    @Param('stateKey') stateKey: string,
+  ): Promise<unknown> {
+    return this.sportsDataReadService.getAdminSportsSyncState(stateKey);
+  }
 }
