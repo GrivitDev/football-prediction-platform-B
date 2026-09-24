@@ -1,14 +1,20 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 
 import { SportsDataReadService } from './services/sports-data-read.service';
+import { SportsSystemMonitorService } from './services/sports-system-monitor.service';
 
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 
+import { SportsSystemMonitorResponse } from './interfaces/sports-system-monitor.interface';
+
 @Controller('sports')
 export class SportsController {
-  constructor(private readonly sportsDataReadService: SportsDataReadService) {}
+  constructor(
+    private readonly sportsDataReadService: SportsDataReadService,
+    private readonly sportsSystemMonitorService: SportsSystemMonitorService,
+  ) {}
 
   // ============================================================
   // PUBLIC / APPLICATION SPORTS DATA
@@ -130,6 +136,21 @@ export class SportsController {
   @Get('youtube/:fixtureId')
   async getYoutubeHighlight(@Param('fixtureId') fixtureId: string) {
     return this.sportsDataReadService.getYoutubeHighlight(fixtureId);
+  }
+
+  // ============================================================
+  // ADMIN: SYSTEM MONITOR
+  // ============================================================
+
+  @Roles('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Get('admin/system-monitor')
+  async getAdminSystemMonitor(
+    @Query('leagueId') leagueId?: string,
+  ): Promise<SportsSystemMonitorResponse> {
+    return this.sportsSystemMonitorService.getSystemMonitor({
+      leagueId,
+    });
   }
 
   // ============================================================

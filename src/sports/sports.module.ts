@@ -23,6 +23,7 @@ import { SportsSyncStateService } from './services/sports-sync-state.service';
 
 import { SportsCollectionService } from './services/sports-collection.service';
 import { SportsDataReadService } from './services/sports-data-read.service';
+import { SportsSystemMonitorService } from './services/sports-system-monitor.service';
 
 import { SportsStartupService } from './services/sports-startup.service';
 
@@ -261,6 +262,7 @@ import { SportsDerivedDataBootstrapService } from './services/sports-derived-dat
     // Collection / read
     SportsCollectionService,
     SportsDataReadService,
+    SportsSystemMonitorService,
 
     // Derived data
     TeamCompetitionStatsService,
@@ -283,6 +285,7 @@ import { SportsDerivedDataBootstrapService } from './services/sports-derived-dat
   exports: [
     SportsService,
     SportsDataReadService,
+    SportsSystemMonitorService,
     ActiveCompetitionService,
     EspnService,
     TeamCompetitionStatsService,

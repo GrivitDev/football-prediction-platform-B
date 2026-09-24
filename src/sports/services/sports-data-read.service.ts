@@ -1007,6 +1007,8 @@ export class SportsDataReadService {
 
       lastError: state.lastError,
 
+      units,
+
       updatedAt: state.updatedAt,
 
       createdAt: state.createdAt,
