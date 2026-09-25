@@ -452,8 +452,6 @@ export class SportsSyncStateService {
 
     unit.completedAt = new Date();
 
-    unit.startedAt = undefined;
-
     unit.nextAttemptAt = undefined;
 
     unit.lastError = undefined;

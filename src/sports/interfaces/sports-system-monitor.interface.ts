@@ -93,11 +93,54 @@ export interface MonitorCronState {
   lastError?: string;
 }
 
+export interface MonitorSyncStateDetail {
+  stateKey: string;
+  kind: string;
+
+  leagueId?: string;
+  leagueName?: string;
+  season?: number;
+
+  jobType?: string;
+  status: string;
+  trackingMode?: string;
+
+  dateFrom?: string;
+  dateTo?: string;
+
+  unitProgress: {
+    total: number;
+    dateUnits: number;
+    stepUnits: number;
+    success: number;
+    processing: number;
+    pending: number;
+    failed: number;
+    completionPercent: number;
+  };
+
+  timing: {
+    sampleCount: number;
+    averageSecondsPerUnit?: number;
+    unitsPerMinute?: number;
+    currentProcessingElapsedSeconds?: number;
+  };
+
+  estimate: {
+    remainingUnits: number;
+    remainingSeconds?: number;
+    estimatedCompletionAt?: Date;
+  };
+
+  lastStartedAt?: Date;
+  lastCompletedAt?: Date;
+}
 export interface MonitorSyncSummary {
   totalStates: number;
   queueStates: number;
   cronStates: number;
   byStatus: Record<string, number>;
+
   unitProgress: {
     total: number;
     success: number;
@@ -106,10 +149,17 @@ export interface MonitorSyncSummary {
     failed: number;
     completionPercent: number;
   };
+
   stateCompletionPercent: number;
+
   currentStages: MonitorSyncStageSummary[];
+
   failures: MonitorSyncFailure[];
+
   cron: MonitorCronState[];
+
+  states: MonitorSyncStateDetail[];
+
   latestSuccessfulAt?: Date;
   latestCompletedAt?: Date;
   nextRunAt?: Date;
@@ -126,6 +176,7 @@ export interface MonitorCoverageMetric {
 export interface MonitorDerivedSummary {
   teamCompetitionStats: MonitorCoverageMetric;
   teamPerformanceProfiles: MonitorCoverageMetric;
+
   headToHead: {
     pairs: number;
     expectedPairs: number;
@@ -134,6 +185,7 @@ export interface MonitorDerivedSummary {
     latestMeetingAt?: Date;
     latestCalculatedAt?: Date;
   };
+
   matchDerivedData: {
     documents: number;
     expectedUpcomingFixtures: number;
@@ -161,6 +213,7 @@ export interface MonitorUpcomingFixture {
   awayTeamId?: string;
   homeTeamName?: string;
   awayTeamName?: string;
+
   sources: {
     espnFixture: boolean;
     odds: boolean;
@@ -172,6 +225,7 @@ export interface MonitorUpcomingFixture {
     headToHead: boolean;
     matchDerivedData: boolean;
   };
+
   status: MonitorReadinessStatus;
   missingSources: string[];
 }
@@ -190,6 +244,7 @@ export interface MonitorUpcomingSummary {
 
 export interface MonitorPipelineDefinition {
   stages: string[];
+
   operations: Record<
     string,
     {
@@ -199,16 +254,19 @@ export interface MonitorPipelineDefinition {
       note?: string;
     }
   >;
+
   stateCounts: Record<string, number>;
 }
 
 export interface MonitorProviderSummary {
   provider: string;
+
   limits: {
     minIntervalSeconds: number;
     dailyRequestLimit: number | null;
     monthlyRequestLimit: number | null;
   };
+
   usage: {
     dailyRequests: number;
     monthlyRequests: number;
@@ -219,6 +277,7 @@ export interface MonitorProviderSummary {
     lastRequestAt?: Date;
     activeLocks: number;
   };
+
   endpoints: Array<{
     endpoint: string;
     dailyRequests: number;
@@ -226,6 +285,7 @@ export interface MonitorProviderSummary {
     lastRequestAt?: Date;
     lockedUntil?: Date;
   }>;
+
   telemetry: {
     historicalRequestEventsAvailable: boolean;
     historicalRateByHourAvailable: boolean;
@@ -264,11 +324,13 @@ export interface MonitorLeagueSummary {
   region: string;
   priority: string;
   status: string;
+
   season?: number;
   seasonStartDate?: Date;
   seasonEndDate?: Date;
   nextFixtureDate?: Date;
   lastFixtureDate?: Date;
+
   catalogue: {
     exists: boolean;
     name?: string;
@@ -278,6 +340,7 @@ export interface MonitorLeagueSummary {
     lastSyncedAt?: Date;
     detailLastSyncedAt?: Date;
   };
+
   fixtures: MonitorFixtureSummary;
   teams: MonitorTeamSummary;
   standings: MonitorStandingSummary;
@@ -291,19 +354,28 @@ export interface MonitorLeagueSummary {
 
 export interface SportsSystemMonitorResponse {
   generatedAt: Date;
+
   scope: {
     activeLeagueFilter?: string;
     activeCompetitions: number;
     catalogueCompetitions: number;
     operationalSeasonScope: boolean;
   };
+
   inventory: MonitorInventory;
+
   queue: MonitorQueueSummary;
+
   sync: MonitorSyncSummary;
+
   pipeline: Record<string, MonitorPipelineDefinition>;
+
   providers: MonitorProviderSummary[];
+
   expectedWork: MonitorExpectedWork;
+
   leagues: MonitorLeagueSummary[];
+
   architectureNotes: {
     activeCompetitionSourceOfTruth: string;
     catalogueRole: string;

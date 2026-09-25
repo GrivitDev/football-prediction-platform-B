@@ -112,6 +112,7 @@ import {
   MonitorQueueSummary,
   MonitorSyncFailure,
   MonitorSyncStageSummary,
+  MonitorSyncStateDetail,
   MonitorSyncSummary,
   MonitorUpcomingFixture,
   MonitorUpcomingSummary,
@@ -201,11 +202,11 @@ interface SyncAggregate {
   currentStages: MonitorSyncStageSummary[];
   failures: MonitorSyncFailure[];
   cron: SportsSystemMonitorResponse['sync']['cron'];
+  states: MonitorSyncStateDetail[];
   latestSuccessfulAt?: Date;
   latestCompletedAt?: Date;
   nextRunAt?: Date;
 }
-
 interface OperationalSeasonData {
   fixtures: Map<string, FixtureAggregate>;
   expectedTeams: Map<string, Set<string>>;
@@ -376,10 +377,9 @@ export class SportsSystemMonitorService {
     const [inventory, queue, sync, providers] = await Promise.all([
       this.buildInventory(),
       this.buildQueueSummary(),
-      this.buildSyncSummary(),
+      this.buildSyncSummary(contexts, generatedAt),
       this.buildProviderSummaries(),
     ]);
-
     const pipeline = this.buildPipelineDefinitions(sync);
 
     if (!contexts.length) {
@@ -417,7 +417,7 @@ export class SportsSystemMonitorService {
 
     const queueAggregates = await this.aggregateQueueData(contexts);
 
-    const syncAggregates = await this.aggregateSyncData(contexts);
+    const syncAggregates = await this.aggregateSyncData(contexts, generatedAt);
 
     const upcomingFixtures = await this.loadUpcomingFixtures(
       contexts,
@@ -1678,8 +1678,19 @@ export class SportsSystemMonitorService {
   // SYNC
   // ============================================================
 
-  private async buildSyncSummary(): Promise<MonitorSyncSummary> {
+  private async buildSyncSummary(
+    contexts: LeagueContext[],
+    now: Date,
+  ): Promise<MonitorSyncSummary> {
     const states = await this.sportsSyncStateModel.find({}).lean().exec();
+
+    const contextByAlias = new Map<string, LeagueContext>();
+
+    for (const context of contexts) {
+      for (const alias of context.aliases) {
+        contextByAlias.set(alias, context);
+      }
+    }
 
     const byStatus: Record<string, number> = {};
 
@@ -1706,6 +1717,8 @@ export class SportsSystemMonitorService {
 
     const cron: SportsSystemMonitorResponse['sync']['cron'] = [];
 
+    const syncStateDetails: MonitorSyncStateDetail[] = [];
+
     for (const state of states) {
       const status = String(state.status);
 
@@ -1713,6 +1726,14 @@ export class SportsSystemMonitorService {
 
       if (state.kind === SportsSyncStateKind.QUEUE) {
         queueStates += 1;
+
+        const context = state.leagueId
+          ? contextByAlias.get(this.normalize(state.leagueId))
+          : undefined;
+
+        syncStateDetails.push(
+          this.buildSyncStateDetail(state, context?.competition.name, now),
+        );
       }
 
       if (state.kind === SportsSyncStateKind.CRON) {
@@ -1823,6 +1844,24 @@ export class SportsSystemMonitorService {
       (a, b) => new Date(b.at ?? 0).getTime() - new Date(a.at ?? 0).getTime(),
     );
 
+    syncStateDetails.sort((a, b) => {
+      const leagueCompare = (a.leagueName ?? '').localeCompare(
+        b.leagueName ?? '',
+      );
+
+      if (leagueCompare !== 0) {
+        return leagueCompare;
+      }
+
+      const jobCompare = (a.jobType ?? '').localeCompare(b.jobType ?? '');
+
+      if (jobCompare !== 0) {
+        return jobCompare;
+      }
+
+      return a.stateKey.localeCompare(b.stateKey);
+    });
+
     return {
       totalStates: states.length,
       queueStates,
@@ -1842,6 +1881,7 @@ export class SportsSystemMonitorService {
       currentStages: groupedStages,
       failures: failures.slice(0, 100),
       cron,
+      states: syncStateDetails,
       latestSuccessfulAt,
       latestCompletedAt,
       nextRunAt,
@@ -1850,6 +1890,7 @@ export class SportsSystemMonitorService {
 
   private async aggregateSyncData(
     contexts: LeagueContext[],
+    now: Date,
   ): Promise<Map<string, SyncAggregate>> {
     const clauses = contexts.flatMap((context) =>
       context.aliases.map((leagueId) => ({
@@ -1893,7 +1934,7 @@ export class SportsSystemMonitorService {
       let aggregate = result.get(context.key);
 
       if (!aggregate) {
-        aggregate = {
+        const newAggregate: SyncAggregate = {
           stateCounts: {},
           queueStates: 0,
           cronStates: 0,
@@ -1907,9 +1948,12 @@ export class SportsSystemMonitorService {
           currentStages: [],
           failures: [],
           cron: [],
+          states: [],
         };
 
-        result.set(context.key, aggregate);
+        result.set(context.key, newAggregate);
+
+        aggregate = newAggregate;
       }
 
       const status = String(state.status);
@@ -1918,6 +1962,10 @@ export class SportsSystemMonitorService {
 
       if (state.kind === SportsSyncStateKind.QUEUE) {
         aggregate.queueStates += 1;
+
+        aggregate.states.push(
+          this.buildSyncStateDetail(state, context.competition.name, now),
+        );
       }
 
       if (state.kind === SportsSyncStateKind.CRON) {
@@ -2027,11 +2075,20 @@ export class SportsSystemMonitorService {
       aggregate.failures.sort(
         (a, b) => new Date(b.at ?? 0).getTime() - new Date(a.at ?? 0).getTime(),
       );
+
+      aggregate.states.sort((a, b) => {
+        const jobCompare = (a.jobType ?? '').localeCompare(b.jobType ?? '');
+
+        if (jobCompare !== 0) {
+          return jobCompare;
+        }
+
+        return a.stateKey.localeCompare(b.stateKey);
+      });
     }
 
     return result;
   }
-
   // ============================================================
   // UPCOMING
   // ============================================================
@@ -3054,6 +3111,7 @@ export class SportsSystemMonitorService {
         currentStages: [],
         failures: [],
         cron: [],
+        states: [],
       };
     }
 
@@ -3094,11 +3152,168 @@ export class SportsSystemMonitorService {
 
       cron: aggregate.cron,
 
+      states: aggregate.states,
+
       latestSuccessfulAt: aggregate.latestSuccessfulAt,
 
       latestCompletedAt: aggregate.latestCompletedAt,
 
       nextRunAt: aggregate.nextRunAt,
+    };
+  }
+
+  private buildSyncStateDetail(
+    state: SportsSyncStateDocument,
+    leagueName: string | undefined,
+    now: Date,
+  ): MonitorSyncStateDetail {
+    const units = state.units ?? [];
+
+    let success = 0;
+    let processing = 0;
+    let pending = 0;
+    let failed = 0;
+    let dateUnits = 0;
+    let stepUnits = 0;
+
+    const durationsMs: number[] = [];
+
+    let currentProcessingElapsedSeconds: number | undefined;
+
+    for (const unit of units) {
+      const unitType = String(unit.type).toUpperCase();
+
+      if (unitType === 'DATE') {
+        dateUnits += 1;
+      }
+
+      if (unitType === 'STEP') {
+        stepUnits += 1;
+      }
+
+      switch (unit.status) {
+        case SportsSyncUnitStatus.SUCCESS: {
+          success += 1;
+
+          if (unit.startedAt && unit.completedAt) {
+            const startedAt = new Date(unit.startedAt).getTime();
+            const completedAt = new Date(unit.completedAt).getTime();
+
+            const durationMs = completedAt - startedAt;
+
+            if (durationMs > 0) {
+              durationsMs.push(durationMs);
+            }
+          }
+
+          break;
+        }
+
+        case SportsSyncUnitStatus.PROCESSING: {
+          processing += 1;
+
+          if (unit.startedAt) {
+            const startedAt = new Date(unit.startedAt).getTime();
+
+            const elapsedSeconds = Math.max(
+              0,
+              (now.getTime() - startedAt) / 1000,
+            );
+
+            if (
+              currentProcessingElapsedSeconds === undefined ||
+              elapsedSeconds > currentProcessingElapsedSeconds
+            ) {
+              currentProcessingElapsedSeconds = elapsedSeconds;
+            }
+          }
+
+          break;
+        }
+
+        case SportsSyncUnitStatus.PENDING:
+          pending += 1;
+          break;
+
+        case SportsSyncUnitStatus.FAILED:
+          failed += 1;
+          break;
+      }
+    }
+
+    const total = units.length;
+
+    const completionPercent = total > 0 ? this.percent(success, total) : 0;
+
+    const averageDurationMs =
+      durationsMs.length > 0
+        ? durationsMs.reduce((sum, value) => sum + value, 0) /
+          durationsMs.length
+        : undefined;
+
+    const averageSecondsPerUnit =
+      averageDurationMs !== undefined
+        ? Number((averageDurationMs / 1000).toFixed(2))
+        : undefined;
+
+    const unitsPerMinute =
+      averageSecondsPerUnit !== undefined && averageSecondsPerUnit > 0
+        ? Number((60 / averageSecondsPerUnit).toFixed(2))
+        : undefined;
+
+    const remainingUnits = Math.max(0, total - success);
+
+    const remainingSeconds =
+      averageSecondsPerUnit !== undefined && remainingUnits > 0
+        ? Number((remainingUnits * averageSecondsPerUnit).toFixed(2))
+        : undefined;
+
+    const estimatedCompletionAt =
+      remainingSeconds !== undefined && remainingSeconds > 0
+        ? new Date(now.getTime() + remainingSeconds * 1000)
+        : undefined;
+
+    return {
+      stateKey: state.stateKey,
+      kind: String(state.kind),
+      leagueId: state.leagueId,
+      leagueName,
+      season: state.season,
+      jobType: state.jobType,
+      status: String(state.status),
+      trackingMode: state.trackingMode,
+      dateFrom: state.dateFrom,
+      dateTo: state.dateTo,
+
+      unitProgress: {
+        total,
+        dateUnits,
+        stepUnits,
+        success,
+        processing,
+        pending,
+        failed,
+        completionPercent,
+      },
+
+      timing: {
+        sampleCount: durationsMs.length,
+        averageSecondsPerUnit,
+        unitsPerMinute,
+        currentProcessingElapsedSeconds:
+          currentProcessingElapsedSeconds !== undefined
+            ? Number(currentProcessingElapsedSeconds.toFixed(2))
+            : undefined,
+      },
+
+      estimate: {
+        remainingUnits,
+        remainingSeconds,
+        estimatedCompletionAt,
+      },
+
+      lastStartedAt: state.lastStartedAt,
+      lastCompletedAt: state.lastCompletedAt,
     };
   }
 
