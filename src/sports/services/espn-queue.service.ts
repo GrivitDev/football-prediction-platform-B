@@ -9,16 +9,14 @@ import {
   EspnQueueStatus,
 } from '../interfaces/espn-queue.interface';
 
-import {
-  SportsSyncStateStatus,
-  SportsSyncUnitStatus,
-} from '../schemas/sports-sync-state.schema';
+import { SportsSyncUnitStatus } from '../schemas/sports-sync-state.schema';
 
 import { SportsSyncStateService } from './sports-sync-state.service';
 
 @Injectable()
 export class EspnQueueService {
   private startupReady = false;
+
   private normalOperationsReady = false;
 
   constructor(
@@ -47,11 +45,24 @@ export class EspnQueueService {
   markNormalOperationsReady(): void {
     this.normalOperationsReady = true;
   }
+
   // ============================================================
-  // ADD LEAGUE REFRESH
+  // ADD FIXTURE REFRESH
   // ============================================================
 
-  async addLeagueRefreshJob(params: {
+  /**
+   * Creates a fixture-refresh job for an active ESPN league.
+   *
+   * A triggerEventId can identify why the refresh was requested:
+   *
+   *   DAILY:2026-09-26
+   *   STALE:2026-09-26
+   *   EVENT:401884783
+   *
+   * The trigger is used for operational deduplication and
+   * persistent synchronization-state identity.
+   */
+  async addFixtureRefreshJob(params: {
     leagueId: string;
     season?: number;
     priority: number;
@@ -59,73 +70,53 @@ export class EspnQueueService {
     triggerEventId?: string;
   }): Promise<EspnQueueDocument> {
     return this.addJob({
-      jobType: EspnQueueJobType.LEAGUE_REFRESH,
+      jobType: EspnQueueJobType.FIXTURE_REFRESH,
+
       leagueId: params.leagueId,
-      eventId: params.triggerEventId,
+
       season: params.season,
+
       priority: params.priority,
+
       scheduledFor: params.scheduledFor ?? new Date(),
+
+      triggerEventId: params.triggerEventId,
     });
   }
 
   // ============================================================
-  // ADD FIXTURE RECOVERY
+  // ADD SUMMARY REFRESH
   // ============================================================
 
-  async addFixtureRecoveryJob(params: {
+  /**
+   * Creates a Summary-refresh job for one ESPN fixture.
+   *
+   * Summary is persisted inside:
+   *
+   *   sports_espn_fixtures.payload.summary
+   *
+   * Queue creation must therefore be preceded by a check that
+   * the fixture does not already contain a Summary.
+   */
+  async addSummaryRefreshJob(params: {
     leagueId: string;
+    eventId: string;
     season: number;
     priority: number;
     scheduledFor?: Date;
   }): Promise<EspnQueueDocument> {
     return this.addJob({
-      jobType: EspnQueueJobType.FIXTURE_RECOVERY,
+      jobType: EspnQueueJobType.SUMMARY_REFRESH,
+
       leagueId: params.leagueId,
+
+      eventId: params.eventId,
+
       season: params.season,
+
       priority: params.priority,
+
       scheduledFor: params.scheduledFor ?? new Date(),
-    });
-  }
-
-  // ============================================================
-  // ADD UPCOMING MATCH
-  // ============================================================
-
-  async addUpcomingMatchJob(params: {
-    leagueId: string;
-    eventId: string;
-    season: number;
-    priority: number;
-    scheduledFor: Date;
-  }): Promise<EspnQueueDocument> {
-    return this.addJob({
-      jobType: EspnQueueJobType.UPCOMING_MATCH,
-      leagueId: params.leagueId,
-      eventId: params.eventId,
-      season: params.season,
-      priority: params.priority,
-      scheduledFor: params.scheduledFor,
-    });
-  }
-
-  // ============================================================
-  // ADD FINISHED MATCH
-  // ============================================================
-
-  async addFinishedMatchJob(params: {
-    leagueId: string;
-    eventId: string;
-    season: number;
-    priority: number;
-    scheduledFor: Date;
-  }): Promise<EspnQueueDocument> {
-    return this.addJob({
-      jobType: EspnQueueJobType.FINISHED_MATCH,
-      leagueId: params.leagueId,
-      eventId: params.eventId,
-      season: params.season,
-      priority: params.priority,
-      scheduledFor: params.scheduledFor,
     });
   }
 
@@ -140,35 +131,57 @@ export class EspnQueueService {
     season?: number;
     priority: number;
     scheduledFor: Date;
+    triggerEventId?: string;
   }): Promise<EspnQueueDocument> {
     const leagueId = params.leagueId.trim().toLowerCase();
+
+    if (!leagueId) {
+      throw new Error('ESPN queue leagueId cannot be empty');
+    }
+
+    if (params.jobType === EspnQueueJobType.SUMMARY_REFRESH) {
+      if (!params.eventId?.trim()) {
+        throw new Error('SUMMARY_REFRESH jobs require an eventId');
+      }
+
+      if (typeof params.season !== 'number') {
+        throw new Error('SUMMARY_REFRESH jobs require a numeric season');
+      }
+    }
 
     const jobKey = this.buildJobKey(
       params.jobType,
       leagueId,
       params.eventId,
       params.season,
+      params.triggerEventId,
     );
 
-    const trackingMode =
-      params.jobType === EspnQueueJobType.FIXTURE_RECOVERY
-        ? 'HISTORY'
-        : 'WINDOW';
+    const trackingMode: 'WINDOW' | 'HISTORY' = 'WINDOW';
 
     /*
      * The synchronization state is authoritative.
      *
-     * It must be ensured before deciding what to do with the
-     * operational queue document.
+     * The worker remains responsible for marking individual
+     * synchronization units successful after actual provider
+     * collection completes.
      */
     const state = await this.sportsSyncStateService.ensureQueueState({
       jobType: params.jobType,
+
       leagueId,
+
       season: params.season,
+
       eventId: params.eventId,
+
       priority: params.priority,
+
       trackingMode,
+
       queueJobKey: jobKey,
+
+      triggerEventId: params.triggerEventId,
     });
 
     const stateComplete = this.isTrackedStateComplete(state);
@@ -179,24 +192,29 @@ export class EspnQueueService {
       })
       .exec();
 
-    /*
-     * ----------------------------------------------------------
-     * EXISTING QUEUE DOCUMENT
-     * ----------------------------------------------------------
-     */
+    // ==========================================================
+    // EXISTING QUEUE DOCUMENT
+    // ==========================================================
+
     if (existing) {
       /*
-       * If the persistent state is already completely successful,
-       * the operational queue document should not run again.
+       * Persistent synchronization state already completed.
+       *
+       * The queue record should never execute the same completed
+       * synchronization again.
        */
       if (stateComplete) {
         if (existing.status !== EspnQueueStatus.COMPLETED) {
           existing.status = EspnQueueStatus.COMPLETED;
+
           existing.completedAt = existing.completedAt ?? new Date();
 
           existing.startedAt = undefined;
+
           existing.failedAt = undefined;
+
           existing.nextAttemptAt = undefined;
+
           existing.lastError = undefined;
 
           existing = await existing.save();
@@ -206,17 +224,15 @@ export class EspnQueueService {
       }
 
       /*
-       * COMPLETED queue document + incomplete persistent state
-       * means the operational record is stale.
-       *
-       * Re-open it.
+       * A completed queue document with incomplete state means
+       * the operational record is stale and must be reopened.
        */
       if (existing.status === EspnQueueStatus.COMPLETED) {
         return this.reopenJob(existing, params);
       }
 
       /*
-       * Already being handled.
+       * Another worker is already processing this job.
        */
       if (
         existing.status === EspnQueueStatus.PENDING ||
@@ -226,17 +242,16 @@ export class EspnQueueService {
       }
 
       /*
-       * FAILED jobs are operationally retryable while the
-       * synchronization state still contains incomplete units.
+       * FAILED remains retryable while synchronization state is
+       * still incomplete.
        */
       return this.reopenJob(existing, params);
     }
 
-    /*
-     * ----------------------------------------------------------
-     * CREATE NEW QUEUE DOCUMENT
-     * ----------------------------------------------------------
-     */
+    // ==========================================================
+    // CREATE NEW QUEUE DOCUMENT
+    // ==========================================================
+
     try {
       return await this.queueModel.create({
         jobKey,
@@ -248,6 +263,8 @@ export class EspnQueueService {
         eventId: params.eventId,
 
         season: params.season,
+
+        triggerEventId: params.triggerEventId,
 
         priority: params.priority,
 
@@ -261,8 +278,9 @@ export class EspnQueueService {
       });
     } catch (error) {
       /*
-       * A unique-index race can happen if two callers try to
-       * create the same operational job simultaneously.
+       * Two builders/schedulers can legitimately race to create
+       * the same job. The unique jobKey makes the queue itself
+       * the final deduplication authority.
        */
       if (!this.isDuplicateKeyError(error)) {
         throw error;
@@ -281,11 +299,15 @@ export class EspnQueueService {
       if (stateComplete) {
         if (existing.status !== EspnQueueStatus.COMPLETED) {
           existing.status = EspnQueueStatus.COMPLETED;
+
           existing.completedAt = existing.completedAt ?? new Date();
 
           existing.startedAt = undefined;
+
           existing.failedAt = undefined;
+
           existing.nextAttemptAt = undefined;
+
           existing.lastError = undefined;
 
           return existing.save();
@@ -395,7 +417,9 @@ export class EspnQueueService {
         {
           sort: {
             priority: 1,
+
             scheduledFor: 1,
+
             createdAt: 1,
           },
 
@@ -544,14 +568,18 @@ export class EspnQueueService {
         season: job.season,
 
         eventId: job.eventId,
+
+        triggerEventId: job.triggerEventId,
+
+        queueJobKey: job.jobKey,
       });
 
       try {
         await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
       } catch {
         /*
-         * The operational queue remains recoverable even if an
-         * old synchronization-state record does not exist.
+         * Queue recovery remains valid even when an older
+         * synchronization-state record is unavailable.
          */
       }
     }
@@ -667,15 +695,40 @@ export class EspnQueueService {
     leagueId: string,
     eventId?: string,
     season?: number,
+    triggerEventId?: string,
   ): string {
     const league = leagueId.trim().toLowerCase();
 
-    if (jobType === EspnQueueJobType.LEAGUE_REFRESH && eventId) {
+    /*
+     * Summary is always event-specific.
+     *
+     * This guarantees one logical Summary job per fixture.
+     */
+    if (jobType === EspnQueueJobType.SUMMARY_REFRESH) {
+      if (!eventId?.trim()) {
+        throw new Error('SUMMARY_REFRESH jobs require an eventId');
+      }
+
       return [jobType, league, eventId.trim()].join(':');
     }
 
-    if (eventId) {
-      return [jobType, league, eventId.trim()].join(':');
+    /*
+     * Fixture refreshes may legitimately be triggered
+     * multiple times for the same league and season.
+     *
+     * The trigger differentiates:
+     *
+     *   DAILY:date
+     *   STALE:date
+     *   EVENT:eventId
+     *
+     * When no trigger is supplied, fall back to the
+     * league + season identity.
+     */
+    if (triggerEventId?.trim()) {
+      return [jobType, league, season ?? 'current', triggerEventId.trim()].join(
+        ':',
+      );
     }
 
     return [jobType, league, season ?? 'current'].join(':');

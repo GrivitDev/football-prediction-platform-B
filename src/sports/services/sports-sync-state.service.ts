@@ -11,6 +11,8 @@ import {
   SportsSyncUnitType,
 } from '../schemas/sports-sync-state.schema';
 
+import { EspnQueueJobType } from '../interfaces/espn-queue.interface';
+
 @Injectable()
 export class SportsSyncStateService {
   constructor(
@@ -27,13 +29,53 @@ export class SportsSyncStateService {
     leagueId: string;
     season?: number;
     eventId?: string;
+    triggerEventId?: string;
+    queueJobKey?: string;
   }): string {
     const leagueId = this.normalize(params.leagueId);
 
+    /*
+     * Summary is always event-specific.
+     */
     if (params.eventId) {
       return ['QUEUE', params.jobType, leagueId, params.eventId.trim()].join(
         ':',
       );
+    }
+
+    /*
+     * Fixture refreshes are trigger-specific.
+     *
+     * This is important because the same league/season can
+     * legitimately require multiple fixture refreshes:
+     *
+     *   FIXTURE_REFRESH:eng.1:2026:DAILY:2026-09-26
+     *   FIXTURE_REFRESH:eng.1:2026:EVENT:401884783
+     *   FIXTURE_REFRESH:eng.1:2026:STALE:2026-09-26
+     *
+     * A previous successful refresh must not make a later
+     * refresh appear complete.
+     */
+    if (
+      String(params.jobType) === String(EspnQueueJobType.FIXTURE_REFRESH) &&
+      params.triggerEventId
+    ) {
+      return [
+        'QUEUE',
+        params.jobType,
+        leagueId,
+        params.season ?? 'current',
+        params.triggerEventId.trim(),
+      ].join(':');
+    }
+
+    /*
+     * When a queue job key is supplied and there is no event
+     * or explicit trigger, it provides a stable operational
+     * identity for the state.
+     */
+    if (params.queueJobKey?.trim()) {
+      return ['QUEUE', params.jobType, params.queueJobKey.trim()].join(':');
     }
 
     return ['QUEUE', params.jobType, leagueId, params.season ?? 'current'].join(
@@ -57,6 +99,7 @@ export class SportsSyncStateService {
     priority: number;
     trackingMode: 'WINDOW' | 'HISTORY';
     queueJobKey?: string;
+    triggerEventId?: string;
   }): Promise<SportsSyncStateDocument> {
     const stateKey = this.getQueueStateKey(params);
 
@@ -131,7 +174,7 @@ export class SportsSyncStateService {
    *
    * This is intentionally independent of the operational queue
    * collection. The queue document may have FAILED or may have
-   * already been cleaned after seven days.
+   * already been cleaned after its retention period.
    */
   async getIncompleteQueueStates(
     jobTypes?: string[],
@@ -250,8 +293,15 @@ export class SportsSyncStateService {
     );
 
     /*
-     * Never discard an already tracked step merely because the
-     * caller supplied a smaller list.
+     * Never discard an already tracked step.
+     *
+     * New architecture callers only create:
+     *
+     *   summary
+     *   youtube
+     *   odds
+     *
+     * or the fixture-refresh date units.
      */
     for (const stepKey of stepKeys) {
       if (existingSteps.has(stepKey)) {

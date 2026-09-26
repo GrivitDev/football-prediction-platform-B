@@ -1,11 +1,21 @@
+// backend/src/sports/services/sports-system-monitor.service.ts
+
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+
+// ============================================================
+// ACTIVE COMPETITION
+// ============================================================
 
 import {
   ActiveCompetition,
   ActiveCompetitionDocument,
 } from '../schemas/active-competition.schema';
+
+// ============================================================
+// ESPN
+// ============================================================
 
 import {
   EspnLeague,
@@ -17,8 +27,6 @@ import {
   EspnFixtureDocument,
 } from '../schemas/espn/espn-fixture.schema';
 
-import { EspnTeam, EspnTeamDocument } from '../schemas/espn/espn-team.schema';
-
 import {
   EspnStanding,
   EspnStandingDocument,
@@ -26,12 +34,22 @@ import {
 
 import { EspnNews, EspnNewsDocument } from '../schemas/espn/espn-news.schema';
 
+import { EspnTeam, EspnTeamDocument } from '../schemas/espn/espn-team.schema';
+
+// ============================================================
+// ESPN QUEUE
+// ============================================================
+
 import { EspnQueue, EspnQueueDocument } from '../schemas/espn-queue.schema';
 
 import {
   EspnQueueJobType,
   EspnQueueStatus,
 } from '../interfaces/espn-queue.interface';
+
+// ============================================================
+// SYNC STATE
+// ============================================================
 
 import {
   SportsSyncState,
@@ -41,32 +59,29 @@ import {
   SportsSyncUnitStatus,
 } from '../schemas/sports-sync-state.schema';
 
+// ============================================================
+// PROVIDER RATE LIMIT
+// ============================================================
+
 import {
   SportsProviderRateLimit,
   SportsProviderRateLimitDocument,
 } from '../schemas/sports-provider-rate-limit.schema';
 
-import {
-  TeamCompetitionStats,
-  TeamCompetitionStatsDocument,
-} from '../schemas/team-competition-stats.schema';
+import { SportsProviderRateLimitService } from './sports-provider-rate-limit.service';
 
-import {
-  TeamPerformanceProfile,
-  TeamPerformanceProfileDocument,
-} from '../schemas/team-performance-profile.schema';
-
-import { HeadToHead, HeadToHeadDocument } from '../schemas/head-to-head.schema';
-
-import {
-  MatchDerivedData,
-  MatchDerivedDataDocument,
-} from '../schemas/match-derived-data.schema';
+// ============================================================
+// YOUTUBE
+// ============================================================
 
 import {
   YouTubeHighlight,
   YouTubeHighlightDocument,
 } from '../schemas/youtube-highlight.schema';
+
+// ============================================================
+// FOOTBALL-DATA
+// ============================================================
 
 import {
   FootballDataCompetition,
@@ -88,6 +103,10 @@ import {
   FootballDataTeamDocument,
 } from '../schemas/football-data/football-data-team.schema';
 
+// ============================================================
+// ODDS API
+// ============================================================
+
 import {
   OddsApiSport,
   OddsApiSportDocument,
@@ -98,11 +117,11 @@ import {
   SportsOddsSnapshotDocument,
 } from '../schemas/sports-odds-snapshot.schema';
 
-import { SportsProviderRateLimitService } from './sports-provider-rate-limit.service';
+// ============================================================
+// MONITOR INTERFACES
+// ============================================================
 
 import {
-  MonitorCoverageMetric,
-  MonitorDerivedSummary,
   MonitorExpectedWork,
   MonitorInventory,
   MonitorLeagueSummary,
@@ -120,6 +139,10 @@ import {
   SportsSystemMonitorResponse,
 } from '../interfaces/sports-system-monitor.interface';
 
+// ============================================================
+// INTERNAL TYPES
+// ============================================================
+
 interface LeagueContext {
   competition: ActiveCompetitionDocument;
   key: string;
@@ -132,9 +155,12 @@ interface FixtureAggregate {
   upcoming: number;
   live: number;
   finished: number;
-  finishedWithSummary: number;
+  withSummary: number;
+  missingSummary: number;
   finishedMissingSummary: number;
+  summaryCoveragePercent: number;
   latestCollectedAt?: Date;
+  latestSummaryCollectedAt?: Date;
   storedSeasons: number;
 }
 
@@ -142,39 +168,6 @@ interface TeamAggregate {
   documents: number;
   teamIds: Set<string>;
   latestCollectedAt?: Date;
-}
-
-interface StandingAggregate {
-  rows: number;
-  teamIds: Set<string>;
-  latestCollectedAt?: Date;
-}
-
-interface NewsAggregate {
-  total: number;
-  last24Hours: number;
-  latestPublishedAt?: Date;
-  latestCollectedAt?: Date;
-}
-
-interface DerivedTeamAggregate {
-  documents: number;
-  teamIds: Set<string>;
-  latestCalculatedAt?: Date;
-}
-
-interface DerivedMatchAggregate {
-  documents: number;
-  latestCalculatedAt?: Date;
-}
-
-interface DerivedAggregate {
-  teamStats: Map<string, DerivedTeamAggregate>;
-  profiles: Map<string, DerivedTeamAggregate>;
-  matchDerived: Map<string, DerivedMatchAggregate>;
-  h2hPairs: Map<string, Set<string>>;
-  h2hLatestMeetingAt: Map<string, Date | undefined>;
-  h2hLatestCalculatedAt: Map<string, Date | undefined>;
 }
 
 interface QueueAggregate {
@@ -192,6 +185,7 @@ interface SyncAggregate {
   stateCounts: Record<string, number>;
   queueStates: number;
   cronStates: number;
+
   unitProgress: {
     total: number;
     success: number;
@@ -199,26 +193,24 @@ interface SyncAggregate {
     pending: number;
     failed: number;
   };
+
   currentStages: MonitorSyncStageSummary[];
   failures: MonitorSyncFailure[];
   cron: SportsSystemMonitorResponse['sync']['cron'];
   states: MonitorSyncStateDetail[];
+
   latestSuccessfulAt?: Date;
   latestCompletedAt?: Date;
   nextRunAt?: Date;
 }
+
 interface OperationalSeasonData {
   fixtures: Map<string, FixtureAggregate>;
   expectedTeams: Map<string, Set<string>>;
-  expectedPairs: Map<string, Set<string>>;
-  standings: Map<string, StandingAggregate>;
 }
 
 interface UpcomingIndexes {
-  stats: Set<string>;
-  profiles: Set<string>;
-  derived: Set<string>;
-  h2h: Set<string>;
+  summaries: Set<string>;
   odds: Set<string>;
 }
 
@@ -233,6 +225,10 @@ interface ProviderStatePeriods {
   monthlyPeriod?: Date | string;
 }
 
+// ============================================================
+// CONSTANTS
+// ============================================================
+
 const COMPLETED_STATUSES = new Set([
   'FT',
   'AET',
@@ -245,8 +241,12 @@ const COMPLETED_STATUSES = new Set([
 ]);
 
 const QUEUE_COMPLETED_RETENTION_DAYS = 7;
-const STALE_PROCESSING_MINUTES = 15;
+
+const STALE_PROCESSING_MINUTES = 5;
+
 const UPCOMING_WINDOW_DAYS = 4;
+
+const STALE_ACTIVE_LEAGUE_HOURS = 48;
 
 type ConfiguredSportsProvider = Parameters<
   SportsProviderRateLimitService['getDailyUsage']
@@ -258,16 +258,19 @@ const PROVIDER_CONFIG: Record<ConfiguredSportsProvider, ProviderConfig> = {
     dailyRequestLimit: null,
     monthlyRequestLimit: null,
   },
+
   'football-data': {
     minIntervalSeconds: 60,
     dailyRequestLimit: null,
     monthlyRequestLimit: null,
   },
+
   'odds-api': {
     minIntervalSeconds: 60,
     dailyRequestLimit: null,
     monthlyRequestLimit: 500,
   },
+
   youtube: {
     minIntervalSeconds: 200,
     dailyRequestLimit: 90,
@@ -275,11 +278,23 @@ const PROVIDER_CONFIG: Record<ConfiguredSportsProvider, ProviderConfig> = {
   },
 };
 
+// ============================================================
+// SERVICE
+// ============================================================
+
 @Injectable()
 export class SportsSystemMonitorService {
   constructor(
+    // ----------------------------------------------------------
+    // ACTIVE COMPETITIONS
+    // ----------------------------------------------------------
+
     @InjectModel(ActiveCompetition.name)
     private readonly activeCompetitionModel: Model<ActiveCompetitionDocument>,
+
+    // ----------------------------------------------------------
+    // ESPN
+    // ----------------------------------------------------------
 
     @InjectModel(EspnLeague.name)
     private readonly espnLeagueModel: Model<EspnLeagueDocument>,
@@ -296,29 +311,39 @@ export class SportsSystemMonitorService {
     @InjectModel(EspnNews.name)
     private readonly espnNewsModel: Model<EspnNewsDocument>,
 
+    // ----------------------------------------------------------
+    // QUEUE
+    // ----------------------------------------------------------
+
     @InjectModel(EspnQueue.name)
     private readonly espnQueueModel: Model<EspnQueueDocument>,
+
+    // ----------------------------------------------------------
+    // SYNC STATE
+    // ----------------------------------------------------------
 
     @InjectModel(SportsSyncState.name)
     private readonly sportsSyncStateModel: Model<SportsSyncStateDocument>,
 
+    // ----------------------------------------------------------
+    // RATE LIMIT
+    // ----------------------------------------------------------
+
     @InjectModel(SportsProviderRateLimit.name)
     private readonly sportsProviderRateLimitModel: Model<SportsProviderRateLimitDocument>,
 
-    @InjectModel(TeamCompetitionStats.name)
-    private readonly teamCompetitionStatsModel: Model<TeamCompetitionStatsDocument>,
+    private readonly providerRateLimitService: SportsProviderRateLimitService,
 
-    @InjectModel(TeamPerformanceProfile.name)
-    private readonly teamPerformanceProfileModel: Model<TeamPerformanceProfileDocument>,
-
-    @InjectModel(HeadToHead.name)
-    private readonly headToHeadModel: Model<HeadToHeadDocument>,
-
-    @InjectModel(MatchDerivedData.name)
-    private readonly matchDerivedDataModel: Model<MatchDerivedDataDocument>,
+    // ----------------------------------------------------------
+    // YOUTUBE
+    // ----------------------------------------------------------
 
     @InjectModel(YouTubeHighlight.name)
     private readonly youtubeHighlightModel: Model<YouTubeHighlightDocument>,
+
+    // ----------------------------------------------------------
+    // FOOTBALL-DATA
+    // ----------------------------------------------------------
 
     @InjectModel(FootballDataCompetition.name)
     private readonly footballDataCompetitionModel: Model<FootballDataCompetitionDocument>,
@@ -332,13 +357,15 @@ export class SportsSystemMonitorService {
     @InjectModel(FootballDataTeam.name)
     private readonly footballDataTeamModel: Model<FootballDataTeamDocument>,
 
+    // ----------------------------------------------------------
+    // ODDS
+    // ----------------------------------------------------------
+
     @InjectModel(OddsApiSport.name)
     private readonly oddsApiSportModel: Model<OddsApiSportDocument>,
 
     @InjectModel(SportsOddsSnapshot.name)
     private readonly sportsOddsSnapshotModel: Model<SportsOddsSnapshotDocument>,
-
-    private readonly providerRateLimitService: SportsProviderRateLimitService,
   ) {}
 
   // ============================================================
@@ -348,7 +375,7 @@ export class SportsSystemMonitorService {
   async getSystemMonitor(
     query: SportsSystemMonitorQuery = {},
   ): Promise<SportsSystemMonitorResponse> {
-    const generatedAt = new Date();
+    const now = new Date();
 
     const activeCompetitions = await this.getActiveCompetitions(query);
 
@@ -357,12 +384,22 @@ export class SportsSystemMonitorService {
     const catalogueById = new Map<string, EspnLeagueDocument>();
 
     for (const league of catalogue) {
-      catalogueById.set(this.normalize(league.leagueId), league);
+      const leagueId = this.normalize(league.leagueId);
+      const slug = this.normalize(league.slug);
+
+      if (leagueId) {
+        catalogueById.set(leagueId, league);
+      }
+
+      if (slug) {
+        catalogueById.set(slug, league);
+      }
     }
 
-    const contexts = activeCompetitions.map((competition) => ({
+    const contexts: LeagueContext[] = activeCompetitions.map((competition) => ({
       competition,
       key: this.normalize(competition.competitionId),
+
       aliases: [
         ...new Set(
           [competition.competitionId, competition.espnLeagueSlug]
@@ -370,6 +407,7 @@ export class SportsSystemMonitorService {
             .filter(Boolean),
         ),
       ],
+
       season:
         typeof competition.season === 'number' ? competition.season : undefined,
     }));
@@ -377,57 +415,65 @@ export class SportsSystemMonitorService {
     const [inventory, queue, sync, providers] = await Promise.all([
       this.buildInventory(),
       this.buildQueueSummary(),
-      this.buildSyncSummary(contexts, generatedAt),
+      this.buildSyncSummary(contexts, now),
       this.buildProviderSummaries(),
     ]);
+
     const pipeline = this.buildPipelineDefinitions(sync);
 
     if (!contexts.length) {
       return {
-        generatedAt,
+        generatedAt: this.toIso(now) as string,
+
         scope: {
           activeLeagueFilter: query.leagueId
             ? this.normalize(query.leagueId)
             : undefined,
+
           activeCompetitions: 0,
+
           catalogueCompetitions: catalogue.length,
+
           operationalSeasonScope: true,
         },
+
         inventory,
+
         queue,
+
         sync,
+
         pipeline,
+
         providers,
+
         expectedWork: this.emptyExpectedWork(),
+
         leagues: [],
+
         architectureNotes: this.getArchitectureNotes(),
       };
     }
 
-    const operationalSeasonData = await this.buildOperationalSeasonData(
-      contexts,
-      generatedAt,
-    );
-
-    const teamAggregates = await this.aggregateTeams(contexts);
-
-    const newsAggregates = await this.aggregateNews(contexts, generatedAt);
-
-    const derivedAggregates = await this.aggregateDerivedData(contexts);
-
-    const queueAggregates = await this.aggregateQueueData(contexts);
-
-    const syncAggregates = await this.aggregateSyncData(contexts, generatedAt);
-
-    const upcomingFixtures = await this.loadUpcomingFixtures(
-      contexts,
-      generatedAt,
-    );
-
-    const upcomingIndexes = await this.buildUpcomingIndexes(
-      contexts,
+    const [
+      operationalSeasonData,
+      teamAggregates,
+      queueAggregates,
+      syncAggregates,
       upcomingFixtures,
-    );
+    ] = await Promise.all([
+      this.buildOperationalSeasonData(contexts, now),
+
+      this.aggregateTeams(contexts),
+
+      this.aggregateQueueData(contexts),
+
+      this.aggregateSyncData(contexts, now),
+
+      this.loadUpcomingFixtures(contexts, now),
+    ]);
+
+    const upcomingIndexes = await this.buildUpcomingIndexes(upcomingFixtures);
 
     const leagues = contexts.map((context) =>
       this.buildLeagueSummary({
@@ -435,8 +481,6 @@ export class SportsSystemMonitorService {
         catalogueById,
         operationalSeasonData,
         teamAggregates,
-        newsAggregates,
-        derivedAggregates,
         queueAggregates,
         syncAggregates,
         upcomingFixtures,
@@ -449,22 +493,34 @@ export class SportsSystemMonitorService {
     );
 
     return {
-      generatedAt,
+      generatedAt: this.toIso(now) as string,
+
       scope: {
         activeLeagueFilter: query.leagueId
           ? this.normalize(query.leagueId)
           : undefined,
+
         activeCompetitions: activeCompetitions.length,
+
         catalogueCompetitions: catalogue.length,
+
         operationalSeasonScope: true,
       },
+
       inventory,
+
       queue,
+
       sync,
+
       pipeline,
+
       providers,
+
       expectedWork,
+
       leagues,
+
       architectureNotes: this.getArchitectureNotes(),
     };
   }
@@ -485,6 +541,7 @@ export class SportsSystemMonitorService {
         {
           competitionId: normalized,
         },
+
         {
           espnLeagueSlug: normalized,
         },
@@ -522,30 +579,36 @@ export class SportsSystemMonitorService {
       footballDataTeams,
       oddsApiSports,
       sportsOddsSnapshots,
-      teamCompetitionStats,
-      teamPerformanceProfiles,
-      headToHeadPairs,
-      matchDerivedData,
       youtubeHighlights,
     ] = await Promise.all([
       this.activeCompetitionModel.countDocuments(),
+
       this.espnLeagueModel.countDocuments(),
+
       this.espnFixtureModel.countDocuments(),
+
       this.espnTeamModel.countDocuments(),
+
       this.espnStandingModel.countDocuments(),
+
       this.espnNewsModel.countDocuments(),
+
       this.espnQueueModel.countDocuments(),
+
       this.sportsSyncStateModel.countDocuments(),
+
       this.footballDataCompetitionModel.countDocuments(),
+
       this.footballDataMatchModel.countDocuments(),
+
       this.footballDataStandingModel.countDocuments(),
+
       this.footballDataTeamModel.countDocuments(),
+
       this.oddsApiSportModel.countDocuments(),
+
       this.sportsOddsSnapshotModel.countDocuments(),
-      this.teamCompetitionStatsModel.countDocuments(),
-      this.teamPerformanceProfileModel.countDocuments(),
-      this.headToHeadModel.countDocuments(),
-      this.matchDerivedDataModel.countDocuments(),
+
       this.youtubeHighlightModel.countDocuments(),
     ]);
 
@@ -564,10 +627,6 @@ export class SportsSystemMonitorService {
       footballDataTeams,
       oddsApiSports,
       sportsOddsSnapshots,
-      teamCompetitionStats,
-      teamPerformanceProfiles,
-      headToHeadPairs,
-      matchDerivedData,
       youtubeHighlights,
     };
   }
@@ -604,27 +663,40 @@ export class SportsSystemMonitorService {
               leagueId: string;
               season: number;
             };
+
             total: number;
+
             upcoming: number;
+
             live: number;
+
             finished: number;
+
+            withSummary: number;
+
             finishedWithSummary: number;
+
             latestCollectedAt?: Date;
+
+            latestSummaryCollectedAt?: Date;
           }>([
             {
               $match: {
                 $or: clauses,
               },
             },
+
             {
               $group: {
                 _id: {
                   leagueId: '$leagueId',
                   season: '$season',
                 },
+
                 total: {
                   $sum: 1,
                 },
+
                 upcoming: {
                   $sum: {
                     $cond: [
@@ -633,27 +705,34 @@ export class SportsSystemMonitorService {
                           {
                             $gte: ['$fixtureDate', now],
                           },
+
                           {
                             $ne: ['$completed', true],
                           },
                         ],
                       },
+
                       1,
+
                       0,
                     ],
                   },
                 },
+
                 live: {
                   $sum: {
                     $cond: [
                       {
                         $eq: ['$live', true],
                       },
+
                       1,
+
                       0,
                     ],
                   },
                 },
+
                 finished: {
                   $sum: {
                     $cond: [
@@ -662,16 +741,54 @@ export class SportsSystemMonitorService {
                           {
                             $eq: ['$completed', true],
                           },
+
                           {
                             $in: ['$status', [...COMPLETED_STATUSES]],
                           },
                         ],
                       },
+
                       1,
+
                       0,
                     ],
                   },
                 },
+
+                withSummary: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          {
+                            $ne: [
+                              {
+                                $ifNull: ['$payload.summary', null],
+                              },
+
+                              null,
+                            ],
+                          },
+
+                          {
+                            $ne: [
+                              {
+                                $ifNull: ['$payload.summary', {}],
+                              },
+
+                              {},
+                            ],
+                          },
+                        ],
+                      },
+
+                      1,
+
+                      0,
+                    ],
+                  },
+                },
+
                 finishedWithSummary: {
                   $sum: {
                     $cond: [
@@ -682,28 +799,48 @@ export class SportsSystemMonitorService {
                               {
                                 $eq: ['$completed', true],
                               },
+
                               {
                                 $in: ['$status', [...COMPLETED_STATUSES]],
                               },
                             ],
                           },
+
                           {
                             $ne: [
                               {
                                 $ifNull: ['$payload.summary', null],
                               },
+
                               null,
+                            ],
+                          },
+
+                          {
+                            $ne: [
+                              {
+                                $ifNull: ['$payload.summary', {}],
+                              },
+
+                              {},
                             ],
                           },
                         ],
                       },
+
                       1,
+
                       0,
                     ],
                   },
                 },
+
                 latestCollectedAt: {
                   $max: '$collectedAt',
+                },
+
+                latestSummaryCollectedAt: {
+                  $max: '$payload.summaryCollectedAt',
                 },
               },
             },
@@ -713,9 +850,7 @@ export class SportsSystemMonitorService {
 
     const expectedTeams = new Map<string, Set<string>>();
 
-    const expectedPairs = new Map<string, Set<string>>();
-
-    const fixtures = clauses.length
+    const fixtureRowsForTeams = clauses.length
       ? await this.espnFixtureModel
           .find({
             $or: clauses,
@@ -725,145 +860,38 @@ export class SportsSystemMonitorService {
             season: 1,
             homeTeamId: 1,
             awayTeamId: 1,
-            completed: 1,
-            status: 1,
           })
           .lean()
           .exec()
       : [];
 
-    for (const fixture of fixtures) {
+    for (const fixture of fixtureRowsForTeams) {
       const context = contextByAlias.get(this.normalize(fixture.leagueId));
 
       if (!context) {
         continue;
       }
 
-      const key = context.key;
+      if (fixture.season !== context.season) {
+        continue;
+      }
 
-      if (!expectedTeams.has(key)) {
-        expectedTeams.set(key, new Set<string>());
+      if (!expectedTeams.has(context.key)) {
+        expectedTeams.set(context.key, new Set<string>());
       }
 
       if (fixture.homeTeamId) {
-        expectedTeams.get(key)!.add(fixture.homeTeamId);
+        expectedTeams.get(context.key)!.add(String(fixture.homeTeamId));
       }
 
       if (fixture.awayTeamId) {
-        expectedTeams.get(key)!.add(fixture.awayTeamId);
-      }
-
-      if (this.isCompletedFixture(fixture)) {
-        const pair = this.pairKey(fixture.homeTeamId, fixture.awayTeamId);
-
-        if (pair) {
-          if (!expectedPairs.has(key)) {
-            expectedPairs.set(key, new Set<string>());
-          }
-
-          expectedPairs.get(key)!.add(pair);
-        }
-      }
-    }
-
-    const standingRows = clauses.length
-      ? await this.espnStandingModel
-          .aggregate<{
-            _id: {
-              leagueId: string;
-              season: number;
-            };
-            rows: number;
-            teamIds: string[];
-            latestCollectedAt?: Date;
-          }>([
-            {
-              $match: {
-                $or: clauses,
-              },
-            },
-            {
-              $group: {
-                _id: {
-                  leagueId: '$leagueId',
-                  season: '$season',
-                },
-                rows: {
-                  $sum: 1,
-                },
-                teamIds: {
-                  $addToSet: '$teamId',
-                },
-                latestCollectedAt: {
-                  $max: '$collectedAt',
-                },
-              },
-            },
-          ])
-          .exec()
-      : [];
-
-    for (const row of standingRows) {
-      const context = contextByAlias.get(this.normalize(row._id.leagueId));
-
-      if (!context) {
-        continue;
-      }
-
-      const key = context.key;
-
-      if (!expectedTeams.has(key)) {
-        expectedTeams.set(key, new Set<string>());
-      }
-
-      for (const teamId of row.teamIds ?? []) {
-        if (teamId) {
-          expectedTeams.get(key)!.add(teamId);
-        }
-      }
-    }
-
-    const standings = new Map<string, StandingAggregate>();
-
-    for (const row of standingRows) {
-      const context = contextByAlias.get(this.normalize(row._id.leagueId));
-
-      if (!context) {
-        continue;
-      }
-
-      const key = context.key;
-
-      const existing = standings.get(key);
-
-      const incomingTeamIds = new Set((row.teamIds ?? []).filter(Boolean));
-
-      if (!existing) {
-        standings.set(key, {
-          rows: Number(row.rows ?? 0),
-          teamIds: incomingTeamIds,
-          latestCollectedAt: row.latestCollectedAt,
-        });
-        continue;
-      }
-
-      existing.rows += Number(row.rows ?? 0);
-
-      for (const teamId of incomingTeamIds) {
-        existing.teamIds.add(teamId);
-      }
-
-      if (
-        row.latestCollectedAt &&
-        (!existing.latestCollectedAt ||
-          new Date(row.latestCollectedAt).getTime() >
-            new Date(existing.latestCollectedAt).getTime())
-      ) {
-        existing.latestCollectedAt = row.latestCollectedAt;
+        expectedTeams.get(context.key)!.add(String(fixture.awayTeamId));
       }
     }
 
     const fixtureAggregates = new Map<string, FixtureAggregate>();
+
+    const storedSeasonSets = new Map<string, Set<number>>();
 
     for (const row of fixtureRows) {
       const context = contextByAlias.get(this.normalize(row._id.leagueId));
@@ -872,51 +900,108 @@ export class SportsSystemMonitorService {
         continue;
       }
 
+      if (
+        typeof row._id.season !== 'number' ||
+        row._id.season !== context.season
+      ) {
+        continue;
+      }
+
       const key = context.key;
+
+      const total = Number(row.total ?? 0);
+
+      const withSummary = Number(row.withSummary ?? 0);
+
+      const finished = Number(row.finished ?? 0);
+
+      const finishedWithSummary = Number(row.finishedWithSummary ?? 0);
+
       const existing = fixtureAggregates.get(key);
 
+      if (!storedSeasonSets.has(key)) {
+        storedSeasonSets.set(key, new Set<number>());
+      }
+
+      storedSeasonSets.get(key)!.add(row._id.season);
+
       const incoming: FixtureAggregate = {
-        total: Number(row.total ?? 0),
+        total,
+
         upcoming: Number(row.upcoming ?? 0),
+
         live: Number(row.live ?? 0),
-        finished: Number(row.finished ?? 0),
-        finishedWithSummary: Number(row.finishedWithSummary ?? 0),
-        finishedMissingSummary: Math.max(
-          0,
-          Number(row.finished ?? 0) - Number(row.finishedWithSummary ?? 0),
-        ),
+
+        finished,
+
+        withSummary,
+
+        missingSummary: Math.max(0, total - withSummary),
+
+        finishedMissingSummary: Math.max(0, finished - finishedWithSummary),
+
+        summaryCoveragePercent:
+          total > 0 ? this.percent(withSummary, total) : 0,
+
         latestCollectedAt: row.latestCollectedAt,
+
+        latestSummaryCollectedAt: row.latestSummaryCollectedAt,
+
         storedSeasons: 1,
       };
 
       if (!existing) {
         fixtureAggregates.set(key, incoming);
+
         continue;
       }
 
       existing.total += incoming.total;
+
       existing.upcoming += incoming.upcoming;
+
       existing.live += incoming.live;
+
       existing.finished += incoming.finished;
-      existing.finishedWithSummary += incoming.finishedWithSummary;
+
+      existing.withSummary += incoming.withSummary;
+
+      existing.missingSummary += incoming.missingSummary;
+
       existing.finishedMissingSummary += incoming.finishedMissingSummary;
-      existing.storedSeasons += 1;
 
       if (
         incoming.latestCollectedAt &&
         (!existing.latestCollectedAt ||
-          new Date(incoming.latestCollectedAt).getTime() >
-            new Date(existing.latestCollectedAt).getTime())
+          incoming.latestCollectedAt.getTime() >
+            existing.latestCollectedAt.getTime())
       ) {
         existing.latestCollectedAt = incoming.latestCollectedAt;
       }
+
+      if (
+        incoming.latestSummaryCollectedAt &&
+        (!existing.latestSummaryCollectedAt ||
+          incoming.latestSummaryCollectedAt.getTime() >
+            existing.latestSummaryCollectedAt.getTime())
+      ) {
+        existing.latestSummaryCollectedAt = incoming.latestSummaryCollectedAt;
+      }
+    }
+
+    for (const [key, aggregate] of fixtureAggregates) {
+      aggregate.summaryCoveragePercent =
+        aggregate.total > 0
+          ? this.percent(aggregate.withSummary, aggregate.total)
+          : 0;
+
+      aggregate.storedSeasons = storedSeasonSets.get(key)?.size ?? 0;
     }
 
     return {
       fixtures: fixtureAggregates,
+
       expectedTeams,
-      expectedPairs,
-      standings,
     };
   }
 
@@ -957,15 +1042,19 @@ export class SportsSystemMonitorService {
             },
           },
         },
+
         {
           $group: {
             _id: '$leagueId',
+
             documents: {
               $sum: 1,
             },
+
             teamIds: {
               $addToSet: '$teamId',
             },
+
             latestCollectedAt: {
               $max: '$collectedAt',
             },
@@ -983,16 +1072,21 @@ export class SportsSystemMonitorService {
         continue;
       }
 
-      const current = result.get(context.key);
-
       const incoming: TeamAggregate = {
         documents: Number(row.documents ?? 0),
-        teamIds: new Set((row.teamIds ?? []).filter(Boolean)),
+
+        teamIds: new Set(
+          (row.teamIds ?? []).filter(Boolean).map((teamId) => String(teamId)),
+        ),
+
         latestCollectedAt: row.latestCollectedAt,
       };
 
+      const current = result.get(context.key);
+
       if (!current) {
         result.set(context.key, incoming);
+
         continue;
       }
 
@@ -1010,371 +1104,6 @@ export class SportsSystemMonitorService {
       ) {
         current.latestCollectedAt = incoming.latestCollectedAt;
       }
-    }
-
-    return result;
-  }
-
-  // ============================================================
-  // NEWS
-  // ============================================================
-
-  private async aggregateNews(
-    contexts: LeagueContext[],
-    now: Date,
-  ): Promise<Map<string, NewsAggregate>> {
-    const aliases = [
-      ...new Set(contexts.flatMap((context) => context.aliases)),
-    ];
-
-    if (!aliases.length) {
-      return new Map();
-    }
-
-    const contextByAlias = new Map<string, LeagueContext>();
-
-    for (const context of contexts) {
-      for (const alias of context.aliases) {
-        contextByAlias.set(alias, context);
-      }
-    }
-
-    const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-    const rows = await this.espnNewsModel
-      .aggregate<{
-        _id: string;
-        total: number;
-        last24Hours: number;
-        latestPublishedAt?: Date;
-        latestCollectedAt?: Date;
-      }>([
-        {
-          $match: {
-            leagueId: {
-              $in: aliases,
-            },
-          },
-        },
-        {
-          $group: {
-            _id: '$leagueId',
-            total: {
-              $sum: 1,
-            },
-            last24Hours: {
-              $sum: {
-                $cond: [
-                  {
-                    $gte: ['$published', cutoff],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-            latestPublishedAt: {
-              $max: '$published',
-            },
-            latestCollectedAt: {
-              $max: '$collectedAt',
-            },
-          },
-        },
-      ])
-      .exec();
-
-    const result = new Map<string, NewsAggregate>();
-
-    for (const row of rows) {
-      const context = contextByAlias.get(this.normalize(row._id));
-
-      if (!context) {
-        continue;
-      }
-
-      const current = result.get(context.key);
-
-      const incoming: NewsAggregate = {
-        total: Number(row.total ?? 0),
-        last24Hours: Number(row.last24Hours ?? 0),
-        latestPublishedAt: row.latestPublishedAt,
-        latestCollectedAt: row.latestCollectedAt,
-      };
-
-      if (!current) {
-        result.set(context.key, incoming);
-        continue;
-      }
-
-      current.total += incoming.total;
-
-      current.last24Hours += incoming.last24Hours;
-
-      if (
-        incoming.latestPublishedAt &&
-        (!current.latestPublishedAt ||
-          incoming.latestPublishedAt.getTime() >
-            current.latestPublishedAt.getTime())
-      ) {
-        current.latestPublishedAt = incoming.latestPublishedAt;
-      }
-
-      if (
-        incoming.latestCollectedAt &&
-        (!current.latestCollectedAt ||
-          incoming.latestCollectedAt.getTime() >
-            current.latestCollectedAt.getTime())
-      ) {
-        current.latestCollectedAt = incoming.latestCollectedAt;
-      }
-    }
-
-    return result;
-  }
-
-  // ============================================================
-  // DERIVED
-  // ============================================================
-
-  private async aggregateDerivedData(
-    contexts: LeagueContext[],
-  ): Promise<DerivedAggregate> {
-    const clauses = contexts
-      .filter((context) => typeof context.season === 'number')
-      .flatMap((context) =>
-        context.aliases.map((competitionId) => ({
-          competitionId,
-          season: context.season,
-        })),
-      );
-
-    const contextByAlias = new Map<string, LeagueContext>();
-
-    for (const context of contexts) {
-      for (const alias of context.aliases) {
-        contextByAlias.set(alias, context);
-      }
-    }
-
-    const [statsRows, profileRows, matchRows] = clauses.length
-      ? await Promise.all([
-          this.teamCompetitionStatsModel
-            .aggregate<{
-              _id: {
-                competitionId: string;
-                season: number;
-              };
-              documents: number;
-              teamIds: string[];
-              latestCalculatedAt?: Date;
-            }>([
-              {
-                $match: {
-                  $or: clauses,
-                },
-              },
-              {
-                $group: {
-                  _id: {
-                    competitionId: '$competitionId',
-                    season: '$season',
-                  },
-                  documents: {
-                    $sum: 1,
-                  },
-                  teamIds: {
-                    $addToSet: '$teamId',
-                  },
-                  latestCalculatedAt: {
-                    $max: '$calculatedAt',
-                  },
-                },
-              },
-            ])
-            .exec(),
-
-          this.teamPerformanceProfileModel
-            .aggregate<{
-              _id: {
-                competitionId: string;
-                season: number;
-              };
-              documents: number;
-              teamIds: string[];
-              latestCalculatedAt?: Date;
-            }>([
-              {
-                $match: {
-                  $or: clauses,
-                },
-              },
-              {
-                $group: {
-                  _id: {
-                    competitionId: '$competitionId',
-                    season: '$season',
-                  },
-                  documents: {
-                    $sum: 1,
-                  },
-                  teamIds: {
-                    $addToSet: '$teamId',
-                  },
-                  latestCalculatedAt: {
-                    $max: '$calculatedAt',
-                  },
-                },
-              },
-            ])
-            .exec(),
-
-          this.matchDerivedDataModel
-            .aggregate<{
-              _id: {
-                competitionId: string;
-                season: number;
-              };
-              documents: number;
-              latestCalculatedAt?: Date;
-            }>([
-              {
-                $match: {
-                  $or: clauses,
-                },
-              },
-              {
-                $group: {
-                  _id: {
-                    competitionId: '$competitionId',
-                    season: '$season',
-                  },
-                  documents: {
-                    $sum: 1,
-                  },
-                  latestCalculatedAt: {
-                    $max: '$calculatedAt',
-                  },
-                },
-              },
-            ])
-            .exec(),
-        ])
-      : [[], [], []];
-
-    const h2hClauses = contexts
-      .filter((context) => typeof context.season === 'number')
-      .flatMap((context) =>
-        context.aliases.map((competitionId) => ({
-          'meetings.competitionId': competitionId,
-          'meetings.season': context.season,
-        })),
-      );
-
-    const h2hRows = h2hClauses.length
-      ? await this.headToHeadModel
-          .aggregate<{
-            _id: {
-              competitionId: string;
-              season: number;
-            };
-            pairKeys: string[];
-            latestMeetingAt?: Date;
-            latestCalculatedAt?: Date;
-          }>([
-            {
-              $unwind: '$meetings',
-            },
-            {
-              $match: {
-                $or: h2hClauses,
-              },
-            },
-            {
-              $group: {
-                _id: {
-                  competitionId: '$meetings.competitionId',
-                  season: '$meetings.season',
-                },
-                pairKeys: {
-                  $addToSet: '$pairKey',
-                },
-                latestMeetingAt: {
-                  $max: '$meetings.date',
-                },
-                latestCalculatedAt: {
-                  $max: '$calculatedAt',
-                },
-              },
-            },
-          ])
-          .exec()
-      : [];
-
-    const result: DerivedAggregate = {
-      teamStats: new Map(),
-      profiles: new Map(),
-      matchDerived: new Map(),
-      h2hPairs: new Map(),
-      h2hLatestMeetingAt: new Map(),
-      h2hLatestCalculatedAt: new Map(),
-    };
-
-    for (const row of statsRows) {
-      const context = contextByAlias.get(this.normalize(row._id.competitionId));
-
-      if (!context) {
-        continue;
-      }
-
-      result.teamStats.set(this.seasonKey(context, row._id.season), {
-        documents: Number(row.documents ?? 0),
-        teamIds: new Set((row.teamIds ?? []).filter(Boolean)),
-        latestCalculatedAt: row.latestCalculatedAt,
-      });
-    }
-
-    for (const row of profileRows) {
-      const context = contextByAlias.get(this.normalize(row._id.competitionId));
-
-      if (!context) {
-        continue;
-      }
-
-      result.profiles.set(this.seasonKey(context, row._id.season), {
-        documents: Number(row.documents ?? 0),
-        teamIds: new Set((row.teamIds ?? []).filter(Boolean)),
-        latestCalculatedAt: row.latestCalculatedAt,
-      });
-    }
-
-    for (const row of matchRows) {
-      const context = contextByAlias.get(this.normalize(row._id.competitionId));
-
-      if (!context) {
-        continue;
-      }
-
-      result.matchDerived.set(this.seasonKey(context, row._id.season), {
-        documents: Number(row.documents ?? 0),
-        latestCalculatedAt: row.latestCalculatedAt,
-      });
-    }
-
-    for (const row of h2hRows) {
-      const context = contextByAlias.get(this.normalize(row._id.competitionId));
-
-      if (!context) {
-        continue;
-      }
-
-      const key = this.seasonKey(context, row._id.season);
-
-      result.h2hPairs.set(key, new Set((row.pairKeys ?? []).filter(Boolean)));
-
-      result.h2hLatestMeetingAt.set(key, row.latestMeetingAt);
-
-      result.h2hLatestCalculatedAt.set(key, row.latestCalculatedAt);
     }
 
     return result;
@@ -1405,6 +1134,7 @@ export class SportsSystemMonitorService {
           {
             $group: {
               _id: '$status',
+
               count: {
                 $sum: 1,
               },
@@ -1421,6 +1151,7 @@ export class SportsSystemMonitorService {
           {
             $group: {
               _id: '$type',
+
               count: {
                 $sum: 1,
               },
@@ -1435,6 +1166,7 @@ export class SportsSystemMonitorService {
             type: string;
             status: string;
           };
+
           count: number;
         }>([
           {
@@ -1443,6 +1175,7 @@ export class SportsSystemMonitorService {
                 type: '$type',
                 status: '$status',
               },
+
               count: {
                 $sum: 1,
               },
@@ -1456,7 +1189,8 @@ export class SportsSystemMonitorService {
           status: EspnQueueStatus.FAILED,
         })
         .sort({
-          _id: -1,
+          failedAt: -1,
+          updatedAt: -1,
         })
         .lean()
         .exec(),
@@ -1466,13 +1200,15 @@ export class SportsSystemMonitorService {
           status: EspnQueueStatus.COMPLETED,
         })
         .sort({
-          _id: -1,
+          completedAt: -1,
+          updatedAt: -1,
         })
         .lean()
         .exec(),
 
       this.espnQueueModel.countDocuments({
         status: EspnQueueStatus.PROCESSING,
+
         updatedAt: {
           $lt: staleCutoff,
         },
@@ -1493,23 +1229,35 @@ export class SportsSystemMonitorService {
 
     const byTypeAndStatus: MonitorQueueItem[] = typeStatusRows.map((row) => ({
       type: String(row._id.type),
+
       status: String(row._id.status),
+
       count: Number(row.count ?? 0),
     }));
 
     return {
       total: Object.values(byStatus).reduce((sum, value) => sum + value, 0),
+
       pending: byStatus[EspnQueueStatus.PENDING] ?? 0,
+
       processing: byStatus[EspnQueueStatus.PROCESSING] ?? 0,
+
       completedRetained: byStatus[EspnQueueStatus.COMPLETED] ?? 0,
+
       failed: byStatus[EspnQueueStatus.FAILED] ?? 0,
+
       staleProcessing,
+
       completedRetentionDays: QUEUE_COMPLETED_RETENTION_DAYS,
+
       byType,
+
       byTypeAndStatus,
-      latestFailureAt: latestFailure?._id
-        ? latestFailure._id.getTimestamp()
+
+      latestFailureAt: latestFailure?.failedAt
+        ? this.toIso(latestFailure.failedAt)
         : undefined,
+
       latestFailure:
         (
           latestFailure as unknown as {
@@ -1519,11 +1267,13 @@ export class SportsSystemMonitorService {
         )?.lastError ??
         (
           latestFailure as unknown as {
+            lastError?: string;
             error?: string;
           } | null
         )?.error,
-      latestCompletedAt: latestCompleted?._id
-        ? latestCompleted._id.getTimestamp()
+
+      latestCompletedAt: latestCompleted?.completedAt
+        ? this.toIso(latestCompleted.completedAt)
         : undefined,
     };
   }
@@ -1534,6 +1284,7 @@ export class SportsSystemMonitorService {
     const clauses = contexts.flatMap((context) =>
       context.aliases.map((leagueId) => ({
         leagueId,
+
         ...(typeof context.season === 'number'
           ? {
               season: context.season,
@@ -1561,6 +1312,7 @@ export class SportsSystemMonitorService {
           type: string;
           status: string;
         };
+
         count: number;
       }>([
         {
@@ -1568,13 +1320,17 @@ export class SportsSystemMonitorService {
             $or: clauses,
           },
         },
+
         {
           $group: {
             _id: {
               leagueId: '$leagueId',
+
               type: '$type',
+
               status: '$status',
             },
+
             count: {
               $sum: 1,
             },
@@ -1597,9 +1353,13 @@ export class SportsSystemMonitorService {
       if (!aggregate) {
         aggregate = {
           total: 0,
+
           byStatus: new Map(),
+
           byType: new Map(),
+
           byTypeAndStatus: new Map(),
+
           staleProcessing: 0,
         };
 
@@ -1608,19 +1368,20 @@ export class SportsSystemMonitorService {
 
       const count = Number(row.count ?? 0);
 
+      const status = String(row._id.status);
+
+      const type = String(row._id.type);
+
       aggregate.total += count;
 
       aggregate.byStatus.set(
-        String(row._id.status),
-        (aggregate.byStatus.get(String(row._id.status)) ?? 0) + count,
+        status,
+        (aggregate.byStatus.get(status) ?? 0) + count,
       );
 
-      aggregate.byType.set(
-        String(row._id.type),
-        (aggregate.byType.get(String(row._id.type)) ?? 0) + count,
-      );
+      aggregate.byType.set(type, (aggregate.byType.get(type) ?? 0) + count);
 
-      const compoundKey = `${row._id.type}:${row._id.status}`;
+      const compoundKey = `${type}:${status}`;
 
       aggregate.byTypeAndStatus.set(
         compoundKey,
@@ -1640,15 +1401,19 @@ export class SportsSystemMonitorService {
         {
           $match: {
             $or: clauses,
+
             status: EspnQueueStatus.PROCESSING,
+
             updatedAt: {
               $lt: staleCutoff,
             },
           },
         },
+
         {
           $group: {
             _id: '$leagueId',
+
             count: {
               $sum: 1,
             },
@@ -1675,7 +1440,7 @@ export class SportsSystemMonitorService {
   }
 
   // ============================================================
-  // SYNC
+  // SYNC SUMMARY
   // ============================================================
 
   private async buildSyncSummary(
@@ -1695,12 +1460,17 @@ export class SportsSystemMonitorService {
     const byStatus: Record<string, number> = {};
 
     let queueStates = 0;
+
     let cronStates = 0;
 
     let totalUnits = 0;
+
     let successUnits = 0;
+
     let processingUnits = 0;
+
     let pendingUnits = 0;
+
     let failedUnits = 0;
 
     let successfulStates = 0;
@@ -1741,15 +1511,25 @@ export class SportsSystemMonitorService {
 
         cron.push({
           stateKey: state.stateKey,
+
           taskKey: state.taskKey,
+
           status,
+
           cronExpression: state.cronExpression,
+
           timeZone: state.timeZone,
-          lastStartedAt: state.lastStartedAt,
-          lastSuccessfulAt: state.lastSuccessfulAt,
-          lastCompletedAt: state.lastCompletedAt,
-          nextRunAt: state.nextRunAt,
+
+          lastStartedAt: this.toIso(state.lastStartedAt),
+
+          lastSuccessfulAt: this.toIso(state.lastSuccessfulAt),
+
+          lastCompletedAt: this.toIso(state.lastCompletedAt),
+
+          nextRunAt: this.toIso(state.nextRunAt),
+
           consecutiveFailures: state.consecutiveFailures ?? 0,
+
           lastError: state.lastError,
         });
       }
@@ -1812,9 +1592,13 @@ export class SportsSystemMonitorService {
         if (unit.status !== SportsSyncUnitStatus.SUCCESS) {
           stages.push({
             jobType: state.jobType,
+
             stage: unit.stepKey ?? unit.dateKey ?? unit.key,
+
             unitType: String(unit.type),
+
             status: String(unit.status),
+
             count: 1,
           });
         }
@@ -1827,12 +1611,21 @@ export class SportsSystemMonitorService {
       ) {
         failures.push({
           stateKey: state.stateKey,
+
           jobType: state.jobType,
+
           leagueId: state.leagueId,
+
           season: state.season,
+
           eventId: state.eventId,
+
           error: state.lastError,
-          at: state.lastCompletedAt ?? state.lastStartedAt ?? state.updatedAt,
+
+          at: this.toIso(
+            state.lastCompletedAt ?? state.lastStartedAt ?? state.updatedAt,
+          ),
+
           consecutiveFailures: state.consecutiveFailures ?? 0,
         });
       }
@@ -1864,27 +1657,44 @@ export class SportsSystemMonitorService {
 
     return {
       totalStates: states.length,
+
       queueStates,
+
       cronStates,
+
       byStatus,
+
       unitProgress: {
         total: totalUnits,
+
         success: successUnits,
+
         processing: processingUnits,
+
         pending: pendingUnits,
+
         failed: failedUnits,
+
         completionPercent:
           totalUnits > 0 ? this.percent(successUnits, totalUnits) : 0,
       },
+
       stateCompletionPercent:
         states.length > 0 ? this.percent(successfulStates, states.length) : 0,
+
       currentStages: groupedStages,
+
       failures: failures.slice(0, 100),
+
       cron,
+
       states: syncStateDetails,
-      latestSuccessfulAt,
-      latestCompletedAt,
-      nextRunAt,
+
+      latestSuccessfulAt: this.toIso(latestSuccessfulAt),
+
+      latestCompletedAt: this.toIso(latestCompletedAt),
+
+      nextRunAt: this.toIso(nextRunAt),
     };
   }
 
@@ -1895,6 +1705,7 @@ export class SportsSystemMonitorService {
     const clauses = contexts.flatMap((context) =>
       context.aliases.map((leagueId) => ({
         leagueId,
+
         ...(typeof context.season === 'number'
           ? {
               season: context.season,
@@ -1934,10 +1745,13 @@ export class SportsSystemMonitorService {
       let aggregate = result.get(context.key);
 
       if (!aggregate) {
-        const newAggregate: SyncAggregate = {
+        aggregate = {
           stateCounts: {},
+
           queueStates: 0,
+
           cronStates: 0,
+
           unitProgress: {
             total: 0,
             success: 0,
@@ -1945,15 +1759,17 @@ export class SportsSystemMonitorService {
             pending: 0,
             failed: 0,
           },
+
           currentStages: [],
+
           failures: [],
+
           cron: [],
+
           states: [],
         };
 
-        result.set(context.key, newAggregate);
-
-        aggregate = newAggregate;
+        result.set(context.key, aggregate);
       }
 
       const status = String(state.status);
@@ -1973,15 +1789,25 @@ export class SportsSystemMonitorService {
 
         aggregate.cron.push({
           stateKey: state.stateKey,
+
           taskKey: state.taskKey,
+
           status,
+
           cronExpression: state.cronExpression,
+
           timeZone: state.timeZone,
-          lastStartedAt: state.lastStartedAt,
-          lastSuccessfulAt: state.lastSuccessfulAt,
-          lastCompletedAt: state.lastCompletedAt,
-          nextRunAt: state.nextRunAt,
+
+          lastStartedAt: this.toIso(state.lastStartedAt),
+
+          lastSuccessfulAt: this.toIso(state.lastSuccessfulAt),
+
+          lastCompletedAt: this.toIso(state.lastCompletedAt),
+
+          nextRunAt: this.toIso(state.nextRunAt),
+
           consecutiveFailures: state.consecutiveFailures ?? 0,
+
           lastError: state.lastError,
         });
       }
@@ -2043,9 +1869,13 @@ export class SportsSystemMonitorService {
         if (unit.status !== SportsSyncUnitStatus.SUCCESS) {
           aggregate.currentStages.push({
             jobType: state.jobType,
+
             stage: unit.stepKey ?? unit.dateKey ?? unit.key,
+
             unitType: String(unit.type),
+
             status: String(unit.status),
+
             count: 1,
           });
         }
@@ -2058,12 +1888,21 @@ export class SportsSystemMonitorService {
       ) {
         aggregate.failures.push({
           stateKey: state.stateKey,
+
           jobType: state.jobType,
+
           leagueId: state.leagueId,
+
           season: state.season,
+
           eventId: state.eventId,
+
           error: state.lastError,
-          at: state.lastCompletedAt ?? state.lastStartedAt ?? state.updatedAt,
+
+          at: this.toIso(
+            state.lastCompletedAt ?? state.lastStartedAt ?? state.updatedAt,
+          ),
+
           consecutiveFailures: state.consecutiveFailures ?? 0,
         });
       }
@@ -2089,6 +1928,7 @@ export class SportsSystemMonitorService {
 
     return result;
   }
+
   // ============================================================
   // UPCOMING
   // ============================================================
@@ -2102,6 +1942,7 @@ export class SportsSystemMonitorService {
       .flatMap((context) =>
         context.aliases.map((leagueId) => ({
           leagueId,
+
           season: context.season,
         })),
       );
@@ -2117,10 +1958,13 @@ export class SportsSystemMonitorService {
     return this.espnFixtureModel
       .find({
         $or: clauses,
+
         fixtureDate: {
           $gte: now,
+
           $lte: until,
         },
+
         completed: {
           $ne: true,
         },
@@ -2133,64 +1977,28 @@ export class SportsSystemMonitorService {
   }
 
   private async buildUpcomingIndexes(
-    contexts: LeagueContext[],
     fixtures: EspnFixtureDocument[],
   ): Promise<UpcomingIndexes> {
-    const stats = new Set<string>();
-    const profiles = new Set<string>();
-    const derived = new Set<string>();
-    const h2h = new Set<string>();
-    const odds = new Set<string>();
+    const summaries = new Set<string>();
 
-    if (!fixtures.length) {
-      return {
-        stats,
-        profiles,
-        derived,
-        h2h,
-        odds,
-      };
-    }
+    const odds = new Set<string>();
 
     const fixtureIds = fixtures
       .map((fixture) => fixture.eventId)
-      .filter(Boolean);
+      .filter((eventId): eventId is string => Boolean(eventId));
 
-    const clauses = contexts
-      .filter((context) => typeof context.season === 'number')
-      .flatMap((context) =>
-        context.aliases.map((competitionId) => ({
-          competitionId,
-          season: context.season,
-        })),
-      );
+    for (const fixture of fixtures) {
+      if (!fixture.eventId) {
+        continue;
+      }
 
-    const [statsDocs, profileDocs, derivedDocs, oddsDocs] = await Promise.all([
-      this.teamCompetitionStatsModel
-        .find({
-          $or: clauses,
-        })
-        .select({
-          competitionId: 1,
-          season: 1,
-          teamId: 1,
-        })
-        .lean()
-        .exec(),
+      if (this.hasSummary(fixture)) {
+        summaries.add(fixture.eventId);
+      }
+    }
 
-      this.teamPerformanceProfileModel
-        .find({
-          $or: clauses,
-        })
-        .select({
-          competitionId: 1,
-          season: 1,
-          teamId: 1,
-        })
-        .lean()
-        .exec(),
-
-      this.matchDerivedDataModel
+    if (fixtureIds.length) {
+      const oddsDocs = await this.sportsOddsSnapshotModel
         .find({
           eventId: {
             $in: fixtureIds,
@@ -2198,108 +2006,42 @@ export class SportsSystemMonitorService {
         })
         .select({
           eventId: 1,
-        })
-        .lean()
-        .exec(),
-
-      this.sportsOddsSnapshotModel
-        .find({
-          eventId: {
-            $in: fixtureIds,
-          },
-        })
-        .select({
-          eventId: 1,
-        })
-        .lean()
-        .exec(),
-    ]);
-
-    for (const doc of statsDocs) {
-      stats.add(
-        this.teamSeasonKey(
-          this.normalize(doc.competitionId),
-          doc.season,
-          doc.teamId,
-        ),
-      );
-    }
-
-    for (const doc of profileDocs) {
-      profiles.add(
-        this.teamSeasonKey(
-          this.normalize(doc.competitionId),
-          doc.season,
-          doc.teamId,
-        ),
-      );
-    }
-
-    for (const doc of derivedDocs) {
-      if (doc.eventId) {
-        derived.add(doc.eventId);
-      }
-    }
-
-    for (const doc of oddsDocs) {
-      if (doc.eventId) {
-        odds.add(doc.eventId);
-      }
-    }
-
-    const pairKeys = [
-      ...new Set(
-        fixtures
-          .map((fixture) =>
-            this.pairKey(fixture.homeTeamId, fixture.awayTeamId),
-          )
-          .filter(Boolean),
-      ),
-    ];
-
-    if (pairKeys.length) {
-      const h2hDocs = await this.headToHeadModel
-        .find({
-          pairKey: {
-            $in: pairKeys,
-          },
-        })
-        .select({
-          pairKey: 1,
         })
         .lean()
         .exec();
 
-      for (const doc of h2hDocs) {
-        if (doc.pairKey) {
-          h2h.add(doc.pairKey);
+      for (const document of oddsDocs) {
+        if (document.eventId) {
+          odds.add(document.eventId);
         }
       }
     }
 
     return {
-      stats,
-      profiles,
-      derived,
-      h2h,
+      summaries,
       odds,
     };
   }
 
   // ============================================================
-  // LEAGUES
+  // LEAGUE SUMMARY
   // ============================================================
 
   private buildLeagueSummary(params: {
     context: LeagueContext;
+
     catalogueById: Map<string, EspnLeagueDocument>;
+
     operationalSeasonData: OperationalSeasonData;
+
     teamAggregates: Map<string, TeamAggregate>;
-    newsAggregates: Map<string, NewsAggregate>;
-    derivedAggregates: DerivedAggregate;
+
     queueAggregates: Map<string, QueueAggregate>;
+
     syncAggregates: Map<string, SyncAggregate>;
+
     upcomingFixtures: EspnFixtureDocument[];
+
     upcomingIndexes: UpcomingIndexes;
   }): MonitorLeagueSummary {
     const {
@@ -2307,8 +2049,6 @@ export class SportsSystemMonitorService {
       catalogueById,
       operationalSeasonData,
       teamAggregates,
-      newsAggregates,
-      derivedAggregates,
       queueAggregates,
       syncAggregates,
       upcomingFixtures,
@@ -2326,57 +2066,25 @@ export class SportsSystemMonitorService {
       upcoming: 0,
       live: 0,
       finished: 0,
-      finishedWithSummary: 0,
+      withSummary: 0,
+      missingSummary: 0,
       finishedMissingSummary: 0,
+      summaryCoveragePercent: 0,
       storedSeasons: 0,
     };
 
     const expectedTeamIds =
       operationalSeasonData.expectedTeams.get(context.key) ?? new Set<string>();
 
-    const expectedPairIds =
-      operationalSeasonData.expectedPairs.get(context.key) ?? new Set<string>();
-
-    const standingSummary = operationalSeasonData.standings.get(
-      context.key,
-    ) ?? {
-      rows: 0,
-      teamIds: new Set<string>(),
-    };
-
     const teamSummary = teamAggregates.get(context.key) ?? {
       documents: 0,
       teamIds: new Set<string>(),
     };
 
-    const newsSummary = newsAggregates.get(context.key) ?? {
-      total: 0,
-      last24Hours: 0,
-    };
-
-    const derivedKey = this.seasonKey(context, context.season);
-
-    const stats = derivedAggregates.teamStats.get(derivedKey);
-
-    const profiles = derivedAggregates.profiles.get(derivedKey);
-
-    const matchDerived = derivedAggregates.matchDerived.get(derivedKey);
-
-    const h2hPairs =
-      derivedAggregates.h2hPairs.get(derivedKey) ?? new Set<string>();
-
     const expectedTeams = expectedTeamIds.size;
 
-    const statsCovered = [...expectedTeamIds].filter((teamId) =>
-      stats?.teamIds.has(teamId),
-    ).length;
-
-    const profilesCovered = [...expectedTeamIds].filter((teamId) =>
-      profiles?.teamIds.has(teamId),
-    ).length;
-
-    const standingsCovered = [...expectedTeamIds].filter((teamId) =>
-      standingSummary.teamIds.has(teamId),
+    const teamsCovered = [...expectedTeamIds].filter((teamId) =>
+      teamSummary.teamIds.has(teamId),
     ).length;
 
     const upcoming = this.buildUpcomingSummary(
@@ -2389,67 +2097,26 @@ export class SportsSystemMonitorService {
 
     const sync = this.toSyncSummary(syncAggregates.get(context.key));
 
-    const derivedData: MonitorDerivedSummary = {
-      teamCompetitionStats: this.buildCoverageMetric(
-        stats?.documents ?? 0,
-        expectedTeams,
-        stats?.latestCalculatedAt,
-        Math.max(0, expectedTeams - statsCovered),
-      ),
+    const latestFixtureCollectedAt = fixtureSummary.latestCollectedAt;
 
-      teamPerformanceProfiles: this.buildCoverageMetric(
-        profiles?.documents ?? 0,
-        expectedTeams,
-        profiles?.latestCalculatedAt,
-        Math.max(0, expectedTeams - profilesCovered),
-      ),
+    const staleCutoff = new Date(
+      Date.now() - STALE_ACTIVE_LEAGUE_HOURS * 60 * 60 * 1000,
+    );
 
-      headToHead: {
-        pairs: h2hPairs.size,
-        expectedPairs: expectedPairIds.size,
-        missingPairs: Math.max(0, expectedPairIds.size - h2hPairs.size),
-        coveragePercent:
-          expectedPairIds.size > 0
-            ? this.percent(
-                [...expectedPairIds].filter((pairKey) => h2hPairs.has(pairKey))
-                  .length,
-                expectedPairIds.size,
-              )
-            : 0,
-        latestMeetingAt: derivedAggregates.h2hLatestMeetingAt.get(derivedKey),
-        latestCalculatedAt:
-          derivedAggregates.h2hLatestCalculatedAt.get(derivedKey),
-      },
-
-      matchDerivedData: {
-        documents: matchDerived?.documents ?? 0,
-        expectedUpcomingFixtures: upcoming.total,
-        missingUpcomingFixtures: upcoming.missingDerivedData,
-        coveragePercent:
-          upcoming.total > 0
-            ? this.percent(upcoming.withDerivedData, upcoming.total)
-            : 0,
-        latestCalculatedAt: matchDerived?.latestCalculatedAt,
-      },
-    };
+    const stale =
+      !latestFixtureCollectedAt ||
+      latestFixtureCollectedAt.getTime() < staleCutoff.getTime();
 
     const expectedWork: MonitorExpectedWork = {
       finishedFixturesMissingSummary: fixtureSummary.finishedMissingSummary,
 
-      standingsMissingTeams: Math.max(0, expectedTeams - standingsCovered),
+      upcomingFixturesMissingSummary: upcoming.missingSummary,
 
-      teamCompetitionStatsMissing: Math.max(0, expectedTeams - statsCovered),
-
-      teamPerformanceProfilesMissing: Math.max(
-        0,
-        expectedTeams - profilesCovered,
-      ),
+      staleActiveLeagues: stale ? 1 : 0,
 
       upcomingFixturesMissingOdds: upcoming.fixtures.filter(
         (fixture) => fixture.sources.oddsMatchable && !fixture.sources.odds,
       ).length,
-
-      upcomingFixturesMissingDerivedData: upcoming.missingDerivedData,
     };
 
     return {
@@ -2459,23 +2126,23 @@ export class SportsSystemMonitorService {
 
       name: competition.name,
 
-      type: competition.type,
+      type: String(competition.type),
 
-      region: competition.region,
+      region: String(competition.region),
 
-      priority: competition.priority,
+      priority: String(competition.priority),
 
-      status: competition.status,
+      status: String(competition.status),
 
       season: competition.season,
 
-      seasonStartDate: competition.seasonStartDate,
+      seasonStartDate: this.toIso(competition.seasonStartDate),
 
-      seasonEndDate: competition.seasonEndDate,
+      seasonEndDate: this.toIso(competition.seasonEndDate),
 
-      nextFixtureDate: competition.nextFixtureDate,
+      nextFixtureDate: this.toIso(competition.nextFixtureDate),
 
-      lastFixtureDate: competition.lastFixtureDate,
+      lastFixtureDate: this.toIso(competition.lastFixtureDate),
 
       catalogue: {
         exists: Boolean(catalogue),
@@ -2488,21 +2155,33 @@ export class SportsSystemMonitorService {
 
         isPriority: catalogue?.isPriority,
 
-        lastSyncedAt: catalogue?.lastSyncedAt,
+        lastSyncedAt: this.toIso(catalogue?.lastSyncedAt),
 
-        detailLastSyncedAt: catalogue?.detailLastSyncedAt,
+        detailLastSyncedAt: this.toIso(catalogue?.detailLastSyncedAt),
       },
 
       fixtures: {
-        ...fixtureSummary,
+        total: fixtureSummary.total,
 
-        summaryCoveragePercent:
-          fixtureSummary.finished > 0
-            ? this.percent(
-                fixtureSummary.finishedWithSummary,
-                fixtureSummary.finished,
-              )
-            : 0,
+        upcoming: fixtureSummary.upcoming,
+
+        live: fixtureSummary.live,
+
+        finished: fixtureSummary.finished,
+
+        withSummary: fixtureSummary.withSummary,
+
+        missingSummary: fixtureSummary.missingSummary,
+
+        summaryCoveragePercent: fixtureSummary.summaryCoveragePercent,
+
+        latestCollectedAt: this.toIso(fixtureSummary.latestCollectedAt),
+
+        latestSummaryCollectedAt: this.toIso(
+          fixtureSummary.latestSummaryCollectedAt,
+        ),
+
+        storedSeasons: fixtureSummary.storedSeasons,
       },
 
       teams: {
@@ -2512,45 +2191,13 @@ export class SportsSystemMonitorService {
 
         expectedCurrentSeasonTeams: expectedTeams,
 
-        missingCurrentSeasonTeams: Math.max(
-          0,
-          expectedTeams -
-            [...expectedTeamIds].filter((teamId) =>
-              teamSummary.teamIds.has(teamId),
-            ).length,
-        ),
+        missingCurrentSeasonTeams: Math.max(0, expectedTeams - teamsCovered),
 
         coveragePercent:
-          expectedTeams > 0
-            ? this.percent(
-                [...expectedTeamIds].filter((teamId) =>
-                  teamSummary.teamIds.has(teamId),
-                ).length,
-                expectedTeams,
-              )
-            : 0,
+          expectedTeams > 0 ? this.percent(teamsCovered, expectedTeams) : 0,
 
-        latestCollectedAt: teamSummary.latestCollectedAt,
+        latestCollectedAt: this.toIso(teamSummary.latestCollectedAt),
       },
-
-      standings: {
-        rows: standingSummary.rows,
-
-        teams: standingSummary.teamIds.size,
-
-        expectedTeams,
-
-        missingTeams: Math.max(0, expectedTeams - standingsCovered),
-
-        coveragePercent:
-          expectedTeams > 0 ? this.percent(standingsCovered, expectedTeams) : 0,
-
-        latestCollectedAt: standingSummary.latestCollectedAt,
-      },
-
-      news: newsSummary,
-
-      derivedData,
 
       upcoming,
 
@@ -2578,119 +2225,74 @@ export class SportsSystemMonitorService {
     );
 
     const readiness = fixtures.map((fixture): MonitorUpcomingFixture => {
-      const competitionId = this.normalize(fixture.leagueId);
-
-      const homeStats =
-        Boolean(fixture.homeTeamId) &&
-        indexes.stats.has(
-          this.teamSeasonKey(competitionId, fixture.season, fixture.homeTeamId),
-        );
-
-      const awayStats =
-        Boolean(fixture.awayTeamId) &&
-        indexes.stats.has(
-          this.teamSeasonKey(competitionId, fixture.season, fixture.awayTeamId),
-        );
-
-      const homeProfile =
-        Boolean(fixture.homeTeamId) &&
-        indexes.profiles.has(
-          this.teamSeasonKey(competitionId, fixture.season, fixture.homeTeamId),
-        );
-
-      const awayProfile =
-        Boolean(fixture.awayTeamId) &&
-        indexes.profiles.has(
-          this.teamSeasonKey(competitionId, fixture.season, fixture.awayTeamId),
-        );
-
-      const pair = this.pairKey(fixture.homeTeamId, fixture.awayTeamId);
-
-      const h2h = pair ? indexes.h2h.has(pair) : false;
-
-      const derived = Boolean(
-        fixture.eventId && indexes.derived.has(fixture.eventId),
+      const hasSummary = Boolean(
+        fixture.eventId && indexes.summaries.has(fixture.eventId),
       );
 
-      const odds = Boolean(
+      const hasOdds = Boolean(
         fixture.eventId && indexes.odds.has(fixture.eventId),
       );
 
-      const oddsMatchable = odds;
+      const oddsMatchable = Boolean(context.competition.oddsApiSportKey);
 
       const missingSources: string[] = [];
 
-      if (!homeStats) {
-        missingSources.push('homeTeamStats');
+      if (!hasSummary) {
+        missingSources.push('summary');
       }
 
-      if (!awayStats) {
-        missingSources.push('awayTeamStats');
-      }
-
-      if (!homeProfile) {
-        missingSources.push('homeProfile');
-      }
-
-      if (!awayProfile) {
-        missingSources.push('awayProfile');
-      }
-
-      if (!h2h) {
-        missingSources.push('headToHead');
-      }
-
-      if (!derived) {
-        missingSources.push('matchDerivedData');
-      }
-
-      if (oddsMatchable && !odds) {
+      if (oddsMatchable && !hasOdds) {
         missingSources.push('odds');
       }
 
-      const requiredCore = [
-        homeStats,
-        awayStats,
-        homeProfile,
-        awayProfile,
-        h2h,
-        derived,
-      ];
+      const ready = hasSummary && (!oddsMatchable || hasOdds);
 
       let status: 'READY' | 'PARTIAL' | 'MISSING';
 
-      const readyCount = requiredCore.filter(Boolean).length;
-
-      if (readyCount === requiredCore.length) {
+      if (ready) {
         status = 'READY';
-      } else if (readyCount > 0) {
+      } else if (hasSummary || hasOdds) {
         status = 'PARTIAL';
       } else {
         status = 'MISSING';
       }
 
       return {
-        eventId: fixture.eventId,
-        fixtureDate: fixture.fixtureDate,
+        eventId: String(fixture.eventId),
+
+        fixtureDate: this.toIso(fixture.fixtureDate) ?? '',
+
         homeTeamId: fixture.homeTeamId,
+
         awayTeamId: fixture.awayTeamId,
+
         homeTeamName: this.extractFixtureTeamName(fixture, 'home'),
+
         awayTeamName: this.extractFixtureTeamName(fixture, 'away'),
+
         sources: {
           espnFixture: true,
-          odds,
+
+          summary: hasSummary,
+
+          odds: hasOdds,
+
           oddsMatchable,
-          homeTeamStats: homeStats,
-          awayTeamStats: awayStats,
-          homeProfile,
-          awayProfile,
-          headToHead: h2h,
-          matchDerivedData: derived,
         },
+
         status,
+
         missingSources,
       };
     });
+
+    const withSummary = readiness.filter(
+      (fixture) => fixture.sources.summary,
+    ).length;
+
+    const missingSummary = readiness.length - withSummary;
+
+    const withOdds = readiness.filter((fixture) => fixture.sources.odds).length;
 
     const ready = readiness.filter(
       (fixture) => fixture.status === 'READY',
@@ -2704,12 +2306,6 @@ export class SportsSystemMonitorService {
       (fixture) => fixture.status === 'MISSING',
     ).length;
 
-    const withOdds = readiness.filter((fixture) => fixture.sources.odds).length;
-
-    const withDerivedData = readiness.filter(
-      (fixture) => fixture.sources.matchDerivedData,
-    ).length;
-
     return {
       total: readiness.length,
 
@@ -2719,11 +2315,11 @@ export class SportsSystemMonitorService {
 
       missing,
 
+      withSummary,
+
+      missingSummary,
+
       withOdds,
-
-      withDerivedData,
-
-      missingDerivedData: readiness.length - withDerivedData,
 
       nextFixtureDate: readiness[0]?.fixtureDate,
 
@@ -2752,13 +2348,19 @@ export class SportsSystemMonitorService {
         endpointDocuments,
       ] = await Promise.all([
         this.providerRateLimitService.getDailyUsage(provider),
+
         this.providerRateLimitService.getMonthlyUsage(provider),
+
         this.providerRateLimitService.getRemainingDailyRequests(provider),
+
         this.providerRateLimitService.getRemainingMonthlyRequests(provider),
+
         this.providerRateLimitService.getProviderState(provider),
+
         this.sportsProviderRateLimitModel
           .find({
             provider,
+
             endpoint: {
               $ne: '__provider_quota__',
             },
@@ -2770,7 +2372,7 @@ export class SportsSystemMonitorService {
           .exec(),
       ]);
 
-      const providerStatePeriods = providerState as unknown as
+      const periods = providerState as unknown as
         ProviderStatePeriods | null | undefined;
 
       const endpoints = endpointDocuments.map((document) => ({
@@ -2780,9 +2382,9 @@ export class SportsSystemMonitorService {
 
         monthlyRequests: Number(document.monthlyRequests ?? 0),
 
-        lastRequestAt: document.lastRequestAt,
+        lastRequestAt: this.toIso(document.lastRequestAt),
 
-        lockedUntil: document.lockedUntil,
+        lockedUntil: this.toIso(document.lockedUntil),
       }));
 
       const activeLocks = endpoints.filter(
@@ -2817,17 +2419,14 @@ export class SportsSystemMonitorService {
           remainingDailyRequests: remainingDailyRequests ?? null,
 
           remainingMonthlyRequests: remainingMonthlyRequests ?? null,
-          dailyPeriod:
-            providerStatePeriods?.dailyPeriod instanceof Date
-              ? providerStatePeriods.dailyPeriod.toISOString()
-              : providerStatePeriods?.dailyPeriod,
 
-          monthlyPeriod:
-            providerStatePeriods?.monthlyPeriod instanceof Date
-              ? providerStatePeriods.monthlyPeriod.toISOString()
-              : providerStatePeriods?.monthlyPeriod,
+          dailyPeriod: this.toIso(periods?.dailyPeriod),
 
-          lastRequestAt: latestEndpointRequest,
+          monthlyPeriod: this.toIso(periods?.monthlyPeriod),
+
+          lastRequestAt: latestEndpointRequest
+            ? latestEndpointRequest.toISOString()
+            : undefined,
 
           activeLocks,
         },
@@ -2859,150 +2458,56 @@ export class SportsSystemMonitorService {
     const stateCounts = this.getPipelineStateCounts(sync);
 
     return {
-      [EspnQueueJobType.LEAGUE_REFRESH]: {
-        stages: [
-          'DATE_WINDOW',
-          'FIXTURES',
-          'TEAMS',
-          'UPCOMING_JOB_DISCOVERY',
-          'FINISHED_SUMMARY_DISCOVERY',
-        ],
+      [EspnQueueJobType.FIXTURE_REFRESH]: {
+        stages: ['DATE_WINDOW', 'FIXTURES', 'TEAMS'],
 
         operations: {
           DATE_WINDOW: {
-            source: 'ESPN',
+            source: 'QUEUE',
+
             operation:
-              'Collect current rolling league fixtures from today through today+8 days.',
+              'Track the rolling ESPN fixture window from today through today+8 days.',
           },
 
           FIXTURES: {
             source: 'ESPN',
+
             operation:
-              'Upsert ESPN fixtures and preserve already-collected match summaries.',
+              'Collect ESPN scoreboard fixtures and upsert them into sports_espn_fixtures while preserving stored Summary data.',
           },
 
           TEAMS: {
             source: 'ESPN',
-            operation:
-              'Persist ESPN teams using the league-scoped team identity.',
-          },
 
-          UPCOMING_JOB_DISCOVERY: {
-            source: 'QUEUE',
             operation:
-              'Create UPCOMING_MATCH work for upcoming fixtures inside the four-day queue window.',
-          },
-
-          FINISHED_SUMMARY_DISCOVERY: {
-            source: 'QUEUE',
-            operation:
-              'Discover completed fixtures whose ESPN summary is still missing.',
+              'Persist league-scoped ESPN team identities discovered in scoreboard responses.',
           },
         },
 
-        stateCounts: stateCounts[EspnQueueJobType.LEAGUE_REFRESH] ?? {},
+        stateCounts: stateCounts[EspnQueueJobType.FIXTURE_REFRESH] ?? {},
       },
 
-      [EspnQueueJobType.FIXTURE_RECOVERY]: {
-        stages: ['SEASON_FIXTURE_WINDOW', 'STANDINGS', 'FINISHED_SUMMARY'],
-
-        operations: {
-          SEASON_FIXTURE_WINDOW: {
-            source: 'ESPN',
-            operation:
-              'Recover fixtures from season start through today+8 days.',
-          },
-
-          STANDINGS: {
-            source: 'ESPN',
-            operation: 'Collect and persist current-season standings.',
-          },
-
-          FINISHED_SUMMARY: {
-            source: 'QUEUE',
-            operation:
-              'Recover finished-match processing and missing ESPN summaries.',
-          },
-        },
-
-        stateCounts: stateCounts[EspnQueueJobType.FIXTURE_RECOVERY] ?? {},
-      },
-
-      [EspnQueueJobType.UPCOMING_MATCH]: {
-        stages: ['ODDS', 'DERIVED_DATA'],
-
-        operations: {
-          ODDS: {
-            source: 'ODDS_API',
-            operation: 'Collect Odds API data for the upcoming fixture.',
-          },
-
-          DERIVED_DATA: {
-            source: 'APPLICATION',
-            operation:
-              'Build MatchDerivedData from ESPN fixture, season-scoped team stats, performance profiles, H2H, league context and stored odds context.',
-            note: 'External bookmaker odds are not the 2xPredict pricing layer.',
-          },
-        },
-
-        stateCounts: stateCounts[EspnQueueJobType.UPCOMING_MATCH] ?? {},
-      },
-
-      [EspnQueueJobType.FINISHED_MATCH]: {
-        stages: [
-          'SUMMARY',
-          'STANDINGS',
-          'TEAM_COMPETITION_STATS',
-          'TEAM_PERFORMANCE_PROFILE',
-          'HEAD_TO_HEAD',
-          'DERIVED_DATA',
-          'YOUTUBE',
-        ],
+      [EspnQueueJobType.SUMMARY_REFRESH]: {
+        stages: ['SUMMARY', 'YOUTUBE'],
 
         operations: {
           SUMMARY: {
             source: 'ESPN',
+
             operation:
-              'Fetch ESPN match-summary data and store it under fixture.payload.summary.',
-          },
-
-          STANDINGS: {
-            source: 'ESPN',
-            operation:
-              'Refresh the competition standings after a completed match.',
-          },
-
-          TEAM_COMPETITION_STATS: {
-            source: 'APPLICATION',
-            operation: 'Rebuild season-scoped TeamCompetitionStats.',
-          },
-
-          TEAM_PERFORMANCE_PROFILE: {
-            source: 'APPLICATION',
-            operation: 'Rebuild season-scoped TeamPerformanceProfile.',
-          },
-
-          HEAD_TO_HEAD: {
-            source: 'APPLICATION',
-            operation:
-              'Rebuild the pair-based H2H document from completed ESPN fixtures.',
-          },
-
-          DERIVED_DATA: {
-            source: 'APPLICATION',
-            operation:
-              'Recalculate MatchDerivedData after upstream completed-match data becomes available.',
+              'Fetch ESPN Summary and persist it under sports_espn_fixtures.payload.summary.',
           },
 
           YOUTUBE: {
             source: 'YOUTUBE',
+
             operation:
-              'Search directly for an embeddable highlight without a separate YouTube queue.',
+              'Search directly for a finished-match highlight without a separate YouTube queue.',
             conditional: true,
           },
         },
 
-        stateCounts: stateCounts[EspnQueueJobType.FINISHED_MATCH] ?? {},
+        stateCounts: stateCounts[EspnQueueJobType.SUMMARY_REFRESH] ?? {},
       },
     };
   }
@@ -3027,20 +2532,28 @@ export class SportsSystemMonitorService {
   }
 
   // ============================================================
-  // HELPERS
+  // QUEUE CONVERSION
   // ============================================================
 
   private toQueueSummary(aggregate?: QueueAggregate): MonitorQueueSummary {
     if (!aggregate) {
       return {
         total: 0,
+
         pending: 0,
+
         processing: 0,
+
         completedRetained: 0,
+
         failed: 0,
+
         staleProcessing: 0,
+
         completedRetentionDays: QUEUE_COMPLETED_RETENTION_DAYS,
+
         byType: {},
+
         byTypeAndStatus: [],
       };
     }
@@ -3084,21 +2597,29 @@ export class SportsSystemMonitorService {
 
       byTypeAndStatus,
 
-      latestFailureAt: aggregate.latestFailureAt,
+      latestFailureAt: this.toIso(aggregate.latestFailureAt),
 
       latestFailure: aggregate.latestFailure,
 
-      latestCompletedAt: aggregate.latestCompletedAt,
+      latestCompletedAt: this.toIso(aggregate.latestCompletedAt),
     };
   }
+
+  // ============================================================
+  // SYNC CONVERSION
+  // ============================================================
 
   private toSyncSummary(aggregate?: SyncAggregate): MonitorSyncSummary {
     if (!aggregate) {
       return {
         totalStates: 0,
+
         queueStates: 0,
+
         cronStates: 0,
+
         byStatus: {},
+
         unitProgress: {
           total: 0,
           success: 0,
@@ -3107,10 +2628,15 @@ export class SportsSystemMonitorService {
           failed: 0,
           completionPercent: 0,
         },
+
         stateCompletionPercent: 0,
+
         currentStages: [],
+
         failures: [],
+
         cron: [],
+
         states: [],
       };
     }
@@ -3134,6 +2660,7 @@ export class SportsSystemMonitorService {
 
       unitProgress: {
         ...aggregate.unitProgress,
+
         completionPercent:
           aggregate.unitProgress.total > 0
             ? this.percent(
@@ -3154,13 +2681,17 @@ export class SportsSystemMonitorService {
 
       states: aggregate.states,
 
-      latestSuccessfulAt: aggregate.latestSuccessfulAt,
+      latestSuccessfulAt: this.toIso(aggregate.latestSuccessfulAt),
 
-      latestCompletedAt: aggregate.latestCompletedAt,
+      latestCompletedAt: this.toIso(aggregate.latestCompletedAt),
 
-      nextRunAt: aggregate.nextRunAt,
+      nextRunAt: this.toIso(aggregate.nextRunAt),
     };
   }
+
+  // ============================================================
+  // SYNC STATE DETAIL
+  // ============================================================
 
   private buildSyncStateDetail(
     state: SportsSyncStateDocument,
@@ -3170,10 +2701,15 @@ export class SportsSystemMonitorService {
     const units = state.units ?? [];
 
     let success = 0;
+
     let processing = 0;
+
     let pending = 0;
+
     let failed = 0;
+
     let dateUnits = 0;
+
     let stepUnits = 0;
 
     const durationsMs: number[] = [];
@@ -3197,6 +2733,7 @@ export class SportsSystemMonitorService {
 
           if (unit.startedAt && unit.completedAt) {
             const startedAt = new Date(unit.startedAt).getTime();
+
             const completedAt = new Date(unit.completedAt).getTime();
 
             const durationMs = completedAt - startedAt;
@@ -3275,31 +2812,50 @@ export class SportsSystemMonitorService {
 
     return {
       stateKey: state.stateKey,
+
       kind: String(state.kind),
+
       leagueId: state.leagueId,
+
       leagueName,
+
       season: state.season,
+
       jobType: state.jobType,
+
       status: String(state.status),
+
       trackingMode: state.trackingMode,
+
       dateFrom: state.dateFrom,
+
       dateTo: state.dateTo,
 
       unitProgress: {
         total,
+
         dateUnits,
+
         stepUnits,
+
         success,
+
         processing,
+
         pending,
+
         failed,
+
         completionPercent,
       },
 
       timing: {
         sampleCount: durationsMs.length,
+
         averageSecondsPerUnit,
+
         unitsPerMinute,
+
         currentProcessingElapsedSeconds:
           currentProcessingElapsedSeconds !== undefined
             ? Number(currentProcessingElapsedSeconds.toFixed(2))
@@ -3308,12 +2864,15 @@ export class SportsSystemMonitorService {
 
       estimate: {
         remainingUnits,
+
         remainingSeconds,
-        estimatedCompletionAt,
+
+        estimatedCompletionAt: this.toIso(estimatedCompletionAt),
       },
 
-      lastStartedAt: state.lastStartedAt,
-      lastCompletedAt: state.lastCompletedAt,
+      lastStartedAt: this.toIso(state.lastStartedAt),
+
+      lastCompletedAt: this.toIso(state.lastCompletedAt),
     };
   }
 
@@ -3344,24 +2903,9 @@ export class SportsSystemMonitorService {
     return [...grouped.values()];
   }
 
-  private buildCoverageMetric(
-    documents: number,
-    expected: number,
-    latestCalculatedAt?: Date,
-    explicitMissing?: number,
-  ): MonitorCoverageMetric {
-    const missing = explicitMissing ?? Math.max(0, expected - documents);
-
-    const covered = Math.max(0, expected - missing);
-
-    return {
-      documents,
-      expected,
-      missing,
-      coveragePercent: expected > 0 ? this.percent(covered, expected) : 0,
-      latestCalculatedAt,
-    };
-  }
+  // ============================================================
+  // EXPECTED WORK
+  // ============================================================
 
   private sumExpectedWork(items: MonitorExpectedWork[]): MonitorExpectedWork {
     return items.reduce(
@@ -3370,23 +2914,16 @@ export class SportsSystemMonitorService {
           total.finishedFixturesMissingSummary +
           item.finishedFixturesMissingSummary,
 
-        standingsMissingTeams:
-          total.standingsMissingTeams + item.standingsMissingTeams,
+        upcomingFixturesMissingSummary:
+          total.upcomingFixturesMissingSummary +
+          item.upcomingFixturesMissingSummary,
 
-        teamCompetitionStatsMissing:
-          total.teamCompetitionStatsMissing + item.teamCompetitionStatsMissing,
-
-        teamPerformanceProfilesMissing:
-          total.teamPerformanceProfilesMissing +
-          item.teamPerformanceProfilesMissing,
+        staleActiveLeagues: total.staleActiveLeagues + item.staleActiveLeagues,
 
         upcomingFixturesMissingOdds:
           total.upcomingFixturesMissingOdds + item.upcomingFixturesMissingOdds,
-
-        upcomingFixturesMissingDerivedData:
-          total.upcomingFixturesMissingDerivedData +
-          item.upcomingFixturesMissingDerivedData,
       }),
+
       this.emptyExpectedWork(),
     );
   }
@@ -3394,37 +2931,56 @@ export class SportsSystemMonitorService {
   private emptyExpectedWork(): MonitorExpectedWork {
     return {
       finishedFixturesMissingSummary: 0,
-      standingsMissingTeams: 0,
-      teamCompetitionStatsMissing: 0,
-      teamPerformanceProfilesMissing: 0,
+
+      upcomingFixturesMissingSummary: 0,
+
+      staleActiveLeagues: 0,
+
       upcomingFixturesMissingOdds: 0,
-      upcomingFixturesMissingDerivedData: 0,
     };
   }
 
-  private seasonKey(context: LeagueContext, season?: number): string {
-    return `${context.key}:${season ?? 'unknown'}`;
+  // ============================================================
+  // ARCHITECTURE NOTES
+  // ============================================================
+
+  private getArchitectureNotes() {
+    return {
+      activeCompetitionSourceOfTruth:
+        'sports_active_competitions defines the operational competition set used by startup, fixture collection and the normal queue.',
+
+      catalogueRole:
+        'sports_espn_leagues stores the complete ESPN catalogue, including active and inactive leagues. ActiveCompetition remains the operational source of truth.',
+
+      fixtureStorageModel:
+        'ESPN scoreboard fixtures are stored canonically in sports_espn_fixtures. Fixture payloads preserve the provider event data and stored Summary data.',
+
+      summaryStorageModel:
+        'ESPN Summary is stored inside sports_espn_fixtures.payload.summary with payload.summaryCollectedAt. No separate Summary collection is used.',
+
+      fixtureRefreshModel:
+        'FIXTURE_REFRESH is responsible only for the rolling ESPN fixture window. Normal collection covers today through today+8 days. Stale active leagues are refreshed when fixture collection is older than 48 hours.',
+
+      summaryRefreshModel:
+        'SUMMARY_REFRESH is event-specific. Continuous processing covers fixtures within the next four days and newly finished fixtures. A Summary job is not created when payload.summary already exists.',
+
+      queueHistoryWindow:
+        'Completed ESPN queue documents are retained as operational history for seven days before cleanup.',
+
+      syncProgressSource:
+        'sports_sync_states.units[] is the source of detailed date/step progress. Queue types are FIXTURE_REFRESH and SUMMARY_REFRESH.',
+
+      providerTelemetryLimit:
+        'Current provider telemetry contains usage totals, endpoint usage, last requests and current locks. It does not contain immutable outbound request events.',
+
+      oddsMatchingLimit:
+        'The monitor treats an exact stored Sports Odds Snapshot eventId as confirmed odds availability. A missing exact eventId is reported as missing odds only for competitions that have an Odds API sport key.',
+    };
   }
 
-  private teamSeasonKey(
-    competitionId: string,
-    season: number,
-    teamId: string,
-  ): string {
-    return `${this.normalize(competitionId)}:${season}:${teamId.trim()}`;
-  }
-
-  private pairKey(first?: string, second?: string): string {
-    const ids = [first?.trim() ?? '', second?.trim() ?? '']
-      .filter(Boolean)
-      .sort((a, b) =>
-        a.localeCompare(b, undefined, {
-          numeric: true,
-        }),
-      );
-
-    return ids.length === 2 ? `${ids[0]}:${ids[1]}` : '';
-  }
+  // ============================================================
+  // HELPERS
+  // ============================================================
 
   private normalize(value?: string): string {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -3438,14 +2994,32 @@ export class SportsSystemMonitorService {
     return Number(((numerator / denominator) * 100).toFixed(2));
   }
 
-  private isCompletedFixture(
-    fixture: Pick<EspnFixtureDocument, 'completed' | 'status'>,
-  ): boolean {
-    if (fixture.completed) {
-      return true;
+  private toIso(value?: Date | string | null): string | undefined {
+    if (!value) {
+      return undefined;
     }
 
-    return COMPLETED_STATUSES.has(String(fixture.status).trim().toUpperCase());
+    const date = value instanceof Date ? value : new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return undefined;
+    }
+
+    return date.toISOString();
+  }
+
+  private hasSummary(fixture: Pick<EspnFixtureDocument, 'payload'>): boolean {
+    const payload = fixture.payload;
+
+    if (!payload || typeof payload !== 'object') {
+      return false;
+    }
+
+    const summary = payload.summary;
+
+    return Boolean(
+      summary && typeof summary === 'object' && Object.keys(summary).length > 0,
+    );
   }
 
   private extractFixtureTeamName(
@@ -3457,8 +3031,9 @@ export class SportsSystemMonitorService {
         ? fixture.payload
         : {};
 
-    const competitions = Array.isArray(payload.competitions)
-      ? payload.competitions
+    const payloadRecord = payload as Record<string, unknown>;
+    const competitions = Array.isArray(payloadRecord.competitions)
+      ? payloadRecord.competitions
       : [];
 
     const competition =
@@ -3472,7 +3047,7 @@ export class SportsSystemMonitorService {
 
     const competitor =
       competitors.find(
-        (item: unknown) =>
+        (item) =>
           item &&
           typeof item === 'object' &&
           (item as Record<string, unknown>).homeAway === side,
@@ -3496,33 +3071,5 @@ export class SportsSystemMonitorService {
         ? team.shortDisplayName
         : undefined)
     );
-  }
-
-  private getArchitectureNotes() {
-    return {
-      activeCompetitionSourceOfTruth:
-        'sports_active_competitions defines the operational competition set used by the monitor.',
-
-      catalogueRole:
-        'sports_espn_leagues is the complete ESPN catalogue/reference and is not treated as the active-league source of truth.',
-
-      fixtureSummaryLocation:
-        'ESPN match-summary data is stored in sports_espn_fixtures.payload.summary with payload.summaryCollectedAt.',
-
-      queueHistoryWindow:
-        'Queue COMPLETED documents are retained operational history only. The current worker removes completed jobs older than seven days.',
-
-      syncProgressSource:
-        'sports_sync_states.units[] is used for real stage/date progress. Top-level state status is reported separately.',
-
-      providerTelemetryLimit:
-        'The current rate-limit collection exposes current-period usage, endpoint usage, locks and last requests, but not immutable outbound request events.',
-
-      oddsMatchingLimit:
-        'Odds API event identifiers are provider-specific. The monitor only treats an exact stored eventId match as a confirmed odds record and does not infer absence of provider odds from that alone.',
-
-      h2hStorageModel:
-        'Head-to-head data is stored as pair-root documents with competition and season inside embedded meetings; per-season coverage is therefore derived by inspecting meetings.',
-    };
   }
 }

@@ -194,7 +194,7 @@ export class PredictionsService {
     );
   }
 
-  async getForUser(id: string, user: any) {
+  async getForUser(id: string) {
     const prediction = await this.findOne(id);
 
     return {

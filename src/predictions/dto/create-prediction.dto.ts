@@ -1,5 +1,5 @@
 import {
-  IsEnum,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -9,9 +9,12 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
+import { PredictionMarkets } from '../constants/prediction-markets';
+
 class MarketDto {
   @IsString()
   @IsNotEmpty()
+  @IsIn(Object.values(PredictionMarkets))
   market!: string;
 
   @IsString()
@@ -24,7 +27,7 @@ export class CreatePredictionDto {
   @IsNotEmpty()
   matchId!: string;
 
-  @IsEnum(['free', 'regular', 'vip', 'premium'])
+  @IsIn(['free', 'regular', 'vip', 'premium'])
   accessType!: 'free' | 'regular' | 'vip' | 'premium';
 
   @IsOptional()

@@ -73,6 +73,11 @@ export class SportsController {
     );
   }
 
+  @Get('fixtures/:eventId/summary')
+  async getFixtureSummary(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummary(eventId);
+  }
+
   @Get('competitions/:competitionId/table')
   async getLeagueTable(
     @Param('competitionId') competitionId: string,
@@ -90,43 +95,8 @@ export class SportsController {
   }
 
   // ============================================================
-  // AUTHENTICATED APPLICATION DATA
+  // APPLICATION PROVIDER DATA
   // ============================================================
-
-  @UseGuards(JwtAuthGuard)
-  @Get('competitions/:competitionId/team-stats')
-  async getTeamCompetitionStats(
-    @Param('competitionId') competitionId: string,
-    @Query('season') season: string,
-  ) {
-    return this.sportsDataReadService.getTeamCompetitionStats(
-      competitionId,
-      Number(season),
-    );
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Get('competitions/:competitionId/team-stats/:teamId')
-  async getTeamStats(
-    @Param('competitionId') competitionId: string,
-    @Param('teamId') teamId: string,
-    @Query('season') season: string,
-  ) {
-    return this.sportsDataReadService.getTeamStats(
-      competitionId,
-      Number(season),
-      teamId,
-    );
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Get('head-to-head/:teamOneId/:teamTwoId')
-  async getHeadToHead(
-    @Param('teamOneId') teamOneId: string,
-    @Param('teamTwoId') teamTwoId: string,
-  ) {
-    return this.sportsDataReadService.getHeadToHead(teamOneId, teamTwoId);
-  }
 
   @Get('odds/event/:eventId')
   async getOddsForEvent(@Param('eventId') eventId: string) {
@@ -561,84 +531,6 @@ export class SportsController {
       provider,
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
-      sortBy,
-      sortOrder,
-    });
-  }
-
-  // ============================================================
-  // ADMIN: TEAM COMPETITION STATS
-  // PROTECTED
-  // ============================================================
-
-  @Roles('admin')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Get('admin/team-competition-stats')
-  async getAdminTeamCompetitionStats(
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-    @Query('competitionId') competitionId?: string,
-    @Query('teamId') teamId?: string,
-    @Query('season') season?: string,
-    @Query('sortBy') sortBy?: string,
-    @Query('sortOrder') sortOrder?: 'asc' | 'desc',
-  ): Promise<unknown> {
-    return this.sportsDataReadService.getAdminTeamCompetitionStats({
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
-      competitionId,
-      teamId,
-      season: season ? Number(season) : undefined,
-      sortBy,
-      sortOrder,
-    });
-  }
-
-  // ============================================================
-  // ADMIN: TEAM PERFORMANCE PROFILES
-  // PROTECTED
-  // ============================================================
-
-  @Roles('admin')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Get('admin/team-performance-profiles')
-  async getAdminTeamPerformanceProfiles(
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-    @Query('teamId') teamId?: string,
-    @Query('competitionId') competitionId?: string,
-    @Query('sortBy') sortBy?: string,
-    @Query('sortOrder') sortOrder?: 'asc' | 'desc',
-  ): Promise<unknown> {
-    return this.sportsDataReadService.getAdminTeamPerformanceProfiles({
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
-      teamId,
-      competitionId,
-      sortBy,
-      sortOrder,
-    });
-  }
-
-  // ============================================================
-  // ADMIN: HEAD-TO-HEAD
-  // PROTECTED
-  // ============================================================
-
-  @Roles('admin')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Get('admin/head-to-head')
-  async getAdminHeadToHead(
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-    @Query('teamId') teamId?: string,
-    @Query('sortBy') sortBy?: string,
-    @Query('sortOrder') sortOrder?: 'asc' | 'desc',
-  ): Promise<unknown> {
-    return this.sportsDataReadService.getAdminHeadToHead({
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
-      teamId,
       sortBy,
       sortOrder,
     });

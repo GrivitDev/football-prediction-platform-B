@@ -1,3 +1,5 @@
+// backend/src/sports/services/sports-data-read.service.ts
+
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -106,22 +108,6 @@ import {
   SportsProviderRateLimit,
   SportsProviderRateLimitDocument,
 } from '../schemas/sports-provider-rate-limit.schema';
-
-// ============================================================
-// DERIVED DATA
-// ============================================================
-
-import {
-  TeamCompetitionStats,
-  TeamCompetitionStatsDocument,
-} from '../schemas/team-competition-stats.schema';
-
-import {
-  TeamPerformanceProfile,
-  TeamPerformanceProfileDocument,
-} from '../schemas/team-performance-profile.schema';
-
-import { HeadToHead, HeadToHeadDocument } from '../schemas/head-to-head.schema';
 
 // ============================================================
 // YOUTUBE
@@ -246,19 +232,6 @@ export class SportsDataReadService {
     private readonly sportsProviderRateLimitModel: Model<SportsProviderRateLimitDocument>,
 
     // ----------------------------------------------------------
-    // DERIVED DATA
-    // ----------------------------------------------------------
-
-    @InjectModel(TeamCompetitionStats.name)
-    private readonly teamCompetitionStatsModel: Model<TeamCompetitionStatsDocument>,
-
-    @InjectModel(TeamPerformanceProfile.name)
-    private readonly teamPerformanceProfileModel: Model<TeamPerformanceProfileDocument>,
-
-    @InjectModel(HeadToHead.name)
-    private readonly headToHeadModel: Model<HeadToHeadDocument>,
-
-    // ----------------------------------------------------------
     // YOUTUBE
     // ----------------------------------------------------------
 
@@ -282,8 +255,17 @@ export class SportsDataReadService {
     return this.getFinishedFixtures(undefined, undefined, competitionId);
   }
 
-  async getStandings(competitionId: string): Promise<unknown[]> {
-    return this.getLeagueTable(competitionId);
+  /**
+   * Emergency/fallback standings read.
+   *
+   * Normal application presentation should use ESPN Summary data
+   * stored inside the canonical fixture payload.
+   */
+  async getStandings(
+    competitionId: string,
+    season?: number,
+  ): Promise<unknown[]> {
+    return this.getLeagueTable(competitionId, season);
   }
 
   async getTeams(competitionId: string): Promise<unknown[]> {
@@ -468,7 +450,69 @@ export class SportsDataReadService {
   }
 
   // ============================================================
-  // LEAGUE TABLE
+  // ESPN SUMMARY
+  // ============================================================
+
+  /**
+   * Returns the canonical ESPN Summary stored inside the
+   * corresponding fixture document.
+   */
+  async getFixtureSummary(eventId: string): Promise<unknown> {
+    const normalizedEventId = eventId.trim();
+
+    if (!normalizedEventId) {
+      return null;
+    }
+
+    const fixture = await this.espnFixtureModel
+      .findOne({
+        eventId: normalizedEventId,
+      })
+      .select({
+        eventId: 1,
+        leagueId: 1,
+        season: 1,
+        fixtureDate: 1,
+        completed: 1,
+        payload: 1,
+      })
+      .lean()
+      .exec();
+
+    if (!fixture) {
+      return null;
+    }
+
+    const payload =
+      fixture.payload && typeof fixture.payload === 'object'
+        ? fixture.payload
+        : undefined;
+
+    const summary = payload?.summary;
+
+    if (!summary || typeof summary !== 'object') {
+      return null;
+    }
+
+    return {
+      eventId: fixture.eventId,
+
+      leagueId: fixture.leagueId,
+
+      season: fixture.season,
+
+      fixtureDate: fixture.fixtureDate,
+
+      completed: fixture.completed,
+
+      summary,
+
+      summaryCollectedAt: payload?.summaryCollectedAt ?? null,
+    };
+  }
+
+  // ============================================================
+  // LEAGUE TABLE — FALLBACK
   // ============================================================
 
   async getLeagueTable(
@@ -487,74 +531,6 @@ export class SportsDataReadService {
       .find(filter)
       .sort({
         rank: 1,
-      })
-      .lean()
-      .exec();
-  }
-
-  // ============================================================
-  // TEAM STATS
-  // ============================================================
-
-  async getTeamCompetitionStats(
-    competitionId: string,
-    season: number,
-  ): Promise<TeamCompetitionStatsDocument[]> {
-    const filter: Record<string, unknown> = {
-      competitionId: String(competitionId).trim().toLowerCase(),
-      season,
-    };
-
-    return this.teamCompetitionStatsModel
-      .find(filter)
-      .sort({
-        position: 1,
-        teamName: 1,
-      })
-      .lean()
-      .exec();
-  }
-
-  async getTeamStats(
-    competitionId: string,
-    season: number,
-    teamId: string | number,
-  ): Promise<TeamCompetitionStatsDocument | null> {
-    const normalizedTeamId = String(teamId).trim();
-
-    const filter: Record<string, unknown> = {
-      competitionId: String(competitionId).trim().toLowerCase(),
-      season,
-      teamId: normalizedTeamId,
-    };
-
-    return this.teamCompetitionStatsModel.findOne(filter).lean().exec();
-  }
-
-  // ============================================================
-  // HEAD TO HEAD
-  // ============================================================
-
-  async getHeadToHead(
-    teamOneId: string | number,
-    teamTwoId: string | number,
-  ): Promise<HeadToHeadDocument | null> {
-    const first = String(teamOneId).trim();
-    const second = String(teamTwoId).trim();
-
-    if (!first || !second || first === second) {
-      return null;
-    }
-
-    const [teamAId, teamBId] = [first, second].sort((a, b) =>
-      a.localeCompare(b, undefined, {
-        numeric: true,
-      }),
-    );
-
-    return this.headToHeadModel
-      .findOne({
-        pairKey: `${teamAId}:${teamBId}`,
       })
       .lean()
       .exec();
@@ -631,9 +607,13 @@ export class SportsDataReadService {
 
     return {
       data,
+
       page,
+
       limit,
+
       total,
+
       totalPages: Math.ceil(total / limit),
     };
   }
@@ -757,6 +737,7 @@ export class SportsDataReadService {
 
     return {
       ...result,
+
       data: result.data.map((state) => this.summarizeSyncState(state)),
     };
   }
@@ -829,6 +810,7 @@ export class SportsDataReadService {
       current: current
         ? {
             ...this.summarizeSyncState(current),
+
             currentUnit: this.getCurrentSyncUnit(current),
           }
         : null,
@@ -1129,9 +1111,8 @@ export class SportsDataReadService {
       processing,
       completed,
       failed,
-      leagueRefresh,
-      upcomingMatch,
-      finishedMatch,
+      fixtureRefresh,
+      summaryRefresh,
       total,
     ] = await Promise.all([
       this.espnQueueModel.countDocuments({
@@ -1151,15 +1132,11 @@ export class SportsDataReadService {
       }),
 
       this.espnQueueModel.countDocuments({
-        type: EspnQueueJobType.LEAGUE_REFRESH,
+        type: EspnQueueJobType.FIXTURE_REFRESH,
       }),
 
       this.espnQueueModel.countDocuments({
-        type: EspnQueueJobType.UPCOMING_MATCH,
-      }),
-
-      this.espnQueueModel.countDocuments({
-        type: EspnQueueJobType.FINISHED_MATCH,
+        type: EspnQueueJobType.SUMMARY_REFRESH,
       }),
 
       this.espnQueueModel.countDocuments(),
@@ -1176,9 +1153,8 @@ export class SportsDataReadService {
       },
 
       type: {
-        leagueRefresh,
-        upcomingMatch,
-        finishedMatch,
+        fixtureRefresh,
+        summaryRefresh,
       },
     };
   }
@@ -1302,7 +1278,7 @@ export class SportsDataReadService {
   }
 
   // ============================================================
-  // ADMIN: ESPN STANDINGS
+  // ADMIN: ESPN STANDINGS FALLBACK
   // ============================================================
 
   async getAdminEspnStandings(query: SportsAdminQuery = {}) {
@@ -1513,91 +1489,6 @@ export class SportsDataReadService {
         ...query,
         sortBy: query.sortBy ?? 'provider',
         sortOrder: query.sortOrder ?? 'asc',
-      },
-      filter,
-    );
-  }
-
-  // ============================================================
-  // ADMIN: TEAM COMPETITION STATS
-  // ============================================================
-
-  async getAdminTeamCompetitionStats(query: SportsAdminQuery = {}) {
-    const filter: Record<string, unknown> = {};
-
-    if (query.competitionId) {
-      filter.competitionId = query.competitionId.trim().toLowerCase();
-    }
-
-    if (typeof query.season === 'number') {
-      filter.season = query.season;
-    }
-
-    if (query.teamId) {
-      filter.teamId = query.teamId.trim();
-    }
-
-    return this.paginateModel(
-      this.teamCompetitionStatsModel,
-      {
-        ...query,
-        sortBy: query.sortBy ?? 'position',
-        sortOrder: query.sortOrder ?? 'asc',
-      },
-      filter,
-    );
-  }
-
-  // ============================================================
-  // ADMIN: TEAM PERFORMANCE PROFILES
-  // ============================================================
-
-  async getAdminTeamPerformanceProfiles(query: SportsAdminQuery = {}) {
-    const filter: Record<string, unknown> = {};
-
-    if (query.teamId) {
-      filter.teamId = query.teamId.trim();
-    }
-
-    if (query.competitionId) {
-      filter.competitionId = query.competitionId.trim().toLowerCase();
-    }
-
-    return this.paginateModel(
-      this.teamPerformanceProfileModel,
-      {
-        ...query,
-        sortBy: query.sortBy ?? 'updatedAt',
-      },
-      filter,
-    );
-  }
-
-  // ============================================================
-  // ADMIN: HEAD TO HEAD
-  // ============================================================
-
-  async getAdminHeadToHead(query: SportsAdminQuery = {}) {
-    const filter: Record<string, unknown> = {};
-
-    if (query.teamId) {
-      const teamId = query.teamId.trim();
-
-      filter.$or = [
-        {
-          teamAId: teamId,
-        },
-        {
-          teamBId: teamId,
-        },
-      ];
-    }
-
-    return this.paginateModel(
-      this.headToHeadModel,
-      {
-        ...query,
-        sortBy: query.sortBy ?? 'calculatedAt',
       },
       filter,
     );

@@ -109,11 +109,13 @@ export class SportsSyncState {
    *
    * Examples:
    *
-   * QUEUE:FIXTURE_RECOVERY:eng.1:2026
-   * QUEUE:LEAGUE_REFRESH:eng.1:2026:401884783
-   * QUEUE:FINISHED_MATCH:eng.1:401884783
-   * QUEUE:UPCOMING_MATCH:eng.1:401884783
+   * QUEUE:FIXTURE_REFRESH:eng.1:2026
+   * QUEUE:SUMMARY_REFRESH:eng.1:401884783
    * CRON:espn-live-matches
+   *
+   * Older LEAGUE_REFRESH, FIXTURE_RECOVERY,
+   * UPCOMING_MATCH and FINISHED_MATCH identities are
+   * no longer part of the target architecture.
    */
   @Prop({
     required: true,
@@ -130,6 +132,14 @@ export class SportsSyncState {
   })
   kind!: SportsSyncStateKind;
 
+  /**
+   * Current queue job type.
+   *
+   * Queue states should use:
+   *
+   * FIXTURE_REFRESH
+   * SUMMARY_REFRESH
+   */
   @Prop({
     type: String,
     index: true,
@@ -182,10 +192,14 @@ export class SportsSyncState {
 
   /**
    * WINDOW:
-   *   Example: today -> today + 8 days.
+   *   Normal rolling fixture collection window.
    *
    * HISTORY:
-   *   Example: season start -> today + 8 days.
+   *   Startup or recovery fixture hydration covering
+   *   the known operational season window.
+   *
+   * Summary jobs normally do not require a date-range
+   * tracking mode because they are event-specific.
    */
   @Prop({
     required: true,

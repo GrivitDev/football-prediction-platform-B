@@ -1,31 +1,25 @@
+// backend/src/sports/services/espn-queue-worker.service.ts
+
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-
 import { EspnService } from '../providers/espn.service';
-import { TheOddsApiService } from '../providers/the-odds-api.service';
 
-import { SportsProviderRateLimitService } from './sports-provider-rate-limit.service';
 import { SportsCollectionService } from './sports-collection.service';
 import { EspnQueueService } from './espn-queue.service';
 import { EspnQueueBuilderService } from './espn-queue-builder.service';
-import { PriorityCompetitionService } from './priority-competition.service';
 import { YoutubeHighlightService } from './youtube-highlight.service';
 import { ActiveCompetitionService } from './active-competition.service';
 import { SportsSyncStateService } from './sports-sync-state.service';
 
 import { EspnQueueJobType } from '../interfaces/espn-queue.interface';
 
-import { HeadToHeadService } from './head-to-head.service';
-import { MatchDerivedDataService } from './match-derived-data.service';
-import { TeamCompetitionStatsService } from './team-competition-stats.service';
-import { TeamPerformanceProfileService } from './team-performance-profile.service';
-
 import {
   EspnFixture,
   EspnFixtureDocument,
 } from '../schemas/espn/espn-fixture.schema';
+
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
 
 @Injectable()
 export class EspnQueueWorkerService implements OnModuleInit {
@@ -33,11 +27,13 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
   private readonly POLL_INTERVAL_MS = 5000;
 
-  private readonly threeHourWindowMs = 3 * 60 * 60 * 1000;
-
   private readonly queueCleanupIntervalMs = 60 * 60 * 1000;
 
   private readonly staleRecoveryIntervalMs = 60 * 1000;
+
+  private readonly summaryQueueBuildIntervalMs = 60 * 1000;
+
+  private readonly staleFixtureQueueBuildIntervalMs = 15 * 60 * 1000;
 
   private polling = false;
 
@@ -47,12 +43,12 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
   private lastStaleRecoveryAt = 0;
 
+  private lastSummaryQueueBuildAt = 0;
+
+  private lastStaleFixtureQueueBuildAt = 0;
+
   constructor(
     private readonly espnService: EspnService,
-
-    private readonly theOddsApiService: TheOddsApiService,
-
-    private readonly sportsProviderRateLimitService: SportsProviderRateLimitService,
 
     private readonly sportsCollectionService: SportsCollectionService,
 
@@ -60,17 +56,7 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
     private readonly espnQueueBuilderService: EspnQueueBuilderService,
 
-    private readonly priorityCompetitionService: PriorityCompetitionService,
-
     private readonly youtubeHighlightService: YoutubeHighlightService,
-
-    private readonly teamCompetitionStatsService: TeamCompetitionStatsService,
-
-    private readonly teamPerformanceProfileService: TeamPerformanceProfileService,
-
-    private readonly headToHeadService: HeadToHeadService,
-
-    private readonly matchDerivedDataService: MatchDerivedDataService,
 
     private readonly activeCompetitionService: ActiveCompetitionService,
 
@@ -162,7 +148,7 @@ export class EspnQueueWorkerService implements OnModuleInit {
     try {
       await this.recoverStaleJobsIfDue();
 
-      await this.espnQueueBuilderService.watchThreeHourFixtures();
+      await this.buildNormalQueueWorkIfDue();
 
       await this.processNextJob();
     } catch (error) {
@@ -177,6 +163,59 @@ export class EspnQueueWorkerService implements OnModuleInit {
       this.scheduleNextPoll();
     }
   }
+
+  private async buildNormalQueueWorkIfDue(): Promise<void> {
+    const now = Date.now();
+
+    if (
+      now - this.lastSummaryQueueBuildAt >=
+      this.summaryQueueBuildIntervalMs
+    ) {
+      this.lastSummaryQueueBuildAt = now;
+
+      try {
+        const result =
+          await this.espnQueueBuilderService.buildSummaryRefreshQueue();
+
+        if (result.queued > 0) {
+          this.logger.log(
+            `Queued ${result.queued} SUMMARY_REFRESH jobs ` +
+              `(upcoming checked=${result.upcomingChecked}, ` +
+              `finished checked=${result.finishedChecked})`,
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `ESPN Summary queue discovery failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    if (
+      now - this.lastStaleFixtureQueueBuildAt >=
+      this.staleFixtureQueueBuildIntervalMs
+    ) {
+      this.lastStaleFixtureQueueBuildAt = now;
+
+      try {
+        const result =
+          await this.espnQueueBuilderService.buildStaleFixtureRefreshQueue();
+
+        if (result.queued > 0) {
+          this.logger.log(`Queued ${result.queued} stale FIXTURE_REFRESH jobs`);
+        }
+      } catch (error) {
+        this.logger.error(
+          `ESPN stale fixture queue discovery failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
+
   // ============================================================
   // STALE RECOVERY
   // ============================================================
@@ -252,20 +291,12 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
   private async processJob(job: Record<string, unknown>): Promise<void> {
     switch (job.type) {
-      case EspnQueueJobType.LEAGUE_REFRESH:
-        await this.processLeagueRefresh(job);
+      case EspnQueueJobType.FIXTURE_REFRESH:
+        await this.processFixtureRefresh(job);
         return;
 
-      case EspnQueueJobType.FIXTURE_RECOVERY:
-        await this.processFixtureRecovery(job);
-        return;
-
-      case EspnQueueJobType.UPCOMING_MATCH:
-        await this.processUpcomingMatch(job);
-        return;
-
-      case EspnQueueJobType.FINISHED_MATCH:
-        await this.processFinishedMatch(job);
+      case EspnQueueJobType.SUMMARY_REFRESH:
+        await this.processSummaryRefresh(job);
         return;
 
       default:
@@ -274,18 +305,18 @@ export class EspnQueueWorkerService implements OnModuleInit {
   }
 
   // ============================================================
-  // FIXTURE RECOVERY
+  // FIXTURE REFRESH
   // ============================================================
 
-  private async processFixtureRecovery(
+  private async processFixtureRefresh(
     job: Record<string, unknown>,
   ): Promise<void> {
     if (!job.leagueId) {
-      throw new Error('Fixture recovery job has no leagueId');
+      throw new Error('Fixture refresh job has no leagueId');
     }
 
     if (typeof job.season !== 'number') {
-      throw new Error('Fixture recovery job requires season');
+      throw new Error('Fixture refresh job requires season');
     }
 
     const leagueId = this.stringifyJobId(job.leagueId);
@@ -297,7 +328,7 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
     if (!competition) {
       throw new Error(
-        `No ActiveCompetition found for fixture recovery league ${leagueId}`,
+        `No ActiveCompetition found for fixture refresh league ${leagueId}`,
       );
     }
 
@@ -312,26 +343,26 @@ export class EspnQueueWorkerService implements OnModuleInit {
       );
     }
 
-    if (!competition.seasonStartDate) {
-      throw new Error(`ActiveCompetition ${leagueId} has no seasonStartDate`);
-    }
-
     const stateKey = this.getStateKeyFromJob(job);
+
+    const forwardDays =
+      this.espnQueueBuilderService.getFixtureRefreshForwardDays();
+
+    const dateFrom = this.toDateOnly(new Date());
+
+    const dateTo = this.toDateOnly(
+      new Date(Date.now() + forwardDays * 24 * 60 * 60 * 1000),
+    );
 
     await this.sportsSyncStateService.ensureDateWindow({
       stateKey,
 
-      dateFrom: this.toDateOnly(new Date(competition.seasonStartDate)),
+      dateFrom,
 
-      dateTo: this.toDateOnly(new Date(Date.now() + 8 * 24 * 60 * 60 * 1000)),
+      dateTo,
 
-      trackingMode: 'HISTORY',
+      trackingMode: 'WINDOW',
     });
-
-    await this.sportsSyncStateService.ensureStepUnits(stateKey, [
-      'standings',
-      'finishedMatches',
-    ]);
 
     await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
 
@@ -354,29 +385,11 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
     if (failures.length > 0) {
       throw new Error(
-        `Fixture recovery still has failed dates for ${leagueId}: ${failures.join(
+        `Fixture refresh still has failed dates for ${leagueId}: ${failures.join(
           '; ',
         )}`,
       );
     }
-
-    await this.runTrackedStep(stateKey, 'standings', async () => {
-      const response = await this.espnService.getStandings(leagueId);
-
-      await this.sportsCollectionService.collectEspnStandings(
-        leagueId,
-        response,
-        season,
-      );
-    });
-
-    await this.runTrackedStep(stateKey, 'finishedMatches', async () => {
-      await this.queueMissingFinishedMatchSummaries(
-        leagueId,
-        season,
-        this.getQueuePriority(competition.priority),
-      );
-    });
 
     await this.sportsSyncStateService.refreshOverallStatus(stateKey);
   }
@@ -412,95 +425,18 @@ export class EspnQueueWorkerService implements OnModuleInit {
   }
 
   // ============================================================
-  // LEAGUE REFRESH
+  // SUMMARY REFRESH
   // ============================================================
 
-  private async processLeagueRefresh(
-    job: Record<string, unknown>,
-  ): Promise<void> {
-    if (!job.leagueId) {
-      throw new Error('League refresh job has no leagueId');
-    }
-
-    if (typeof job.season !== 'number') {
-      throw new Error('League refresh job requires season');
-    }
-
-    const leagueId = this.stringifyJobId(job.leagueId);
-
-    const season = job.season;
-
-    const stateKey = this.getStateKeyFromJob(job);
-
-    const dateFrom = this.toDateOnly(new Date());
-
-    const dateTo = this.toDateOnly(
-      new Date(Date.now() + 8 * 24 * 60 * 60 * 1000),
-    );
-
-    await this.sportsSyncStateService.ensureDateWindow({
-      stateKey,
-
-      dateFrom,
-
-      dateTo,
-
-      trackingMode: 'WINDOW',
-    });
-
-    await this.sportsSyncStateService.ensureStepUnits(stateKey, ['matchJobs']);
-
-    await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
-
-    const incompleteDates =
-      await this.sportsSyncStateService.getIncompleteDates(stateKey);
-
-    const failures: string[] = [];
-
-    for (const dateKey of incompleteDates) {
-      try {
-        await this.processFixtureDate(stateKey, leagueId, dateKey);
-      } catch (error) {
-        failures.push(
-          `${dateKey}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
-
-    if (failures.length > 0) {
-      throw new Error(
-        `League refresh still has failed dates for ${leagueId}: ${failures.join(
-          '; ',
-        )}`,
-      );
-    }
-
-    await this.runTrackedStep(stateKey, 'matchJobs', async () => {
-      await this.espnQueueBuilderService.buildLeagueMatchJobs(leagueId, season);
-
-      await this.queueMissingFinishedMatchSummaries(
-        leagueId,
-        season,
-        await this.getLeaguePriority(leagueId),
-        dateFrom,
-        dateTo,
-      );
-    });
-
-    await this.sportsSyncStateService.refreshOverallStatus(stateKey);
-  }
-
-  // ============================================================
-  // UPCOMING MATCH
-  // ============================================================
-
-  private async processUpcomingMatch(
+  private async processSummaryRefresh(
     job: Record<string, unknown>,
   ): Promise<void> {
     if (!job.leagueId || !job.eventId) {
-      throw new Error('Upcoming match job requires leagueId and eventId');
+      throw new Error('Summary refresh job requires leagueId and eventId');
+    }
+
+    if (typeof job.season !== 'number') {
+      throw new Error('Summary refresh job requires season');
     }
 
     const leagueId = this.stringifyJobId(job.leagueId);
@@ -508,59 +444,6 @@ export class EspnQueueWorkerService implements OnModuleInit {
     const eventId = this.stringifyJobId(job.eventId);
 
     const stateKey = this.getStateKeyFromJob(job);
-
-    await this.sportsSyncStateService.ensureStepUnits(stateKey, [
-      'odds',
-      'derivedData',
-    ]);
-
-    await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
-
-    await this.runTrackedStep(stateKey, 'odds', async () => {
-      await this.processOddsApi(leagueId, eventId);
-    });
-
-    await this.runTrackedStep(stateKey, 'derivedData', async () => {
-      await this.matchDerivedDataService.rebuildForFixture(eventId);
-    });
-
-    await this.sportsSyncStateService.refreshOverallStatus(stateKey);
-  }
-
-  // ============================================================
-  // FINISHED MATCH
-  // ============================================================
-
-  private async processFinishedMatch(
-    job: Record<string, unknown>,
-  ): Promise<void> {
-    if (!job.leagueId || !job.eventId) {
-      throw new Error('Finished match job requires leagueId and eventId');
-    }
-
-    if (typeof job.season !== 'number') {
-      throw new Error('Finished match job requires season');
-    }
-
-    const leagueId = this.stringifyJobId(job.leagueId);
-
-    const eventId = this.stringifyJobId(job.eventId);
-
-    const season = job.season;
-
-    const stateKey = this.getStateKeyFromJob(job);
-
-    await this.sportsSyncStateService.ensureStepUnits(stateKey, [
-      'summary',
-      'standings',
-      'teamCompetitionStats',
-      'teamPerformanceProfile',
-      'headToHead',
-      'derivedData',
-      'youtube',
-    ]);
-
-    await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
 
     const fixture = await this.espnFixtureModel
       .findOne({
@@ -571,22 +454,27 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
     if (!fixture) {
       throw new Error(
-        `Finished match fixture ${eventId} not found in sports_espn_fixtures`,
+        `Summary refresh fixture ${eventId} not found in sports_espn_fixtures`,
       );
     }
 
-    const homeTeamId = fixture.homeTeamId?.trim();
+    const completed = fixture.completed === true;
 
-    const awayTeamId = fixture.awayTeamId?.trim();
+    const steps = completed ? ['summary', 'youtube'] : ['summary'];
 
-    if (!homeTeamId || !awayTeamId) {
-      throw new Error(
-        `Finished match fixture ${eventId} is missing homeTeamId or awayTeamId`,
-      );
-    }
+    await this.sportsSyncStateService.ensureStepUnits(stateKey, steps);
+
+    await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
 
     await this.runTrackedStep(stateKey, 'summary', async () => {
-      if (fixture.payload?.summary) {
+      const currentFixture = await this.espnFixtureModel
+        .findOne({
+          eventId,
+        })
+        .lean()
+        .exec();
+
+      if (currentFixture?.payload?.summary) {
         return;
       }
 
@@ -601,134 +489,13 @@ export class EspnQueueWorkerService implements OnModuleInit {
       });
     });
 
-    await this.runTrackedStep(stateKey, 'standings', async () => {
-      const standingsResponse = await this.espnService.getStandings(leagueId);
-
-      await this.sportsCollectionService.collectEspnStandings(
-        leagueId,
-        standingsResponse,
-        season,
-      );
-    });
-
-    await this.runTrackedStep(stateKey, 'teamCompetitionStats', async () => {
-      await this.teamCompetitionStatsService.refreshForFixture(
-        leagueId,
-        season,
-        eventId,
-      );
-    });
-
-    await this.runTrackedStep(stateKey, 'teamPerformanceProfile', async () => {
-      await this.teamPerformanceProfileService.refreshForFixture(eventId);
-    });
-
-    await this.runTrackedStep(stateKey, 'headToHead', async () => {
-      await this.headToHeadService.refreshForFixture(eventId);
-    });
-
-    await this.runTrackedStep(stateKey, 'derivedData', async () => {
-      await this.matchDerivedDataService.rebuildUpcomingForTeams(
-        leagueId,
-        season,
-        [homeTeamId, awayTeamId],
-      );
-    });
-
-    await this.runTrackedStep(stateKey, 'youtube', async () => {
-      await this.youtubeHighlightService.processFixture(eventId);
-    });
+    if (completed) {
+      await this.runTrackedStep(stateKey, 'youtube', async () => {
+        await this.youtubeHighlightService.processFixture(eventId);
+      });
+    }
 
     await this.sportsSyncStateService.refreshOverallStatus(stateKey);
-  }
-
-  // ============================================================
-  // FINISHED MATCH QUEUEING
-  // ============================================================
-
-  private async queueMissingFinishedMatchSummaries(
-    leagueId: string,
-    season: number,
-    priority: number,
-    dateFrom?: string,
-    dateTo?: string,
-  ): Promise<number> {
-    const cutoff = new Date(Date.now() - this.threeHourWindowMs);
-
-    const query: Record<string, unknown> = {
-      leagueId,
-
-      season,
-
-      completed: true,
-
-      fixtureDate: {
-        $lte: cutoff,
-      },
-
-      $or: [
-        {
-          'payload.summary': {
-            $exists: false,
-          },
-        },
-        {
-          'payload.summary': null,
-        },
-      ],
-    };
-
-    if (dateFrom && dateTo) {
-      (query.fixtureDate as Record<string, unknown>).$gte = new Date(
-        `${dateFrom}T00:00:00.000Z`,
-      );
-
-      (query.fixtureDate as Record<string, unknown>).$lte = new Date(
-        `${dateTo}T23:59:59.999Z`,
-      );
-    }
-
-    const fixtures = await this.espnFixtureModel
-      .find(query)
-      .select({
-        eventId: 1,
-        fixtureDate: 1,
-      })
-      .sort({
-        fixtureDate: 1,
-      })
-      .lean()
-      .exec();
-
-    let queued = 0;
-
-    for (const fixture of fixtures) {
-      if (!fixture.eventId) {
-        continue;
-      }
-
-      const job = await this.espnQueueService.addFinishedMatchJob({
-        leagueId,
-
-        eventId: fixture.eventId,
-
-        season,
-
-        priority,
-
-        scheduledFor: new Date(),
-      });
-
-      if (String(job.status) === 'PENDING' && Number(job.attempts ?? 0) === 0) {
-        queued += 1;
-      }
-    }
-
-    if (queued > 0) {
-      this.logger.log(`Queued ${queued} FINISHED_MATCH jobs for ${leagueId}`);
-    }
-
-    return queued;
   }
 
   // ============================================================
@@ -767,92 +534,6 @@ export class EspnQueueWorkerService implements OnModuleInit {
   }
 
   // ============================================================
-  // ODDS API
-  // ============================================================
-
-  private async processOddsApi(
-    leagueId: string,
-    eventId: string,
-  ): Promise<void> {
-    const competition = this.priorityCompetitionService.getById(leagueId);
-
-    if (!competition) {
-      return;
-    }
-
-    const competitionData = competition as unknown as {
-      oddsEnabled?: unknown;
-
-      providers?: {
-        oddsApiSportKey?: unknown;
-      };
-    };
-
-    const oddsEnabled = Boolean(competitionData.oddsEnabled);
-
-    const sportKey = competitionData.providers?.oddsApiSportKey;
-
-    if (!oddsEnabled || typeof sportKey !== 'string' || !sportKey) {
-      return;
-    }
-
-    const remaining =
-      (await this.sportsProviderRateLimitService.getRemainingMonthlyRequests(
-        'odds-api',
-      )) ?? 0;
-
-    if (remaining <= 0) {
-      this.logger.warn(
-        'The Odds API monthly quota is exhausted. Skipping request.',
-      );
-
-      return;
-    }
-
-    const odds = await this.theOddsApiService.getOdds(sportKey, 'eu', [
-      'h2h',
-      'totals',
-      'spreads',
-    ]);
-
-    if (odds.length > 0) {
-      await this.sportsCollectionService.collectOdds(odds);
-    }
-  }
-
-  // ============================================================
-  // PRIORITY
-  // ============================================================
-
-  private getQueuePriority(priority: unknown): number {
-    switch (String(priority).toUpperCase()) {
-      case 'ELITE':
-        return 1;
-
-      case 'HIGH':
-        return 2;
-
-      case 'REGIONAL':
-        return 3;
-
-      case 'SELECTIVE':
-      default:
-        return 4;
-    }
-  }
-
-  private async getLeaguePriority(leagueId: string): Promise<number> {
-    const league =
-      await this.activeCompetitionService.getByEspnLeagueSlug(leagueId);
-
-    if (!league) {
-      return 4;
-    }
-
-    return this.getQueuePriority(league.priority);
-  }
-
-  // ============================================================
   // STATE KEY
   // ============================================================
 
@@ -873,6 +554,12 @@ export class EspnQueueWorkerService implements OnModuleInit {
       season: typeof job.season === 'number' ? job.season : undefined,
 
       eventId: job.eventId ? this.stringifyJobId(job.eventId) : undefined,
+
+      triggerEventId: job.triggerEventId
+        ? this.stringifyJobId(job.triggerEventId)
+        : undefined,
+
+      queueJobKey: job.jobKey ? this.stringifyJobId(job.jobKey) : undefined,
     });
   }
 

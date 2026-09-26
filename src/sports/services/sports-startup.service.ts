@@ -1,3 +1,5 @@
+// backend/src/sports/services/sports-startup.service.ts
+
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/mongoose';
@@ -5,7 +7,6 @@ import { Model } from 'mongoose';
 
 import { EspnActiveCompetitionService } from './espn-active-competition.service';
 import { EspnQueueService } from './espn-queue.service';
-import { SportsDerivedDataBootstrapService } from './sports-derived-data-bootstrap.service';
 import { SportsSyncStateService } from './sports-sync-state.service';
 
 import {
@@ -23,10 +24,6 @@ import { EspnQueueBuilderService } from './espn-queue-builder.service';
 import { EspnQueueWorkerService } from './espn-queue-worker.service';
 
 import { YoutubeHighlightService } from './youtube-highlight.service';
-import { HeadToHeadService } from './head-to-head.service';
-import { MatchDerivedDataService } from './match-derived-data.service';
-import { TeamCompetitionStatsService } from './team-competition-stats.service';
-import { TeamPerformanceProfileService } from './team-performance-profile.service';
 
 // ============================================================
 // TYPES
@@ -48,27 +45,13 @@ interface StartupLeagueContext {
   stateKey: string;
 }
 
-interface FinishedMatchWorkItem {
-  stateKey: string;
-
-  leagueId: string;
-
-  season: number;
-
-  priority: number;
-
-  eventId: string;
-
-  homeTeamId: string;
-
-  awayTeamId: string;
-}
+// ============================================================
+// SERVICE
+// ============================================================
 
 @Injectable()
 export class SportsStartupService implements OnModuleInit {
   private readonly logger = new Logger(SportsStartupService.name);
-
-  private readonly threeHourWindowMs = 3 * 60 * 60 * 1000;
 
   private readonly startupFixtureForwardDays = 8;
 
@@ -85,19 +68,9 @@ export class SportsStartupService implements OnModuleInit {
 
     private readonly sportsCollectionService: SportsCollectionService,
 
-    private readonly sportsDerivedDataBootstrapService: SportsDerivedDataBootstrapService,
-
     private readonly sportsSyncStateService: SportsSyncStateService,
 
     private readonly youtubeHighlightService: YoutubeHighlightService,
-
-    private readonly headToHeadService: HeadToHeadService,
-
-    private readonly matchDerivedDataService: MatchDerivedDataService,
-
-    private readonly teamCompetitionStatsService: TeamCompetitionStatsService,
-
-    private readonly teamPerformanceProfileService: TeamPerformanceProfileService,
 
     @InjectModel(EspnFixture.name)
     private readonly espnFixtureModel: Model<EspnFixtureDocument>,
@@ -159,95 +132,44 @@ export class SportsStartupService implements OnModuleInit {
       );
 
       // --------------------------------------------------------
-      // PREPARE PERSISTENT LEAGUE STATES
+      // PREPARE ACTIVE-LEAGUE FIXTURE STATES
       // --------------------------------------------------------
 
       const leagueContexts = await this.prepareLeagueContexts(activeLeagues);
 
       // --------------------------------------------------------
       // PHASE 3
-      // SCOREBOARD / FIXTURE COLLECTION
+      // FIXTURE COLLECTION
       //
-      // IMPORTANT:
-      // No summary, standings, derived-data, or YouTube work
-      // starts until EVERY scoreboard request has finished.
+      // Startup collects the full persisted season window for
+      // active competitions through today + configured forward days.
+      // No Summary/standings/derived/news work runs here.
       // --------------------------------------------------------
 
-      await this.runScoreboardPhase(leagueContexts);
+      await this.runFixturePhase(leagueContexts);
 
-      this.logger.log(
-        'ESPN SCOREBOARD PHASE completed. Moving to SUMMARY PHASE.',
-      );
-
-      // --------------------------------------------------------
-      // BUILD FINISHED-MATCH WORK SET
-      // --------------------------------------------------------
-
-      const finishedMatches =
-        await this.collectFinishedMatchWorkItems(leagueContexts);
-
-      this.logger.log(
-        `Finished-match work set prepared: matches=${finishedMatches.length}`,
-      );
+      this.logger.log('ESPN FIXTURE PHASE completed. Moving to SUMMARY PHASE.');
 
       // --------------------------------------------------------
       // PHASE 4
-      // MATCH SUMMARY
+      // SUMMARY COLLECTION
       //
-      // Only summary requests happen in this phase.
+      // Startup Summary work is performed for EVERY persisted
+      // ESPN fixture that does not already contain payload.summary.
       // --------------------------------------------------------
 
-      await this.runSummaryPhase(finishedMatches);
+      const summaryResult = await this.runStartupSummaryPhase();
 
       this.logger.log(
-        'ESPN SUMMARY PHASE completed. Moving to STANDINGS PHASE.',
+        `ESPN SUMMARY PHASE completed: ` +
+          `checked=${summaryResult.checked}, ` +
+          `missing=${summaryResult.missingSummary}, ` +
+          `processed=${summaryResult.processed}, ` +
+          `skipped=${summaryResult.skipped}`,
       );
 
       // --------------------------------------------------------
-      // PHASE 5
-      // STANDINGS
-      //
-      // IMPORTANT:
-      // Standings are requested ONCE PER LEAGUE,
-      // not once per finished match.
-      // --------------------------------------------------------
-
-      await this.runStandingsPhase(leagueContexts, finishedMatches);
-
-      this.logger.log(
-        'ESPN STANDINGS PHASE completed. Moving to DERIVED-DATA PHASE.',
-      );
-
-      // --------------------------------------------------------
-      // PHASE 6
-      // DERIVED DATA
-      // --------------------------------------------------------
-
-      await this.runDerivedDataPhase(finishedMatches);
-
-      this.logger.log(
-        'ESPN DERIVED-DATA PHASE completed. Moving to YOUTUBE PHASE.',
-      );
-
-      // --------------------------------------------------------
-      // PHASE 7
-      // YOUTUBE
-      // --------------------------------------------------------
-
-      await this.runYoutubePhase(finishedMatches);
-
-      this.logger.log(
-        'ESPN YOUTUBE PHASE completed. Finalizing startup states.',
-      );
-
-      // --------------------------------------------------------
-      // FINALIZE MATCH STATES
-      // --------------------------------------------------------
-
-      await this.finalizeFinishedMatchRecoveryStates(finishedMatches);
-
-      // --------------------------------------------------------
-      // FINALIZE LEAGUE RECOVERY STATES
+      // FINALIZE ACTIVE-LEAGUE FIXTURE STATES
       // --------------------------------------------------------
 
       for (const context of leagueContexts) {
@@ -257,51 +179,39 @@ export class SportsStartupService implements OnModuleInit {
       }
 
       // --------------------------------------------------------
-      // GLOBAL DERIVED-DATA RECOVERY
-      //
-      // Runs only after scoreboard -> summary -> standings.
+      // VALIDATE STARTUP FIXTURE STATES
       // --------------------------------------------------------
 
-      await this.sportsDerivedDataBootstrapService.initialize();
-
-      this.logger.log(
-        'ESPN derived-data bootstrap/recovery verification completed',
-      );
-
-      // --------------------------------------------------------
-      // VALIDATE FIXTURE RECOVERY
-      // --------------------------------------------------------
-
-      const incompleteRecoveryStates =
+      const incompleteFixtureStates =
         await this.sportsSyncStateService.getIncompleteQueueStates([
-          EspnQueueJobType.FIXTURE_RECOVERY,
+          EspnQueueJobType.FIXTURE_REFRESH,
         ]);
 
-      if (incompleteRecoveryStates.length > 0) {
+      if (incompleteFixtureStates.length > 0) {
         throw new Error(
           `ESPN startup bootstrap is still incomplete. ` +
-            `Incomplete fixture-recovery states=${incompleteRecoveryStates.length}`,
+            `Incomplete fixture-refresh states=${incompleteFixtureStates.length}`,
         );
       }
 
       // --------------------------------------------------------
-      // VALIDATE FINISHED MATCH STATES
+      // VALIDATE STARTUP SUMMARY STATES
       // --------------------------------------------------------
 
-      const incompleteFinishedStates =
+      const incompleteSummaryStates =
         await this.sportsSyncStateService.getIncompleteQueueStates([
-          EspnQueueJobType.FINISHED_MATCH,
+          EspnQueueJobType.SUMMARY_REFRESH,
         ]);
 
-      if (incompleteFinishedStates.length > 0) {
+      if (incompleteSummaryStates.length > 0) {
         throw new Error(
           `ESPN startup bootstrap is still incomplete. ` +
-            `Incomplete finished-match states=${incompleteFinishedStates.length}`,
+            `Incomplete summary-refresh states=${incompleteSummaryStates.length}`,
         );
       }
 
       // --------------------------------------------------------
-      // ONLY NOW RESTORE NORMAL OPERATIONS
+      // RESTORE PRE-EXISTING NORMAL QUEUE WORK
       // --------------------------------------------------------
 
       const restored = await this.restoreNormalOperationsQueueStates();
@@ -314,14 +224,14 @@ export class SportsStartupService implements OnModuleInit {
       );
 
       // --------------------------------------------------------
-      // INITIAL NORMAL REFRESH QUEUE
+      // INITIAL NORMAL FIXTURE REFRESH QUEUE
       // --------------------------------------------------------
 
       const initialQueue =
         await this.espnQueueBuilderService.buildDailyLeagueRefreshQueue();
 
       this.logger.log(
-        `Initial normal ESPN league-refresh queue created: ` +
+        `Initial normal ESPN fixture-refresh queue created: ` +
           `active=${initialQueue.active}, ` +
           `queued=${initialQueue.queued}, ` +
           `skipped=${initialQueue.skipped}`,
@@ -392,7 +302,7 @@ export class SportsStartupService implements OnModuleInit {
       const priority = this.getQueuePriority(league.priority);
 
       const stateKey = this.sportsSyncStateService.getQueueStateKey({
-        jobType: EspnQueueJobType.FIXTURE_RECOVERY,
+        jobType: EspnQueueJobType.FIXTURE_REFRESH,
 
         leagueId,
 
@@ -400,7 +310,7 @@ export class SportsStartupService implements OnModuleInit {
       });
 
       await this.sportsSyncStateService.ensureQueueState({
-        jobType: EspnQueueJobType.FIXTURE_RECOVERY,
+        jobType: EspnQueueJobType.FIXTURE_REFRESH,
 
         leagueId,
 
@@ -426,11 +336,6 @@ export class SportsStartupService implements OnModuleInit {
         trackingMode: 'HISTORY',
       });
 
-      await this.sportsSyncStateService.ensureStepUnits(stateKey, [
-        'standings',
-        'finishedMatches',
-      ]);
-
       await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
 
       contexts.push({
@@ -451,24 +356,22 @@ export class SportsStartupService implements OnModuleInit {
 
   // ============================================================
   // PHASE 3
-  // SCOREBOARD / FIXTURES
+  // FIXTURE COLLECTION
   // ============================================================
 
-  private async runScoreboardPhase(
+  private async runFixturePhase(
     contexts: StartupLeagueContext[],
   ): Promise<void> {
     const failures: string[] = [];
 
-    this.logger.log(
-      `ESPN SCOREBOARD PHASE started: leagues=${contexts.length}`,
-    );
+    this.logger.log(`ESPN FIXTURE PHASE started: leagues=${contexts.length}`);
 
     for (const context of contexts) {
       const incompleteDates =
         await this.sportsSyncStateService.getIncompleteDates(context.stateKey);
 
       this.logger.log(
-        `Scoreboard bootstrap for ${context.leagueId}: ` +
+        `Fixture bootstrap for ${context.leagueId}: ` +
           `remainingDates=${incompleteDates.length}`,
       );
 
@@ -487,13 +390,15 @@ export class SportsStartupService implements OnModuleInit {
           );
         }
       }
+
+      await this.sportsSyncStateService.refreshOverallStatus(context.stateKey);
     }
 
     if (failures.length > 0) {
-      throw new Error(`Scoreboard phase failed: ${failures.join('; ')}`);
+      throw new Error(`Fixture phase failed: ${failures.join('; ')}`);
     }
 
-    this.logger.log('ESPN SCOREBOARD PHASE completed successfully');
+    this.logger.log('ESPN FIXTURE PHASE completed successfully');
   }
 
   private async processFixtureDate(
@@ -504,10 +409,6 @@ export class SportsStartupService implements OnModuleInit {
     await this.sportsSyncStateService.markDateProcessing(stateKey, dateKey);
 
     try {
-      /*
-       * This is the only ESPN endpoint category being used
-       * during the scoreboard phase.
-       */
       const response = await this.espnService.getFixturesForDate(
         leagueId,
         dateKey,
@@ -520,7 +421,9 @@ export class SportsStartupService implements OnModuleInit {
 
       await this.sportsSyncStateService.markDateSuccess(stateKey, dateKey);
 
-      this.logger.debug(`ESPN scoreboard completed: ${leagueId} ${dateKey}`);
+      this.logger.debug(
+        `ESPN fixture collection completed: ${leagueId} ${dateKey}`,
+      );
     } catch (error) {
       await this.sportsSyncStateService.markDateFailed(
         stateKey,
@@ -533,222 +436,114 @@ export class SportsStartupService implements OnModuleInit {
   }
 
   // ============================================================
-  // BUILD FINISHED-MATCH WORK SET
+  // PHASE 4
+  // STARTUP SUMMARY
   // ============================================================
 
-  private async collectFinishedMatchWorkItems(
-    contexts: StartupLeagueContext[],
-  ): Promise<FinishedMatchWorkItem[]> {
-    const cutoff = new Date(Date.now() - this.threeHourWindowMs);
+  private async runStartupSummaryPhase(): Promise<{
+    checked: number;
+    missingSummary: number;
+    processed: number;
+    skipped: number;
+  }> {
+    const fixtures = await this.espnFixtureModel
+      .find({
+        $or: [
+          {
+            'payload.summary': {
+              $exists: false,
+            },
+          },
+          {
+            'payload.summary': null,
+          },
+        ],
+      })
+      .select({
+        eventId: 1,
+        leagueId: 1,
+        season: 1,
+        completed: 1,
+        payload: 1,
+      })
+      .sort({
+        fixtureDate: 1,
+      })
+      .lean()
+      .exec();
 
-    const incompleteStates =
-      await this.sportsSyncStateService.getIncompleteQueueStates([
-        EspnQueueJobType.FINISHED_MATCH,
-      ]);
+    let missingSummary = 0;
+    let processed = 0;
+    let skipped = 0;
 
-    const incompleteStateMap = new Map<
-      string,
-      Awaited<
-        ReturnType<SportsSyncStateService['getIncompleteQueueStates']>
-      >[number]
-    >();
+    this.logger.log(
+      `ESPN STARTUP SUMMARY PHASE started: fixtures=${fixtures.length}`,
+    );
 
-    for (const state of incompleteStates) {
-      if (!state.eventId) {
+    for (const fixture of fixtures) {
+      if (!fixture.eventId) {
+        skipped += 1;
         continue;
       }
 
-      const key = this.getFinishedMatchKey(
-        state.leagueId,
-        state.season,
-        state.eventId,
-      );
-
-      incompleteStateMap.set(key, state);
-    }
-
-    const workMap = new Map<string, FinishedMatchWorkItem>();
-
-    for (const context of contexts) {
-      const fixtures = await this.espnFixtureModel
-        .find({
-          leagueId: context.leagueId,
-
-          season: context.season,
-
-          completed: true,
-
-          fixtureDate: {
-            $lte: cutoff,
-          },
-        })
-        .select({
-          eventId: 1,
-          leagueId: 1,
-          season: 1,
-          fixtureDate: 1,
-          homeTeamId: 1,
-          awayTeamId: 1,
-          'payload.summary': 1,
-        })
-        .sort({
-          fixtureDate: 1,
-        })
-        .lean()
-        .exec();
-
-      for (const fixture of fixtures) {
-        if (!fixture.eventId) {
-          continue;
-        }
-
-        const eventId = String(fixture.eventId);
-
-        const homeTeamId = fixture.homeTeamId?.trim();
-
-        const awayTeamId = fixture.awayTeamId?.trim();
-
-        if (!homeTeamId || !awayTeamId) {
-          this.logger.warn(
-            `Skipping finished match ${eventId}: ` +
-              'missing homeTeamId or awayTeamId',
-          );
-
-          continue;
-        }
-
-        const key = this.getFinishedMatchKey(
-          context.leagueId,
-          context.season,
-          eventId,
-        );
-
-        const incompleteState = incompleteStateMap.get(key);
-
-        /*
-         * We only need to bootstrap a match when:
-         *
-         * 1. Its summary is missing, OR
-         * 2. It already has an incomplete FINISHED_MATCH state.
-         */
-        if (!fixture.payload?.summary && !incompleteState) {
-          const stateKey = this.sportsSyncStateService.getQueueStateKey({
-            jobType: EspnQueueJobType.FINISHED_MATCH,
-
-            leagueId: context.leagueId,
-
-            season: context.season,
-
-            eventId,
-          });
-
-          workMap.set(key, {
-            stateKey,
-
-            leagueId: context.leagueId,
-
-            season: context.season,
-
-            priority: context.priority,
-
-            eventId,
-
-            homeTeamId,
-
-            awayTeamId,
-          });
-
-          continue;
-        }
-
-        if (incompleteState) {
-          workMap.set(key, {
-            stateKey: incompleteState.stateKey,
-
-            leagueId: context.leagueId,
-
-            season: context.season,
-
-            priority: context.priority,
-
-            eventId,
-
-            homeTeamId,
-
-            awayTeamId,
-          });
-        }
+      if (!fixture.leagueId) {
+        skipped += 1;
+        continue;
       }
-    }
 
-    /*
-     * Ensure every finished-match work item has its persistent
-     * synchronization state before the summary phase starts.
-     */
-    for (const workItem of workMap.values()) {
+      if (typeof fixture.season !== 'number') {
+        skipped += 1;
+        continue;
+      }
+
+      if (this.hasSummary(fixture)) {
+        continue;
+      }
+
+      missingSummary += 1;
+
+      const stateKey = this.sportsSyncStateService.getQueueStateKey({
+        jobType: EspnQueueJobType.SUMMARY_REFRESH,
+
+        leagueId: fixture.leagueId,
+
+        season: fixture.season,
+
+        eventId: fixture.eventId,
+      });
+
+      const priority = await this.getLeaguePriority(fixture.leagueId);
+
       await this.sportsSyncStateService.ensureQueueState({
-        jobType: EspnQueueJobType.FINISHED_MATCH,
+        jobType: EspnQueueJobType.SUMMARY_REFRESH,
 
-        leagueId: workItem.leagueId,
+        leagueId: fixture.leagueId,
 
-        season: workItem.season,
+        season: fixture.season,
 
-        eventId: workItem.eventId,
+        eventId: fixture.eventId,
 
-        priority: workItem.priority,
+        priority,
 
         trackingMode: 'WINDOW',
       });
 
-      await this.sportsSyncStateService.ensureStepUnits(workItem.stateKey, [
-        'summary',
-        'standings',
-        'teamCompetitionStats',
-        'teamPerformanceProfile',
-        'headToHead',
-        'derivedData',
-        'youtube',
-      ]);
+      const steps =
+        fixture.completed === true ? ['summary', 'youtube'] : ['summary'];
 
-      await this.sportsSyncStateService.resetInterruptedUnits(
-        workItem.stateKey,
-      );
-    }
+      await this.sportsSyncStateService.ensureStepUnits(stateKey, steps);
 
-    return Array.from(workMap.values());
-  }
+      await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
 
-  // ============================================================
-  // PHASE 4
-  // SUMMARY
-  // ============================================================
-
-  private async runSummaryPhase(
-    workItems: FinishedMatchWorkItem[],
-  ): Promise<void> {
-    const failures: string[] = [];
-
-    this.logger.log(`ESPN SUMMARY PHASE started: matches=${workItems.length}`);
-
-    /*
-     * IMPORTANT:
-     *
-     * This phase performs summary work only.
-     * No standings.
-     * No team statistics.
-     * No derived data.
-     * No YouTube.
-     */
-    for (const workItem of workItems) {
       try {
-        await this.runTrackedStep(workItem.stateKey, 'summary', async () => {
-          const fixture = await this.espnFixtureModel
+        await this.runTrackedStep(stateKey, 'summary', async () => {
+          const currentFixture = await this.espnFixtureModel
             .findOne({
-              eventId: workItem.eventId,
+              eventId: fixture.eventId,
 
-              leagueId: workItem.leagueId,
+              leagueId: fixture.leagueId,
 
-              season: workItem.season,
+              season: fixture.season,
             })
             .select({
               eventId: 1,
@@ -757,303 +552,210 @@ export class SportsStartupService implements OnModuleInit {
             .lean()
             .exec();
 
-          if (!fixture) {
+          if (!currentFixture) {
             throw new Error(
-              `Finished match fixture ${workItem.eventId} not found`,
+              `Startup Summary fixture ${fixture.eventId} not found`,
             );
           }
 
-          if (fixture.payload?.summary) {
+          if (this.hasSummary(currentFixture)) {
             return;
           }
 
-          /*
-           * This is the only ESPN match-summary request
-           * performed during this phase.
-           */
           const summary = await this.espnService.getMatchSummary(
-            workItem.leagueId,
-            workItem.eventId,
+            fixture.leagueId,
+            fixture.eventId,
           );
 
           await this.sportsCollectionService.collectEspnMatchSummary({
-            leagueId: workItem.leagueId,
+            leagueId: fixture.leagueId,
 
-            eventId: workItem.eventId,
+            eventId: fixture.eventId,
 
             summary,
           });
         });
+
+        if (fixture.completed === true) {
+          await this.runTrackedStep(stateKey, 'youtube', async () => {
+            await this.youtubeHighlightService.processFixture(fixture.eventId);
+          });
+        }
+
+        await this.sportsSyncStateService.refreshOverallStatus(stateKey);
+
+        const complete = await this.sportsSyncStateService.isComplete(stateKey);
+
+        if (!complete) {
+          throw new Error(
+            `Startup Summary synchronization state ${stateKey} is not complete`,
+          );
+        }
+
+        processed += 1;
       } catch (error) {
-        failures.push(
-          `${workItem.leagueId}/${workItem.eventId}: ${
+        skipped += 1;
+
+        this.logger.error(
+          `Startup Summary failed for ${fixture.leagueId}/${fixture.eventId}: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
       }
-    }
-
-    if (failures.length > 0) {
-      throw new Error(`Summary phase failed: ${failures.join('; ')}`);
-    }
-
-    this.logger.log('ESPN SUMMARY PHASE completed successfully');
-  }
-
-  // ============================================================
-  // PHASE 5
-  // STANDINGS
-  // ============================================================
-
-  private async runStandingsPhase(
-    contexts: StartupLeagueContext[],
-    workItems: FinishedMatchWorkItem[],
-  ): Promise<void> {
-    const failures: string[] = [];
-
-    this.logger.log(`ESPN STANDINGS PHASE started: leagues=${contexts.length}`);
-
-    /*
-     * Standings are fetched ONCE per league.
-     *
-     * This removes the old behavior where every finished match
-     * independently called getStandings().
-     */
-    for (const context of contexts) {
-      try {
-        await this.runTrackedStep(context.stateKey, 'standings', async () => {
-          /*
-           * This is the only ESPN standings request for this
-           * league during startup.
-           */
-          const standingsResponse = await this.espnService.getStandings(
-            context.leagueId,
-          );
-
-          await this.sportsCollectionService.collectEspnStandings(
-            context.leagueId,
-            standingsResponse,
-            context.season,
-          );
-        });
-      } catch (error) {
-        failures.push(
-          `${context.leagueId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
-
-    if (failures.length > 0) {
-      throw new Error(`Standings phase failed: ${failures.join('; ')}`);
     }
 
     /*
-     * Finished-match states also contain a standings unit.
-     *
-     * That unit now means:
-     * "league standings required by this match have been collected."
-     *
-     * We mark that dependency complete here WITHOUT making
-     * another standings request.
+     * A failed Summary item is intentionally fatal to startup.
+     * Normal queue processing must not be released with an
+     * incomplete startup Summary bootstrap.
      */
-    for (const workItem of workItems) {
-      try {
-        await this.runTrackedStep(
-          workItem.stateKey,
-          'standings',
-          async () => undefined,
-        );
-      } catch (error) {
-        failures.push(
-          `${workItem.leagueId}/${workItem.eventId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
-
-    if (failures.length > 0) {
+    if (skipped > 0) {
       throw new Error(
-        `Standings phase finalization failed: ${failures.join('; ')}`,
+        `Startup Summary phase did not complete for ${skipped} fixture(s)`,
       );
     }
 
-    this.logger.log('ESPN STANDINGS PHASE completed successfully');
+    return {
+      checked: fixtures.length,
+      missingSummary,
+      processed,
+      skipped,
+    };
   }
 
   // ============================================================
-  // PHASE 6
-  // DERIVED DATA
+  // PERSISTENT QUEUE RESTORATION
   // ============================================================
 
-  private async runDerivedDataPhase(
-    workItems: FinishedMatchWorkItem[],
-  ): Promise<void> {
-    const failures: string[] = [];
+  private async restoreNormalOperationsQueueStates(): Promise<{
+    states: number;
+    queued: number;
+    skipped: number;
+  }> {
+    const states = await this.sportsSyncStateService.getIncompleteQueueStates([
+      EspnQueueJobType.FIXTURE_REFRESH,
+      EspnQueueJobType.SUMMARY_REFRESH,
+    ]);
 
-    this.logger.log(
-      `ESPN DERIVED-DATA PHASE started: matches=${workItems.length}`,
-    );
+    let queued = 0;
 
-    /*
-     * This recovery/bootstrap pass is intentionally delayed until
-     * AFTER scoreboard, summary, and standings are finished.
-     */
-    await this.sportsDerivedDataBootstrapService.initialize();
+    let skipped = 0;
 
-    for (const workItem of workItems) {
+    for (const state of states) {
+      if (!state.leagueId) {
+        skipped += 1;
+        continue;
+      }
+
       try {
-        /*
-         * ------------------------------------------------------
-         * TEAM COMPETITION STATS
-         * ------------------------------------------------------
-         */
+        switch (state.jobType) {
+          case EspnQueueJobType.FIXTURE_REFRESH: {
+            if (typeof state.season !== 'number') {
+              skipped += 1;
+              continue;
+            }
 
-        await this.runTrackedStep(
-          workItem.stateKey,
-          'teamCompetitionStats',
-          async () => {
-            await this.teamCompetitionStatsService.refreshForFixture(
-              workItem.leagueId,
-              workItem.season,
-              workItem.eventId,
-            );
-          },
-        );
+            const job = await this.espnQueueService.addFixtureRefreshJob({
+              leagueId: state.leagueId,
 
-        /*
-         * ------------------------------------------------------
-         * TEAM PERFORMANCE PROFILE
-         * ------------------------------------------------------
-         */
+              season: state.season,
 
-        await this.runTrackedStep(
-          workItem.stateKey,
-          'teamPerformanceProfile',
-          async () => {
-            await this.teamPerformanceProfileService.refreshForFixture(
-              workItem.eventId,
-            );
-          },
-        );
+              priority: state.priority ?? 4,
 
-        /*
-         * ------------------------------------------------------
-         * HEAD TO HEAD
-         * ------------------------------------------------------
-         */
+              scheduledFor: new Date(),
 
-        await this.runTrackedStep(workItem.stateKey, 'headToHead', async () => {
-          await this.headToHeadService.refreshForFixture(workItem.eventId);
-        });
+              triggerEventId: this.extractFixtureTriggerEventId(state.stateKey),
+            });
 
-        /*
-         * ------------------------------------------------------
-         * MATCH DERIVED DATA
-         * ------------------------------------------------------
-         */
+            if (
+              String(job.status) === 'PENDING' &&
+              Number(job.attempts ?? 0) === 0
+            ) {
+              queued += 1;
+            }
 
-        await this.runTrackedStep(
-          workItem.stateKey,
-          'derivedData',
-          async () => {
-            await this.matchDerivedDataService.rebuildUpcomingForTeams(
-              workItem.leagueId,
-              workItem.season,
-              [workItem.homeTeamId, workItem.awayTeamId],
-            );
-          },
-        );
+            break;
+          }
+
+          case EspnQueueJobType.SUMMARY_REFRESH: {
+            if (typeof state.season !== 'number' || !state.eventId) {
+              skipped += 1;
+              continue;
+            }
+
+            const job = await this.espnQueueService.addSummaryRefreshJob({
+              leagueId: state.leagueId,
+
+              eventId: state.eventId,
+
+              season: state.season,
+
+              priority: state.priority ?? 4,
+
+              scheduledFor: new Date(),
+            });
+
+            if (
+              String(job.status) === 'PENDING' &&
+              Number(job.attempts ?? 0) === 0
+            ) {
+              queued += 1;
+            }
+
+            break;
+          }
+
+          default:
+            skipped += 1;
+        }
       } catch (error) {
-        failures.push(
-          `${workItem.leagueId}/${workItem.eventId}: ${
+        skipped += 1;
+
+        this.logger.error(
+          `Failed to restore normal synchronization state ${state.stateKey}: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
       }
     }
 
-    if (failures.length > 0) {
-      throw new Error(`Derived-data phase failed: ${failures.join('; ')}`);
-    }
-
-    this.logger.log('ESPN DERIVED-DATA PHASE completed successfully');
+    return {
+      states: states.length,
+      queued,
+      skipped,
+    };
   }
 
   // ============================================================
-  // PHASE 7
-  // YOUTUBE
+  // PRIORITY
   // ============================================================
 
-  private async runYoutubePhase(
-    workItems: FinishedMatchWorkItem[],
-  ): Promise<void> {
-    const failures: string[] = [];
+  private async getLeaguePriority(leagueId: string): Promise<number> {
+    const league =
+      await this.espnActiveCompetitionService.getByLeagueId(leagueId);
 
-    this.logger.log(`ESPN YOUTUBE PHASE started: matches=${workItems.length}`);
-
-    /*
-     * YouTube is deliberately separated from the ESPN phases.
-     */
-    for (const workItem of workItems) {
-      try {
-        await this.runTrackedStep(workItem.stateKey, 'youtube', async () => {
-          await this.youtubeHighlightService.processFixture(workItem.eventId);
-        });
-      } catch (error) {
-        failures.push(
-          `${workItem.leagueId}/${workItem.eventId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+    if (!league) {
+      return 4;
     }
 
-    if (failures.length > 0) {
-      throw new Error(`YouTube phase failed: ${failures.join('; ')}`);
-    }
-
-    this.logger.log('ESPN YOUTUBE PHASE completed successfully');
+    return this.getQueuePriority(league.priority);
   }
 
-  // ============================================================
-  // FINALIZE FINISHED-MATCH STATES
-  // ============================================================
+  private getQueuePriority(priority: CompetitionPriority | undefined): number {
+    switch (priority) {
+      case CompetitionPriority.ELITE:
+        return 1;
 
-  private async finalizeFinishedMatchRecoveryStates(
-    workItems: FinishedMatchWorkItem[],
-  ): Promise<void> {
-    const leagueStateMap = new Map<string, number>();
+      case CompetitionPriority.HIGH:
+        return 2;
 
-    for (const workItem of workItems) {
-      const key = `${workItem.leagueId}:${workItem.season}`;
+      case CompetitionPriority.REGIONAL:
+        return 3;
 
-      leagueStateMap.set(key, (leagueStateMap.get(key) ?? 0) + 1);
+      case CompetitionPriority.SELECTIVE:
+      default:
+        return 4;
     }
-
-    /*
-     * Every FINISHED_MATCH state should now be completely done.
-     */
-    for (const workItem of workItems) {
-      await this.sportsSyncStateService.refreshOverallStatus(workItem.stateKey);
-
-      const complete = await this.sportsSyncStateService.isComplete(
-        workItem.stateKey,
-      );
-
-      if (!complete) {
-        throw new Error(
-          `Finished-match synchronization state ${workItem.stateKey} is not complete`,
-        );
-      }
-    }
-
-    this.logger.log(
-      `Finished-match recovery finalized: matches=${workItems.length}, ` +
-        `leagues=${leagueStateMap.size}`,
-    );
   }
 
   // ============================================================
@@ -1092,119 +794,17 @@ export class SportsStartupService implements OnModuleInit {
   }
 
   // ============================================================
-  // PERSISTENT QUEUE RESTORATION
+  // FIXTURE REFRESH TRIGGER EXTRACTION
   // ============================================================
 
-  private async restoreNormalOperationsQueueStates(): Promise<{
-    states: number;
-    queued: number;
-    skipped: number;
-  }> {
-    const states = await this.sportsSyncStateService.getIncompleteQueueStates([
-      EspnQueueJobType.LEAGUE_REFRESH,
-      EspnQueueJobType.UPCOMING_MATCH,
-    ]);
+  private extractFixtureTriggerEventId(stateKey: string): string | undefined {
+    const parts = stateKey.split(':');
 
-    let queued = 0;
-
-    let skipped = 0;
-
-    for (const state of states) {
-      if (!state.leagueId) {
-        skipped += 1;
-
-        continue;
-      }
-
-      try {
-        let job: Awaited<ReturnType<EspnQueueService['addJob']>> | undefined;
-
-        switch (state.jobType) {
-          case EspnQueueJobType.LEAGUE_REFRESH:
-            job = await this.espnQueueService.addLeagueRefreshJob({
-              leagueId: state.leagueId,
-
-              season: state.season,
-
-              priority: state.priority ?? 4,
-
-              scheduledFor: new Date(),
-
-              triggerEventId: state.eventId,
-            });
-            break;
-
-          case EspnQueueJobType.UPCOMING_MATCH:
-            if (typeof state.season !== 'number' || !state.eventId) {
-              skipped += 1;
-
-              continue;
-            }
-
-            job = await this.espnQueueService.addUpcomingMatchJob({
-              leagueId: state.leagueId,
-
-              eventId: state.eventId,
-
-              season: state.season,
-
-              priority: state.priority ?? 4,
-
-              scheduledFor: new Date(),
-            });
-            break;
-
-          default:
-            skipped += 1;
-
-            continue;
-        }
-
-        if (
-          String(job.status) === 'PENDING' &&
-          Number(job.attempts ?? 0) === 0
-        ) {
-          queued += 1;
-        }
-      } catch (error) {
-        skipped += 1;
-
-        this.logger.error(
-          `Failed to restore normal synchronization state ${state.stateKey}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+    if (parts.length < 5) {
+      return undefined;
     }
 
-    return {
-      states: states.length,
-
-      queued,
-
-      skipped,
-    };
-  }
-
-  // ============================================================
-  // PRIORITY
-  // ============================================================
-
-  private getQueuePriority(priority: CompetitionPriority | undefined): number {
-    switch (priority) {
-      case CompetitionPriority.ELITE:
-        return 1;
-
-      case CompetitionPriority.HIGH:
-        return 2;
-
-      case CompetitionPriority.REGIONAL:
-        return 3;
-
-      case CompetitionPriority.SELECTIVE:
-      default:
-        return 4;
-    }
+    return parts.slice(4).join(':') || undefined;
   }
 
   // ============================================================
@@ -1226,35 +826,20 @@ export class SportsStartupService implements OnModuleInit {
   }
 
   // ============================================================
-  // FINISHED MATCH KEY
+  // SUMMARY
   // ============================================================
 
-  private getFinishedMatchKey(
-    leagueId: string | undefined,
-    season: number | undefined,
-    eventId: string,
-  ): string {
-    return `${leagueId ?? ''}:${season ?? ''}:${eventId}`;
-  }
+  private hasSummary(fixture: Pick<EspnFixtureDocument, 'payload'>): boolean {
+    const payload = fixture.payload;
 
-  // ============================================================
-  // QUEUE STATE
-  // ============================================================
+    if (!payload || typeof payload !== 'object') {
+      return false;
+    }
 
-  private async getQueueStats(): Promise<{
-    pending: number;
-    processing: number;
-    completed: number;
-    failed: number;
-  }> {
-    return {
-      pending: await this.espnQueueService.countPending(),
-
-      processing: await this.espnQueueService.countProcessing(),
-
-      completed: await this.espnQueueService.countCompleted(),
-
-      failed: await this.espnQueueService.countFailed(),
-    };
+    return Boolean(
+      payload.summary &&
+      typeof payload.summary === 'object' &&
+      Object.keys(payload.summary).length > 0,
+    );
   }
 }

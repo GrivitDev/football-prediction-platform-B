@@ -11,11 +11,15 @@ import {
   EspnApiResponse,
   EspnEvent,
   EspnLeague,
+  EspnMatchSummary,
   EspnNewsResponse,
   EspnStandingsResponse,
 } from './espn.interfaces';
 
-import { SportsProviderRateLimitService } from '../services/sports-provider-rate-limit.service';
+import {
+  SportsProviderRateLimitService,
+  SportsProviderRequestLane,
+} from '../services/sports-provider-rate-limit.service';
 
 @Injectable()
 export class EspnService {
@@ -206,6 +210,15 @@ export class EspnService {
   // 6. STANDINGS
   // ============================================================
 
+  /**
+   * Emergency/fallback provider endpoint.
+   *
+   * Normal match processing should first use:
+   *
+   *   fixture.payload.summary.standings
+   *
+   * This endpoint remains available when explicitly required.
+   */
   async getStandings(league: string): Promise<EspnStandingsResponse> {
     this.validateLeague(league);
 
@@ -221,15 +234,22 @@ export class EspnService {
   // 7. MATCH SUMMARY
   // ============================================================
 
+  /**
+   * Primary detailed ESPN match-data endpoint.
+   *
+   * The returned payload is persisted directly as:
+   *
+   *   sports_espn_fixtures.payload.summary
+   */
   async getMatchSummary(
     league: string,
     eventId: string,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<EspnMatchSummary> {
     this.validateLeague(league);
 
     this.validateId(eventId, 'eventId');
 
-    return this.request<Record<string, unknown>>(
+    return this.request<EspnMatchSummary>(
       `${this.siteBaseUrl}/${encodeURIComponent(
         league.trim().toLowerCase(),
       )}/summary`,
@@ -244,10 +264,18 @@ export class EspnService {
   // 8. GLOBAL LIVE SCOREBOARD
   // ============================================================
 
+  /**
+   * Live polling always uses the reserved ESPN live lane.
+   *
+   * The rate-limit service reserves one concurrent slot for
+   * this lane so normal ESPN requests cannot starve live data.
+   */
   async getLiveMatches(): Promise<EspnApiResponse> {
     return this.request<EspnApiResponse>(
       `${this.siteBaseUrl}/all/scoreboard`,
       'live-scoreboard',
+      undefined,
+      'live',
     );
   }
 
@@ -255,6 +283,12 @@ export class EspnService {
   // 9. GLOBAL SOCCER NEWS
   // ============================================================
 
+  /**
+   * Emergency/manual ESPN news endpoint.
+   *
+   * This remains available but is not part of the normal
+   * scheduled sports synchronization pipeline.
+   */
   async getNews(limit = 50): Promise<EspnNewsResponse> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new BadRequestException(
@@ -277,6 +311,7 @@ export class EspnService {
     endpoint: string,
     rateLimitEndpoint: string,
     params?: Record<string, string>,
+    lane: SportsProviderRequestLane = 'normal',
   ): Promise<T> {
     return this.providerRateLimitService.execute(
       'espn',
@@ -299,6 +334,9 @@ export class EspnService {
 
           throw new InternalServerErrorException('ESPN request failed');
         }
+      },
+      {
+        lane,
       },
     );
   }

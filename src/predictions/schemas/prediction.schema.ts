@@ -1,6 +1,9 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
+import { PredictionMarkets } from '../constants/prediction-markets';
+import type { PredictionMarket } from '../constants/prediction-markets';
+
 export type PredictionDocument = HydratedDocument<Prediction>;
 
 export type PredictionAccessType = 'free' | 'regular' | 'vip' | 'premium';
@@ -17,8 +20,9 @@ export class PredictionMarketEntry {
   @Prop({
     required: true,
     trim: true,
+    enum: Object.values(PredictionMarkets),
   })
-  market!: string;
+  market!: PredictionMarket;
 
   @Prop({
     required: true,
@@ -149,8 +153,8 @@ export class Prediction {
   /**
    * Markets selected by the admin.
    *
-   * Each market contains probability only.
-   * Confidence belongs to the complete prediction.
+   * Each market contains its own probability and
+   * individual settlement status.
    */
   @Prop({
     type: [PredictionMarketEntrySchema],

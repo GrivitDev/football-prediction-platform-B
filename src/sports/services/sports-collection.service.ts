@@ -1,3 +1,5 @@
+// backend/src/sports/services/sports-collection.service.ts
+
 import { Injectable, Logger } from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/mongoose';
@@ -99,10 +101,10 @@ export class SportsCollectionService {
   private readonly STARTUP_FIXTURE_FORWARD_DAYS = 8;
 
   /**
-   * Normal queue refresh window.
+   * Normal fixture refresh window.
    *
    * today
-   *   ->
+   *      ->
    * today + 8 days
    */
   private readonly LEAGUE_REFRESH_PAST_DAYS = 0;
@@ -169,27 +171,14 @@ export class SportsCollectionService {
   // ============================================================
 
   /**
-   * Synchronize the complete ESPN data required for one active
-   * league.
+   * Synchronize the complete ESPN fixture data required for one
+   * active league.
    *
-   * This is the shared collection path used by:
+   * This is a manual/recovery-compatible collection method.
    *
-   * 1. live discovery of a previously unknown league
-   * 2. startup recovery/reconciliation
-   *
-   * Range:
-   *
-   * season start
-   *      ->
-   * today + 8 days
-   *
-   * It collects:
-   *
-   * - fixtures
-   * - teams contained in those fixtures
-   * - standings
-   *
-   * The normal queue refresh does NOT use this method.
+   * Normal startup and queue processing do not call standings here.
+   * ESPN standings remain available through the provider and
+   * collection methods only as emergency/fallback functionality.
    */
   async synchronizeEspnActiveLeague(params: {
     leagueId: string;
@@ -229,31 +218,16 @@ export class SportsCollectionService {
       fixtureResponse,
     );
 
-    const resolvedSeason =
-      params.season ?? this.getSeasonFromFixtures(fixtureResponse);
-
-    let standingsCollected = 0;
-
-    const standingsResponse =
-      await this.espnService.getStandings(normalizedLeagueId);
-
-    standingsCollected = await this.collectEspnStandings(
-      normalizedLeagueId,
-      standingsResponse,
-      resolvedSeason,
-    );
-
     this.logger.log(
       `ESPN active league synchronized for ${normalizedLeagueId}: ` +
-        `${fixtureResult.collected} fixtures, ` +
-        `${standingsCollected} standings ` +
+        `${fixtureResult.collected} fixtures ` +
         `(${dateFrom} -> ${dateTo})`,
     );
 
     return {
       fixtureIds: fixtureResult.fixtureIds,
       fixturesCollected: fixtureResult.collected,
-      standingsCollected,
+      standingsCollected: 0,
       dateFrom,
       dateTo,
     };
@@ -264,17 +238,14 @@ export class SportsCollectionService {
   // ============================================================
 
   /**
-   * Collect fixtures for the complete currently active season
-   * of one ESPN league.
+   * Collect fixtures for the currently active season of one
+   * ESPN league.
    *
    * Range:
    *
-   * season start date
+   * season start
    *        ->
    * today + 8 days
-   *
-   * This is intended for startup / recovery / full-season
-   * synchronization.
    */
   async collectEspnSeasonFixtures(params: {
     leagueId: string;
@@ -318,11 +289,11 @@ export class SportsCollectionService {
   }
 
   // ============================================================
-  // ESPN — LEAGUE REFRESH
+  // ESPN — FIXTURE WINDOW REFRESH
   // ============================================================
 
   /**
-   * Refresh a league's recent and upcoming fixture window.
+   * Refresh a league's current and upcoming fixture window.
    *
    * Range:
    *
@@ -330,16 +301,10 @@ export class SportsCollectionService {
    *     ->
    * today + 8 days
    *
-   * This method performs ONLY:
+   * This method performs ONLY fixture/scoreboard collection.
    *
-   * 1. scoreboard request
-   * 2. fixture update/create
-   *
-   * Standings are intentionally NOT collected here.
-   *
-   * The fresh scoreboard response is returned so the queue
-   * builder can identify completed matches and create
-   * FINISHED_MATCH jobs.
+   * Summary, standings, odds, YouTube, and derived data are not
+   * collected here.
    */
   async processEspnLeagueRefresh(params: {
     leagueId: string;
@@ -377,7 +342,7 @@ export class SportsCollectionService {
     );
 
     this.logger.log(
-      `ESPN league refresh completed for ${params.leagueId}: ` +
+      `ESPN fixture refresh completed for ${params.leagueId}: ` +
         `${fixtureResult.collected} fixtures ` +
         `(${dateFrom} -> ${dateTo})`,
     );
@@ -562,9 +527,13 @@ export class SportsCollectionService {
           update: {
             $set: {
               eventId,
+
               leagueId: normalizedLeagueId,
+
               season,
+
               fixtureDate,
+
               status,
 
               statusDetail: this.getNestedString(competition, [
@@ -648,39 +617,38 @@ export class SportsCollectionService {
   /**
    * Synchronize the current ESPN global live scoreboard.
    *
-   * When a live event reveals a league that is not currently
-   * synchronized, the league is immediately resolved and, when
-   * its current season is active, fully synchronized:
+   * Live processing can also receive a just-finished event while
+   * ESPN still exposes that event in the live scoreboard. Such an
+   * event is persisted as completed and returned through
+   * newlyFinished so the scheduler can immediately trigger:
    *
-   * season start
-   *      ->
-   * today + 8 days
+   * 1. affected-league fixture refresh;
+   * 2. event Summary refresh.
    *
-   * This includes fixtures, teams and standings.
-   *
-   * Normal queue refresh remains separate and only collects:
-   *
-   * today
-   *      ->
-   * today + 8 days
-   *
-   * This method does not:
-   *
-   * - create queue jobs
-   * - collect summary
-   * - collect odds
-   * - collect YouTube
+   * This method does not directly collect Summary, standings,
+   * odds, YouTube, or derived data.
    */
   async collectEspnLiveMatches(response: unknown): Promise<{
     received: number;
     updated: number;
     cleared: number;
+    newlyFinished: Array<{
+      eventId: string;
+      leagueId: string;
+      season: number;
+    }>;
   }> {
     const events = this.extractArray(response, ['events', 'items']);
 
     const leagueMap = this.buildLiveLeagueMap(response);
 
     const liveEventIds = new Set<string>();
+
+    const newlyFinished: Array<{
+      eventId: string;
+      leagueId: string;
+      season: number;
+    }> = [];
 
     let updated = 0;
 
@@ -697,7 +665,16 @@ export class SportsCollectionService {
         continue;
       }
 
-      if (!this.isLiveEvent(event)) {
+      const isLive = this.isLiveEvent(event);
+
+      const completed = this.isCompleted(event);
+
+      /*
+       * ESPN can expose a just-finished event briefly in the
+       * global live scoreboard. Accept both live and completed
+       * events so the transition can be detected.
+       */
+      if (!isLive && !completed) {
         continue;
       }
 
@@ -727,6 +704,8 @@ export class SportsCollectionService {
       let storedFixture: {
         leagueId?: string;
         season?: number;
+        completed?: boolean;
+        live?: boolean;
       } | null = null;
 
       if (!leagueId) {
@@ -737,6 +716,8 @@ export class SportsCollectionService {
           .select({
             leagueId: 1,
             season: 1,
+            completed: 1,
+            live: 1,
           })
           .lean()
           .exec();
@@ -801,11 +782,21 @@ export class SportsCollectionService {
           eventId,
         })
         .select({
+          completed: 1,
+          live: 1,
           'payload.summary': 1,
           'payload.summaryCollectedAt': 1,
         })
         .lean()
         .exec();
+
+      const wasCompleted = Boolean(
+        existingPayloadFixture?.completed || storedFixture?.completed,
+      );
+
+      const wasLive = Boolean(
+        existingPayloadFixture?.live || storedFixture?.live,
+      );
 
       const existingPayload =
         existingPayloadFixture?.payload &&
@@ -818,10 +809,7 @@ export class SportsCollectionService {
       };
 
       /*
-       * Preserve an already collected match summary.
-       *
-       * Live scoreboard updates must never erase FINISHED_MATCH
-       * summary data.
+       * Preserve an already collected Summary.
        */
       if (
         existingPayload &&
@@ -873,9 +861,9 @@ export class SportsCollectionService {
 
               displayClock,
 
-              completed: this.isCompleted(event),
+              completed,
 
-              live: true,
+              live: isLive,
 
               homeTeamId: this.getTeamId(home),
 
@@ -902,12 +890,21 @@ export class SportsCollectionService {
         )
         .exec();
 
-      /*
-       * Persist teams revealed by the live scoreboard.
-       */
       await this.collectEspnTeams(normalizedLeagueId, competitors);
 
-      liveEventIds.add(eventId);
+      if (isLive) {
+        liveEventIds.add(eventId);
+      }
+
+      if (completed && !wasCompleted && wasLive) {
+        newlyFinished.push({
+          eventId,
+
+          leagueId: normalizedLeagueId,
+
+          season,
+        });
+      }
 
       updated += 1;
     }
@@ -930,6 +927,7 @@ export class SportsCollectionService {
         {
           $set: {
             live: false,
+
             collectedAt: new Date(),
           },
         },
@@ -938,8 +936,12 @@ export class SportsCollectionService {
 
     return {
       received: events.length,
+
       updated,
+
       cleared: clearedResult.modifiedCount,
+
+      newlyFinished,
     };
   }
 
@@ -952,17 +954,18 @@ export class SportsCollectionService {
    *
    * Order:
    *
-   * 1. ActiveCompetition by espnLeagueSlug.
-   * 2. Existing complete ESPN catalogue by slug/id.
+   * 1. ActiveCompetition by ESPN league slug.
+   * 2. Existing ESPN catalogue by slug/id.
    * 3. Refresh ESPN's complete league catalogue.
    * 4. Check the refreshed catalogue again.
    * 5. Get authoritative ESPN league detail.
    * 6. Update sports_espn_leagues.
    * 7. Synchronize ActiveCompetition when the current season
    *    is active.
-   * 8. If newly discovered/currently active, immediately collect:
-   *      season start -> today + 8 days
-   *      standings
+   * 8. Queue a fixture refresh for newly discovered active
+   *    leagues.
+   *
+   * Standings are intentionally not requested here.
    */
   private async resolveLiveLeague(
     leagueReference: string,
@@ -1080,23 +1083,20 @@ export class SportsCollectionService {
 
     /*
      * ============================================================
-     * 8. IMMEDIATE ACTIVE LEAGUE SYNCHRONIZATION
+     * 8. IMMEDIATE FIXTURE REFRESH
      * ============================================================
-     *
-     * A live match can expose a league that was not present in
-     * ActiveCompetition when the application started.
-     *
-     * Once authoritative league detail confirms that its current
-     * season is active, immediately collect the complete required
-     * ESPN window and standings.
      */
-    if (synchronizedLeague.isActive && synchronizedLeague.season) {
+
+    if (
+      synchronizedLeague.isActive &&
+      typeof synchronizedLeague.season === 'number'
+    ) {
       const priority = this.getQueuePriority(
         this.getStoredPriority(catalogueLeague),
       );
 
       try {
-        await this.espnQueueService.addFixtureRecoveryJob({
+        await this.espnQueueService.addFixtureRefreshJob({
           leagueId: synchronizedLeague.slug || synchronizedLeague.leagueId,
 
           season: synchronizedLeague.season,
@@ -1104,17 +1104,19 @@ export class SportsCollectionService {
           priority,
 
           scheduledFor: new Date(),
+
+          triggerEventId: `LIVE_DISCOVERY:${synchronizedLeague.slug}`,
         });
 
         this.logger.debug(
-          `Queued ESPN fixture recovery for newly discovered active league ` +
-            `${synchronizedLeague.slug}: ` +
+          `Queued ESPN fixture refresh for newly discovered ` +
+            `active league ${synchronizedLeague.slug}: ` +
             `season=${synchronizedLeague.season}`,
         );
       } catch (error) {
         this.logger.warn(
-          `Failed to queue ESPN fixture recovery for newly discovered league ` +
-            `${synchronizedLeague.slug}: ${
+          `Failed to queue ESPN fixture refresh for newly discovered ` +
+            `league ${synchronizedLeague.slug}: ${
               error instanceof Error ? error.message : String(error)
             }`,
         );
@@ -1140,6 +1142,11 @@ export class SportsCollectionService {
         return 4;
     }
   }
+
+  // ============================================================
+  // ESPN — CATALOGUE
+  // ============================================================
+
   /**
    * Persist ESPN's complete catalogue.
    *
@@ -1236,8 +1243,8 @@ export class SportsCollectionService {
   }
 
   /**
-   * Replace the catalogue metadata with authoritative
-   * ESPN league-detail information.
+   * Replace catalogue metadata with authoritative ESPN
+   * league-detail information.
    *
    * Only an active current season enters ActiveCompetition.
    */
@@ -1265,7 +1272,7 @@ export class SportsCollectionService {
 
     if (!normalizedSlug || !canonicalLeagueId) {
       throw new Error(
-        `ESPN league detail did not contain a usable league identity`,
+        'ESPN league detail did not contain a usable league identity',
       );
     }
 
@@ -1678,6 +1685,7 @@ export class SportsCollectionService {
         updateOne: {
           filter: {
             teamId,
+
             leagueId: normalizedLeagueId,
           },
 
@@ -1725,9 +1733,14 @@ export class SportsCollectionService {
   }
 
   // ============================================================
-  // ESPN — STANDINGS
+  // ESPN — STANDINGS FALLBACK
   // ============================================================
 
+  /**
+   * Emergency/manual standings persistence only.
+   *
+   * Normal startup and queue operations do not call this method.
+   */
   async collectEspnStandings(
     leagueId: string,
     response: unknown,
@@ -1847,10 +1860,6 @@ export class SportsCollectionService {
       });
     }
 
-    /*
-     * Remove teams that ESPN no longer returns for the
-     * current standings response.
-     */
     await this.espnStandingModel
       .deleteMany({
         leagueId: normalizedLeagueId,
@@ -1867,9 +1876,14 @@ export class SportsCollectionService {
   }
 
   // ============================================================
-  // ESPN — NEWS
+  // ESPN — NEWS FALLBACK
   // ============================================================
 
+  /**
+   * Emergency/manual news persistence only.
+   *
+   * No scheduled job calls this method.
+   */
   async collectEspnNews(response: EspnNewsResponse): Promise<{
     received: number;
     created: number;
@@ -1881,7 +1895,9 @@ export class SportsCollectionService {
       : [];
 
     let created = 0;
+
     let updated = 0;
+
     let skipped = 0;
 
     for (const article of articles) {
@@ -1941,16 +1957,27 @@ export class SportsCollectionService {
           {
             $set: {
               articleId,
+
               leagueId,
+
               headline,
+
               description,
+
               published,
+
               lastModified,
+
               link,
+
               imageUrl,
+
               type,
+
               author,
+
               payload,
+
               collectedAt,
             },
           },
@@ -2241,10 +2268,6 @@ export class SportsCollectionService {
 
     const completed = this.isCompleted(event);
 
-    /*
-     * Preserve summary data already collected by
-     * FINISHED_MATCH.
-     */
     const existingFixture = await this.espnFixtureModel
       .findOne({
         eventId,
@@ -2311,6 +2334,8 @@ export class SportsCollectionService {
 
             completed,
 
+            live: this.isLiveEvent(event),
+
             homeTeamId: this.getTeamId(home),
 
             awayTeamId: this.getTeamId(away),
@@ -2338,6 +2363,7 @@ export class SportsCollectionService {
 
     await this.collectEspnTeams(params.leagueId, competitors);
   }
+
   // ============================================================
   // ESPN — CHECK STORED MATCH SUMMARY
   // ============================================================
@@ -2356,8 +2382,9 @@ export class SportsCollectionService {
     return Boolean(
       fixture?.payload &&
       typeof fixture.payload === 'object' &&
-      'summary' in fixture.payload &&
-      fixture.payload.summary,
+      fixture.payload.summary &&
+      typeof fixture.payload.summary === 'object' &&
+      Object.keys(fixture.payload.summary).length > 0,
     );
   }
 
@@ -2365,6 +2392,13 @@ export class SportsCollectionService {
   // ESPN — MATCH SUMMARY
   // ============================================================
 
+  /**
+   * Persist ESPN Summary inside the canonical fixture document.
+   *
+   * Canonical location:
+   *
+   * sports_espn_fixtures.payload.summary
+   */
   async collectEspnMatchSummary(params: {
     leagueId: string;
     eventId: string;
@@ -2377,7 +2411,16 @@ export class SportsCollectionService {
       .lean()
       .exec();
 
-    const existingPayload = fixture?.payload ?? {};
+    if (!fixture) {
+      throw new Error(
+        `ESPN fixture ${params.eventId} not found while storing Summary`,
+      );
+    }
+
+    const existingPayload =
+      fixture.payload && typeof fixture.payload === 'object'
+        ? fixture.payload
+        : {};
 
     await this.espnFixtureModel
       .updateOne(
@@ -2386,7 +2429,7 @@ export class SportsCollectionService {
         },
         {
           $set: {
-            leagueId: params.leagueId,
+            leagueId: this.normalizeLeagueId(params.leagueId),
 
             payload: {
               ...existingPayload,
@@ -2884,6 +2927,7 @@ export class SportsCollectionService {
         updateOne: {
           filter: {
             teamId,
+
             leagueId,
           },
 
@@ -2935,7 +2979,7 @@ export class SportsCollectionService {
 
     for (const key of keys) {
       if (Array.isArray(object[key])) {
-        return object[key];
+        return object[key] as unknown[];
       }
     }
 
@@ -3278,10 +3322,8 @@ export class SportsCollectionService {
   }
 
   /**
-   * Converts a Date into the UTC calendar date
-   * expected by ESPN's dates parameter.
-   *
-   * Result:
+   * Converts a Date into the UTC calendar
+   * date expected by ESPN's dates parameter.
    *
    * YYYY-MM-DD
    */

@@ -68,20 +68,6 @@ export const PredictionMarkets = {
   CARD_HANDICAP: 'CARD_HANDICAP',
 
   // ==================================================
-  // PLAYER MARKETS
-  // ==================================================
-
-  ANYTIME_GOALSCORER: 'ANYTIME_GOALSCORER',
-
-  FIRST_GOALSCORER: 'FIRST_GOALSCORER',
-
-  PLAYER_SHOTS: 'PLAYER_SHOTS',
-
-  PLAYER_SHOTS_ON_TARGET: 'PLAYER_SHOTS_ON_TARGET',
-
-  PLAYER_ASSISTS: 'PLAYER_ASSISTS',
-
-  // ==================================================
   // MATCH EVENTS
   // ==================================================
 

@@ -17,10 +17,7 @@ import {
 
 import { SportsDataReadService } from '../../sports/services/sports-data-read.service';
 
-import {
-  EspnFixture,
-  EspnFixtureDocument,
-} from '../../sports/schemas/espn/espn-fixture.schema';
+import { type EspnFixtureDocument } from '../../sports/schemas/espn/espn-fixture.schema';
 
 type SettlementResult = 'VOID' | 'ESPN';
 
@@ -35,7 +32,15 @@ interface MatchScore {
   away: number;
 }
 
-interface HalfTimeScore extends MatchScore {}
+type HalfTimeScore = MatchScore;
+
+interface SummaryScoringEvent {
+  record: Record<string, unknown>;
+  teamId: string | null;
+  elapsedSeconds: number | null;
+  period: number | null;
+  order: number;
+}
 
 @Injectable()
 export class SettlementService {
@@ -84,9 +89,7 @@ export class SettlementService {
       }
 
       prediction.status = 'void';
-
       prediction.settled = true;
-
       prediction.settledAt = new Date();
 
       return prediction.save();
@@ -120,7 +123,9 @@ export class SettlementService {
       );
     }
 
-    const settlements = this.settleMarkets(prediction, fixture, score);
+    const summary = this.getStoredSummary(fixture);
+
+    const settlements = this.settleMarkets(prediction, fixture, score, summary);
 
     this.applyMarketSettlements(prediction, settlements);
 
@@ -138,7 +143,7 @@ export class SettlementService {
     await prediction.save();
 
     this.logger.log(
-      `Prediction ${prediction._id} settled from ESPN: ${prediction.status}`,
+      `Prediction ${prediction._id.toString()} settled from ESPN: ${prediction.status}`,
     );
 
     return prediction;
@@ -201,7 +206,7 @@ export class SettlementService {
         skippedCount++;
 
         this.logger.warn(
-          `ESPN fixture ${matchId} is not available. Prediction ${prediction._id} remains pending.`,
+          `ESPN fixture ${matchId} is not available. Prediction ${prediction._id.toString()} remains pending.`,
         );
 
         continue;
@@ -211,7 +216,7 @@ export class SettlementService {
         skippedCount++;
 
         this.logger.warn(
-          `ESPN fixture ${matchId} is not finished. Prediction ${prediction._id} remains pending.`,
+          `ESPN fixture ${matchId} is not finished. Prediction ${prediction._id.toString()} remains pending.`,
         );
 
         continue;
@@ -223,14 +228,21 @@ export class SettlementService {
         skippedCount++;
 
         this.logger.warn(
-          `ESPN fixture ${matchId} has no final score. Prediction ${prediction._id} remains pending.`,
+          `ESPN fixture ${matchId} has no final score. Prediction ${prediction._id.toString()} remains pending.`,
         );
 
         continue;
       }
 
+      const summary = this.getStoredSummary(fixture);
+
       try {
-        const settlements = this.settleMarkets(prediction, fixture, score);
+        const settlements = this.settleMarkets(
+          prediction,
+          fixture,
+          score,
+          summary,
+        );
 
         this.applyMarketSettlements(prediction, settlements);
 
@@ -246,7 +258,7 @@ export class SettlementService {
           await prediction.save();
 
           this.logger.warn(
-            `Prediction ${prediction._id} contains market(s) that could not be settled and remains pending.`,
+            `Prediction ${prediction._id.toString()} contains market(s) that could not be settled and remains pending.`,
           );
 
           continue;
@@ -260,13 +272,13 @@ export class SettlementService {
         settledCount++;
 
         this.logger.log(
-          `Prediction ${prediction._id} settled from ESPN: ${prediction.status} for ${fixture.homeTeamId} vs ${fixture.awayTeamId}.`,
+          `Prediction ${prediction._id.toString()} settled from ESPN: ${prediction.status} for ${fixture.homeTeamId} vs ${fixture.awayTeamId}.`,
         );
       } catch (error) {
         skippedCount++;
 
         this.logger.error(
-          `Failed to settle prediction ${prediction._id}: ${
+          `Failed to settle prediction ${prediction._id.toString()}: ${
             error instanceof Error ? error.message : String(error)
           }`,
           error instanceof Error ? error.stack : undefined,
@@ -293,6 +305,7 @@ export class SettlementService {
     prediction: PredictionDocument,
     fixture: EspnFixtureDocument,
     score: MatchScore,
+    summary: Record<string, unknown> | null,
   ): MarketSettlement[] {
     return prediction.markets.map((market) => ({
       market: market.market,
@@ -302,6 +315,7 @@ export class SettlementService {
         market.selection,
         fixture,
         score,
+        summary,
       ),
     }));
   }
@@ -311,6 +325,7 @@ export class SettlementService {
     selection: string,
     fixture: EspnFixtureDocument,
     score: MatchScore,
+    summary: Record<string, unknown> | null,
   ): PredictionMarketStatus {
     const normalizedMarket = this.normalize(market);
 
@@ -511,7 +526,7 @@ export class SettlementService {
       normalizedMarket === 'FIRST_HALF_GOALS' ||
       normalizedMarket === 'SECOND_HALF_GOALS'
     ) {
-      const halfTime = this.getHalfTimeScore(fixture);
+      const halfTime = this.getHalfTimeScore(fixture, score, summary);
 
       if (!halfTime) {
         return 'pending';
@@ -522,6 +537,15 @@ export class SettlementService {
 
         away: score.away - halfTime.away,
       };
+
+      if (
+        secondHalf.home < 0 ||
+        secondHalf.away < 0 ||
+        !Number.isFinite(secondHalf.home) ||
+        !Number.isFinite(secondHalf.away)
+      ) {
+        return 'pending';
+      }
 
       if (normalizedMarket === 'HALF_TIME_RESULT') {
         return this.evaluateResultSelection(
@@ -640,9 +664,7 @@ export class SettlementService {
             ? score.home + handicap - score.away
             : score.away + handicap - score.home;
 
-        return this.getResultFromMargin(adjusted, 'HOME_WIN') === 'HOME_WIN'
-          ? 'won'
-          : 'lost';
+        return adjusted > 0 ? 'won' : 'lost';
       }
 
       const drawMatch = normalizedSelection.match(/^DRAW_(-?\d+)$/);
@@ -663,10 +685,14 @@ export class SettlementService {
     // ==========================================================
 
     if (normalizedMarket === 'FIRST_GOAL') {
-      const first = this.getFirstScoringTeam(fixture);
+      const first = this.getFirstScoringTeam(fixture, score, summary);
+
+      if (first === undefined) {
+        return 'pending';
+      }
 
       if (normalizedSelection === 'HOME') {
-        if (!first) {
+        if (first === null) {
           return 'lost';
         }
 
@@ -674,7 +700,7 @@ export class SettlementService {
       }
 
       if (normalizedSelection === 'AWAY') {
-        if (!first) {
+        if (first === null) {
           return 'lost';
         }
 
@@ -800,65 +826,99 @@ export class SettlementService {
   }
 
   // ============================================================
+  // STORED SUMMARY
+  // ============================================================
+
+  private getStoredSummary(
+    fixture: EspnFixtureDocument,
+  ): Record<string, unknown> | null {
+    const payload =
+      fixture.payload && typeof fixture.payload === 'object'
+        ? (fixture.payload as Record<string, unknown>)
+        : null;
+
+    const summary = payload?.summary;
+
+    if (!summary || typeof summary !== 'object') {
+      return null;
+    }
+
+    return summary as Record<string, unknown>;
+  }
+
+  // ============================================================
   // HALF-TIME
   // ============================================================
 
-  private getHalfTimeScore(fixture: EspnFixtureDocument): HalfTimeScore | null {
-    const competition = this.getCompetition(fixture);
+  private getHalfTimeScore(
+    fixture: EspnFixtureDocument,
+    finalScore: MatchScore,
+    summary: Record<string, unknown> | null,
+  ): HalfTimeScore | null {
+    if (!summary) {
+      return null;
+    }
 
-    const details = Array.isArray(competition?.details)
-      ? competition.details
-      : [];
+    const scoringEvents = this.extractSummaryScoringEvents(summary);
+
+    if (!scoringEvents.length) {
+      /*
+       * With a completed 0-0 match, no scoring events is
+       * enough to establish a valid 0-0 half-time score.
+       *
+       * For a match with goals, an empty parsed Summary
+       * cannot safely establish the half-time score.
+       */
+      if (finalScore.home === 0 && finalScore.away === 0) {
+        return {
+          home: 0,
+          away: 0,
+        };
+      }
+
+      return null;
+    }
 
     let home = 0;
     let away = 0;
-    let foundScoringEvent = false;
 
-    for (const detail of details) {
-      if (!detail || typeof detail !== 'object') {
+    let recognizedFirstHalfGoals = 0;
+
+    for (const event of scoringEvents) {
+      if (!this.isFirstHalfEvent(event)) {
         continue;
       }
 
-      const record = detail as Record<string, unknown>;
-
-      if (record.scoringPlay !== true) {
-        continue;
-      }
-
-      const teamId = this.toString(
-        this.getNestedValue(record, ['team', 'id']) ?? record.teamId,
-      );
-
-      if (!teamId) {
-        continue;
-      }
-
-      const minute = this.extractMinute(record);
-
-      if (minute > 45) {
-        continue;
-      }
-
-      foundScoringEvent = true;
-
-      if (teamId === fixture.homeTeamId) {
+      if (event.teamId === fixture.homeTeamId) {
         home++;
-      } else if (teamId === fixture.awayTeamId) {
+        recognizedFirstHalfGoals++;
+      } else if (event.teamId === fixture.awayTeamId) {
         away++;
+        recognizedFirstHalfGoals++;
       }
     }
 
     /*
-     * 0-0 at half-time is also valid when
-     * there simply were no first-half scoring
-     * events. In that case we can safely return 0-0
-     * because no scoring event means no goals.
+     * If Summary contains scoring events but none can be
+     * associated with either fixture team, the result is
+     * not reliable enough for settlement.
      */
-    if (!foundScoringEvent) {
-      return {
-        home: 0,
-        away: 0,
-      };
+    if (
+      scoringEvents.some((event) => event.teamId) &&
+      recognizedFirstHalfGoals === 0 &&
+      finalScore.home + finalScore.away > 0
+    ) {
+      const hasFirstHalfCandidate = scoringEvents.some((event) =>
+        this.isFirstHalfEvent(event),
+      );
+
+      if (hasFirstHalfCandidate) {
+        return null;
+      }
+    }
+
+    if (home > finalScore.home || away > finalScore.away) {
+      return null;
     }
 
     return {
@@ -873,42 +933,290 @@ export class SettlementService {
 
   private getFirstScoringTeam(
     fixture: EspnFixtureDocument,
-  ): 'home' | 'away' | null {
-    const competition = this.getCompetition(fixture);
+    finalScore: MatchScore,
+    summary: Record<string, unknown> | null,
+  ): 'home' | 'away' | null | undefined {
+    if (!summary) {
+      return undefined;
+    }
 
-    const details = Array.isArray(competition?.details)
-      ? competition.details
-      : [];
+    const scoringEvents = this.extractSummaryScoringEvents(summary);
 
-    const scoringEvents = details
-      .filter(
-        (detail) =>
-          detail &&
-          typeof detail === 'object' &&
-          (detail as Record<string, unknown>).scoringPlay === true,
-      )
-      .map((detail) => ({
-        detail: detail as Record<string, unknown>,
+    if (!scoringEvents.length) {
+      if (finalScore.home === 0 && finalScore.away === 0) {
+        return null;
+      }
 
-        minute: this.extractMinute(detail as Record<string, unknown>),
-      }))
-      .sort((a, b) => a.minute - b.minute);
+      return undefined;
+    }
 
-    for (const item of scoringEvents) {
-      const teamId = this.toString(
-        this.getNestedValue(item.detail, ['team', 'id']) ?? item.detail.teamId,
-      );
+    const sortedEvents = [...scoringEvents].sort((a, b) => {
+      const aTime = a.elapsedSeconds ?? Number.MAX_SAFE_INTEGER;
+      const bTime = b.elapsedSeconds ?? Number.MAX_SAFE_INTEGER;
 
-      if (teamId === fixture.homeTeamId) {
+      if (aTime !== bTime) {
+        return aTime - bTime;
+      }
+
+      return a.order - b.order;
+    });
+
+    let sawRecognizedTeam = false;
+
+    for (const event of sortedEvents) {
+      if (event.teamId === fixture.homeTeamId) {
+        sawRecognizedTeam = true;
         return 'home';
       }
 
-      if (teamId === fixture.awayTeamId) {
+      if (event.teamId === fixture.awayTeamId) {
+        sawRecognizedTeam = true;
         return 'away';
       }
     }
 
+    return sawRecognizedTeam ? null : undefined;
+  }
+
+  // ============================================================
+  // ESPN SUMMARY SCORING EVENTS
+  // ============================================================
+
+  private extractSummaryScoringEvents(
+    summary: Record<string, unknown>,
+  ): SummaryScoringEvent[] {
+    const events: SummaryScoringEvent[] = [];
+
+    const visited = new Set<object>();
+
+    const visit = (value: unknown) => {
+      if (!value || typeof value !== 'object') {
+        return;
+      }
+
+      const objectValue = value;
+
+      if (visited.has(objectValue)) {
+        return;
+      }
+
+      visited.add(objectValue);
+
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          visit(item);
+        }
+
+        return;
+      }
+
+      const record = value as Record<string, unknown>;
+
+      if (record.scoringPlay === true) {
+        const teamId = this.toString(
+          this.getNestedValue(record, ['team', 'id']) ??
+            record.teamId ??
+            this.getNestedValue(record, ['team', 'teamId']),
+        );
+
+        events.push({
+          record,
+          teamId,
+          elapsedSeconds: this.extractElapsedSeconds(record),
+          period: this.extractPeriodNumber(record),
+          order: events.length,
+        });
+      }
+
+      for (const child of Object.values(record)) {
+        if (child && typeof child === 'object') {
+          visit(child);
+        }
+      }
+    };
+
+    visit(summary);
+
+    return this.deduplicateSummaryScoringEvents(events);
+  }
+
+  private deduplicateSummaryScoringEvents(
+    events: SummaryScoringEvent[],
+  ): SummaryScoringEvent[] {
+    const seen = new Set<string>();
+    const unique: SummaryScoringEvent[] = [];
+
+    for (const event of events) {
+      const explicitId = this.toString(
+        event.record.id ??
+          event.record.eventId ??
+          event.record.playId ??
+          event.record.uid,
+      );
+
+      const signature = explicitId
+        ? `id:${explicitId}`
+        : [
+            event.teamId ?? '',
+            event.elapsedSeconds ?? '',
+            this.normalize(
+              this.toString(
+                event.record.text ??
+                  event.record.shortText ??
+                  event.record.description ??
+                  '',
+              ) ?? '',
+            ),
+          ].join('|');
+
+      if (seen.has(signature)) {
+        continue;
+      }
+
+      seen.add(signature);
+      unique.push(event);
+    }
+
+    return unique;
+  }
+
+  private isFirstHalfEvent(event: SummaryScoringEvent): boolean {
+    if (event.period !== null) {
+      return event.period === 1;
+    }
+
+    const displayValue = this.findClockDisplayValue(event.record);
+
+    if (displayValue) {
+      const normalized = displayValue.trim();
+
+      if (/^45(?:\+\d+)?(?:"|')?$/.test(normalized)) {
+        return true;
+      }
+
+      const clockMatch = normalized.match(/^(\d+):(\d+)/);
+
+      if (clockMatch) {
+        return Number(clockMatch[1]) * 60 + Number(clockMatch[2]) <= 45 * 60;
+      }
+
+      const minuteMatch = normalized.match(/^(\d+)/);
+
+      if (minuteMatch) {
+        return Number(minuteMatch[1]) <= 45;
+      }
+    }
+
+    if (event.elapsedSeconds !== null) {
+      return event.elapsedSeconds <= 45 * 60;
+    }
+
+    return false;
+  }
+
+  private extractElapsedSeconds(
+    record: Record<string, unknown>,
+  ): number | null {
+    const clock = this.findClock(record);
+
+    if (!clock) {
+      return null;
+    }
+
+    const displayValue = this.toString(clock.displayValue);
+
+    if (displayValue) {
+      const normalized = displayValue.trim().replace(/[’']/g, '').trim();
+
+      const addedTimeMatch = normalized.match(/^(\d+)\+(\d+)$/);
+
+      if (addedTimeMatch) {
+        return Number(addedTimeMatch[1]) * 60 + Number(addedTimeMatch[2]) * 60;
+      }
+
+      const minutesSecondsMatch = normalized.match(/^(\d+):(\d+)$/);
+
+      if (minutesSecondsMatch) {
+        return (
+          Number(minutesSecondsMatch[1]) * 60 + Number(minutesSecondsMatch[2])
+        );
+      }
+
+      const minuteMatch = normalized.match(/^(\d+)$/);
+
+      if (minuteMatch) {
+        return Number(minuteMatch[1]) * 60;
+      }
+    }
+
+    const directValue =
+      this.toNumber(clock.value) ??
+      this.toNumber(clock.seconds) ??
+      this.toNumber(clock.minutes);
+
+    if (directValue === null) {
+      return null;
+    }
+
+    /*
+     * ESPN clock values can appear as elapsed seconds or
+     * minute-like values depending on the payload.
+     */
+    if (directValue > 150) {
+      return directValue;
+    }
+
+    return directValue * 60;
+  }
+
+  private extractPeriodNumber(record: Record<string, unknown>): number | null {
+    const candidates: unknown[] = [
+      this.getNestedValue(record, ['period', 'number']),
+      record.periodNumber,
+      record.period,
+    ];
+
+    for (const candidate of candidates) {
+      const number = this.toNumber(candidate);
+
+      if (number !== null) {
+        return number;
+      }
+
+      if (typeof candidate === 'string') {
+        const match = candidate.match(/(\d+)/);
+
+        if (match) {
+          return Number(match[1]);
+        }
+      }
+    }
+
     return null;
+  }
+
+  private findClock(
+    record: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    const direct = record.clock;
+
+    if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
+      return direct as Record<string, unknown>;
+    }
+
+    return null;
+  }
+
+  private findClockDisplayValue(
+    record: Record<string, unknown>,
+  ): string | null {
+    const clock = this.findClock(record);
+
+    if (!clock) {
+      return null;
+    }
+
+    return this.toString(clock.displayValue);
   }
 
   // ============================================================
@@ -937,60 +1245,9 @@ export class SettlementService {
     return 'DRAW';
   }
 
-  private getResultFromMargin(margin: number, result: string): string {
-    if (result === 'HOME_WIN') {
-      return margin > 0 ? 'HOME_WIN' : 'OTHER';
-    }
-
-    return 'OTHER';
-  }
-
   // ============================================================
   // PAYLOAD HELPERS
   // ============================================================
-
-  private getCompetition(
-    fixture: EspnFixtureDocument,
-  ): Record<string, any> | null {
-    const competitions = fixture.payload?.['competitions'];
-
-    if (!Array.isArray(competitions)) {
-      return null;
-    }
-
-    const competition = competitions[0];
-
-    return competition && typeof competition === 'object'
-      ? (competition as Record<string, any>)
-      : null;
-  }
-
-  private extractMinute(detail: Record<string, unknown>): number {
-    const clock = detail.clock;
-
-    if (clock && typeof clock === 'object') {
-      const clockRecord = clock as Record<string, unknown>;
-
-      const direct =
-        this.toNumber(clockRecord.value) ?? this.toNumber(clockRecord.minutes);
-
-      if (direct !== null) {
-        return direct;
-      }
-
-      const display = clockRecord.displayValue;
-
-      if (typeof display === 'string') {
-        const match = display.match(/^(\d+)/);
-
-        if (match) {
-          return Number(match[1]);
-        }
-      }
-    }
-
-    return this.toNumber(clock) ?? 90;
-  }
 
   private getNestedValue(value: unknown, path: string[]): unknown {
     let current = value;

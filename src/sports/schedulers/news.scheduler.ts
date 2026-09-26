@@ -19,19 +19,9 @@ export class NewsScheduler {
 
   private readonly liveCronExpression = '*/5 * * * * *';
 
-  private readonly morningCronExpression = '0 8 * * *';
-
-  private readonly afternoonCronExpression = '0 15 * * *';
-
-  private readonly eveningCronExpression = '0 20 * * *';
-
-  private readonly nightCronExpression = '25 23 * * *';
-
   private readonly monthlyCronExpression = '0 2 1 * *';
 
   private readonly dailyLeagueRefreshCronExpression = '5 0 * * *';
-
-  private running = false;
 
   private catalogueRefreshRunning = false;
 
@@ -101,6 +91,11 @@ export class NewsScheduler {
             nextRunAt,
           });
 
+          /*
+           * EspnService.getLiveMatches() uses the reserved ESPN
+           * live request lane. This keeps the live scoreboard
+           * independent from normal ESPN requests.
+           */
           const response = await this.espnService.getLiveMatches();
 
           const result =
@@ -146,94 +141,6 @@ export class NewsScheduler {
     } finally {
       this.liveMatchesRunning = false;
     }
-  }
-
-  // ============================================================
-  // MORNING NEWS
-  // ============================================================
-
-  @Cron('0 8 * * *', {
-    name: 'espn-news-morning',
-    timeZone: 'Africa/Lagos',
-  })
-  async collectMorningNews(): Promise<void> {
-    await this.collectNews({
-      period: 'morning',
-
-      taskKey: 'espn-news-morning',
-
-      name: 'ESPN Morning News',
-
-      cronExpression: this.morningCronExpression,
-
-      nextRunAt: this.nextDailyAt(8, 0),
-    });
-  }
-
-  // ============================================================
-  // AFTERNOON NEWS
-  // ============================================================
-
-  @Cron('0 15 * * *', {
-    name: 'espn-news-afternoon',
-    timeZone: 'Africa/Lagos',
-  })
-  async collectAfternoonNews(): Promise<void> {
-    await this.collectNews({
-      period: 'afternoon',
-
-      taskKey: 'espn-news-afternoon',
-
-      name: 'ESPN Afternoon News',
-
-      cronExpression: this.afternoonCronExpression,
-
-      nextRunAt: this.nextDailyAt(15, 0),
-    });
-  }
-
-  // ============================================================
-  // EVENING NEWS
-  // ============================================================
-
-  @Cron('0 20 * * *', {
-    name: 'espn-news-evening',
-    timeZone: 'Africa/Lagos',
-  })
-  async collectEveningNews(): Promise<void> {
-    await this.collectNews({
-      period: 'evening',
-
-      taskKey: 'espn-news-evening',
-
-      name: 'ESPN Evening News',
-
-      cronExpression: this.eveningCronExpression,
-
-      nextRunAt: this.nextDailyAt(20, 0),
-    });
-  }
-
-  // ============================================================
-  // NIGHT NEWS
-  // ============================================================
-
-  @Cron('25 23 * * *', {
-    name: 'espn-news-night',
-    timeZone: 'Africa/Lagos',
-  })
-  async collectNightNews(): Promise<void> {
-    await this.collectNews({
-      period: 'night',
-
-      taskKey: 'espn-news-night',
-
-      name: 'ESPN Night News',
-
-      cronExpression: this.nightCronExpression,
-
-      nextRunAt: this.nextDailyAt(23, 25),
-    });
   }
 
   // ============================================================
@@ -310,8 +217,6 @@ export class NewsScheduler {
           taskKey,
 
           error: error instanceof Error ? error.message : String(error),
-
-          nextRunAt,
         });
       } catch {
         // Preserve the original scheduler error.
@@ -410,8 +315,6 @@ export class NewsScheduler {
           taskKey,
 
           error: error instanceof Error ? error.message : String(error),
-
-          nextRunAt,
         });
       } catch {
         // Preserve the original scheduler error.
@@ -423,100 +326,6 @@ export class NewsScheduler {
       );
     } finally {
       this.catalogueRefreshRunning = false;
-    }
-  }
-
-  // ============================================================
-  // NEWS
-  // ============================================================
-
-  private async collectNews(params: {
-    period: 'morning' | 'afternoon' | 'evening' | 'night';
-
-    taskKey: string;
-
-    name: string;
-
-    cronExpression: string;
-
-    nextRunAt: Date;
-  }): Promise<void> {
-    if (!this.espnQueueService.isNormalOperationsReady()) {
-      return;
-    }
-
-    if (this.running) {
-      this.logger.warn(
-        `Skipping ${params.period} ESPN news collection because another news collection is already running`,
-      );
-
-      return;
-    }
-
-    this.running = true;
-
-    try {
-      await this.systemMonitorService.trackCron(
-        {
-          key: params.taskKey,
-
-          module: 'sports',
-
-          name: params.name,
-
-          expression: params.cronExpression,
-
-          timeZone: this.timeZone,
-        },
-
-        async () => {
-          await this.startCronTracking({
-            taskKey: params.taskKey,
-
-            cronExpression: params.cronExpression,
-
-            nextRunAt: params.nextRunAt,
-          });
-
-          const response = await this.espnService.getNews();
-
-          const result =
-            await this.sportsCollectionService.collectEspnNews(response);
-
-          await this.sportsSyncStateService.markCronSuccess({
-            taskKey: params.taskKey,
-
-            nextRunAt: params.nextRunAt,
-          });
-
-          this.logger.log(
-            `ESPN ${params.period} news collection completed: ` +
-              `received=${result.received}, ` +
-              `created=${result.created}, ` +
-              `updated=${result.updated}, ` +
-              `skipped=${result.skipped}`,
-          );
-        },
-      );
-    } catch (error) {
-      try {
-        await this.sportsSyncStateService.markCronFailure({
-          taskKey: params.taskKey,
-
-          error: error instanceof Error ? error.message : String(error),
-
-          nextRunAt: params.nextRunAt,
-        });
-      } catch {
-        // Preserve the original scheduler error.
-      }
-
-      this.logger.error(
-        `ESPN ${params.period} news collection failed`,
-        error instanceof Error ? error.stack : String(error),
-      );
-    } finally {
-      this.running = false;
     }
   }
 
