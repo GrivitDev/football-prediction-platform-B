@@ -11,6 +11,11 @@ import {
   SportsSyncUnitType,
 } from '../schemas/sports-sync-state.schema';
 
+import {
+  EspnFixture,
+  EspnFixtureDocument,
+} from '../schemas/espn/espn-fixture.schema';
+
 import { EspnQueueJobType } from '../interfaces/espn-queue.interface';
 
 @Injectable()
@@ -18,6 +23,9 @@ export class SportsSyncStateService {
   constructor(
     @InjectModel(SportsSyncState.name)
     private readonly syncStateModel: Model<SportsSyncStateDocument>,
+
+    @InjectModel(EspnFixture.name)
+    private readonly espnFixtureModel: Model<EspnFixtureDocument>,
   ) {}
 
   // ============================================================
@@ -35,7 +43,30 @@ export class SportsSyncStateService {
     const leagueId = this.normalize(params.leagueId);
 
     /*
-     * Summary is always event-specific.
+     * FIXTURE_REFRESH is intentionally one persistent state per
+     * league + season + job type.
+     *
+     * Operational queue jobs may still use triggerEventId values
+     * such as:
+     *
+     *   DAILY:2026-09-26
+     *   STALE:2026-09-26
+     *   FINISHED:401884783
+     *
+     * but those values must NEVER create another synchronization
+     * state document.
+     */
+    if (String(params.jobType) === String(EspnQueueJobType.FIXTURE_REFRESH)) {
+      return [
+        'QUEUE',
+        params.jobType,
+        leagueId,
+        params.season ?? 'current',
+      ].join(':');
+    }
+
+    /*
+     * Summary remains event-specific.
      */
     if (params.eventId) {
       return ['QUEUE', params.jobType, leagueId, params.eventId.trim()].join(
@@ -44,35 +75,8 @@ export class SportsSyncStateService {
     }
 
     /*
-     * Fixture refreshes are trigger-specific.
-     *
-     * This is important because the same league/season can
-     * legitimately require multiple fixture refreshes:
-     *
-     *   FIXTURE_REFRESH:eng.1:2026:DAILY:2026-09-26
-     *   FIXTURE_REFRESH:eng.1:2026:EVENT:401884783
-     *   FIXTURE_REFRESH:eng.1:2026:STALE:2026-09-26
-     *
-     * A previous successful refresh must not make a later
-     * refresh appear complete.
-     */
-    if (
-      String(params.jobType) === String(EspnQueueJobType.FIXTURE_REFRESH) &&
-      params.triggerEventId
-    ) {
-      return [
-        'QUEUE',
-        params.jobType,
-        leagueId,
-        params.season ?? 'current',
-        params.triggerEventId.trim(),
-      ].join(':');
-    }
-
-    /*
-     * When a queue job key is supplied and there is no event
-     * or explicit trigger, it provides a stable operational
-     * identity for the state.
+     * When a queue job key is supplied and there is no event,
+     * it provides a stable operational identity for that state.
      */
     if (params.queueJobKey?.trim()) {
       return ['QUEUE', params.jobType, params.queueJobKey.trim()].join(':');
@@ -103,6 +107,9 @@ export class SportsSyncStateService {
   }): Promise<SportsSyncStateDocument> {
     const stateKey = this.getQueueStateKey(params);
 
+    const isFixtureRefresh =
+      String(params.jobType) === String(EspnQueueJobType.FIXTURE_REFRESH);
+
     return this.syncStateModel
       .findOneAndUpdate(
         {
@@ -118,7 +125,11 @@ export class SportsSyncStateService {
 
             season: params.season,
 
-            eventId: params.eventId,
+            /*
+             * FIXTURE_REFRESH state is league/season scoped.
+             * It must never retain an event identity.
+             */
+            eventId: isFixtureRefresh ? undefined : params.eventId,
 
             priority: params.priority,
 
@@ -148,6 +159,174 @@ export class SportsSyncStateService {
         },
       )
       .exec();
+  }
+
+  /**
+   * Ensures the persistent FIXTURE_REFRESH state for one active
+   * league/season.
+   *
+   * Responsibilities:
+   *
+   * 1. Keep one state document for the league + season.
+   * 2. Extend the existing date window instead of creating another
+   *    synchronization state.
+   * 3. Check MongoDB fixtures for the requested date window.
+   * 4. Mark dates that already contain fixtures as SUCCESS.
+   * 5. Leave dates without fixtures as PENDING so the caller can
+   *    verify those dates through ESPN.
+   *
+   * This service deliberately does NOT call ESPN.
+   */
+  async ensureFixtureRefreshState(params: {
+    leagueId: string;
+    season: number;
+    priority: number;
+    dateFrom: string;
+    dateTo: string;
+    trackingMode?: 'WINDOW' | 'HISTORY';
+  }): Promise<SportsSyncStateDocument> {
+    const leagueId = this.normalize(params.leagueId);
+
+    if (!leagueId) {
+      throw new Error('Fixture refresh state requires a valid league ID');
+    }
+
+    if (typeof params.season !== 'number') {
+      throw new Error(
+        `Fixture refresh state for ${leagueId} requires a valid season`,
+      );
+    }
+
+    const requestedDateFrom = this.normalizeDateOnly(params.dateFrom);
+
+    const requestedDateTo = this.normalizeDateOnly(params.dateTo);
+
+    const trackingMode = params.trackingMode ?? 'HISTORY';
+
+    const stateKey = this.getQueueStateKey({
+      jobType: EspnQueueJobType.FIXTURE_REFRESH,
+
+      leagueId,
+
+      season: params.season,
+    });
+
+    await this.ensureQueueState({
+      jobType: EspnQueueJobType.FIXTURE_REFRESH,
+
+      leagueId,
+
+      season: params.season,
+
+      priority: params.priority,
+
+      trackingMode,
+    });
+
+    let state = await this.requireState(stateKey);
+
+    /*
+     * Never shrink an existing persistent fixture window.
+     *
+     * Existing example:
+     *
+     *   2026-07-01 -> 2026-09-26
+     *
+     * Requested extension:
+     *
+     *   2026-07-01 -> 2026-10-04
+     *
+     * Result:
+     *
+     *   2026-07-01 -> 2026-10-04
+     *
+     * Only new date units are added.
+     */
+    const effectiveDateFrom = state.dateFrom
+      ? this.minDateOnly(state.dateFrom, requestedDateFrom)
+      : requestedDateFrom;
+
+    const effectiveDateTo = state.dateTo
+      ? this.maxDateOnly(state.dateTo, requestedDateTo)
+      : requestedDateTo;
+
+    await this.ensureDateWindow({
+      stateKey,
+
+      dateFrom: effectiveDateFrom,
+
+      dateTo: effectiveDateTo,
+
+      trackingMode,
+    });
+
+    state = await this.requireState(stateKey);
+
+    /*
+     * MongoDB is the first source of truth for already collected
+     * fixtures.
+     *
+     * Any date inside this persistent state window that already
+     * contains at least one fixture becomes SUCCESS and therefore
+     * will not be sent to ESPN by the startup/worker phase.
+     */
+    const fixtureDateKeys = await this.getFixtureDateKeys({
+      leagueId,
+
+      season: params.season,
+
+      dateFrom: effectiveDateFrom,
+
+      dateTo: effectiveDateTo,
+    });
+
+    let changed = false;
+
+    for (const unit of state.units) {
+      if (
+        unit.type !== SportsSyncUnitType.DATE ||
+        !unit.dateKey ||
+        !fixtureDateKeys.has(unit.dateKey)
+      ) {
+        continue;
+      }
+
+      if (unit.status === SportsSyncUnitStatus.SUCCESS) {
+        continue;
+      }
+
+      unit.status = SportsSyncUnitStatus.SUCCESS;
+
+      unit.completedAt = new Date();
+
+      unit.startedAt = undefined;
+
+      unit.nextAttemptAt = undefined;
+
+      unit.lastError = undefined;
+
+      changed = true;
+    }
+
+    state.status = this.calculateOverallStatus(state);
+
+    if (state.status === SportsSyncStateStatus.SUCCESS) {
+      state.lastSuccessfulAt = new Date();
+
+      state.lastCompletedAt = new Date();
+
+      state.lastError = undefined;
+
+      state.consecutiveFailures = 0;
+    }
+
+    if (changed) {
+      state.markModified('units');
+
+      await state.save();
+    }
+
+    return state;
   }
 
   async getState(stateKey: string): Promise<SportsSyncStateDocument | null> {
@@ -214,7 +393,9 @@ export class SportsSyncStateService {
   }): Promise<SportsSyncStateDocument> {
     const state = await this.requireState(params.stateKey);
 
-    const desiredDates = this.buildDateRange(params.dateFrom, params.dateTo);
+    const desiredDateFrom = this.normalizeDateOnly(params.dateFrom);
+
+    const desiredDateTo = this.normalizeDateOnly(params.dateTo);
 
     const existingDateUnits = new Map(
       state.units
@@ -222,7 +403,33 @@ export class SportsSyncStateService {
         .map((unit) => [unit.dateKey ?? unit.key, unit]),
     );
 
-    const dateUnits = desiredDates.map((dateKey) => {
+    const existingStepUnits = state.units.filter(
+      (unit) => unit.type === SportsSyncUnitType.STEP,
+    );
+
+    /*
+     * HISTORY mode never shrinks an already accumulated range.
+     *
+     * This makes the same synchronization state reusable when
+     * new future dates are appended.
+     */
+    let effectiveDateFrom = desiredDateFrom;
+    let effectiveDateTo = desiredDateTo;
+
+    if (state.dateFrom) {
+      effectiveDateFrom = this.minDateOnly(state.dateFrom, desiredDateFrom);
+    }
+
+    if (state.dateTo) {
+      effectiveDateTo = this.maxDateOnly(state.dateTo, desiredDateTo);
+    }
+
+    const effectiveDates = this.buildDateRange(
+      effectiveDateFrom,
+      effectiveDateTo,
+    );
+
+    const effectiveDateUnits = effectiveDates.map((dateKey) => {
       const existing = existingDateUnits.get(dateKey);
 
       if (existing) {
@@ -242,18 +449,14 @@ export class SportsSyncStateService {
       };
     });
 
-    const existingStepUnits = state.units.filter(
-      (unit) => unit.type === SportsSyncUnitType.STEP,
-    );
+    state.dateFrom = effectiveDateFrom;
 
-    state.dateFrom = params.dateFrom;
-
-    state.dateTo = params.dateTo;
+    state.dateTo = effectiveDateTo;
 
     state.trackingMode = params.trackingMode;
 
     if (params.trackingMode === 'HISTORY') {
-      const desiredDateSet = new Set(desiredDates);
+      const desiredDateSet = new Set(effectiveDates);
 
       const historicalUnits = state.units.filter(
         (unit) =>
@@ -262,9 +465,13 @@ export class SportsSyncStateService {
           !desiredDateSet.has(unit.dateKey),
       );
 
-      state.units = [...historicalUnits, ...dateUnits, ...existingStepUnits];
+      state.units = [
+        ...historicalUnits,
+        ...effectiveDateUnits,
+        ...existingStepUnits,
+      ];
     } else {
-      state.units = [...dateUnits, ...existingStepUnits];
+      state.units = [...effectiveDateUnits, ...existingStepUnits];
     }
 
     state.status = this.calculateOverallStatus(state);
@@ -721,6 +928,57 @@ export class SportsSyncStateService {
   }
 
   // ============================================================
+  // FIXTURE LOOKUP
+  // ============================================================
+
+  private async getFixtureDateKeys(params: {
+    leagueId: string;
+    season: number;
+    dateFrom: string;
+    dateTo: string;
+  }): Promise<Set<string>> {
+    const from = this.parseDateOnly(params.dateFrom);
+
+    const toExclusive = this.addUtcDays(this.parseDateOnly(params.dateTo), 1);
+
+    const fixtures = await this.espnFixtureModel
+      .find({
+        leagueId: this.normalize(params.leagueId),
+
+        season: params.season,
+
+        fixtureDate: {
+          $gte: from,
+
+          $lt: toExclusive,
+        },
+      })
+      .select({
+        fixtureDate: 1,
+      })
+      .lean()
+      .exec();
+
+    const dates = new Set<string>();
+
+    for (const fixture of fixtures) {
+      if (!fixture.fixtureDate) {
+        continue;
+      }
+
+      const fixtureDate = new Date(fixture.fixtureDate);
+
+      if (Number.isNaN(fixtureDate.getTime())) {
+        continue;
+      }
+
+      dates.add(this.formatDateOnly(fixtureDate));
+    }
+
+    return dates;
+  }
+
+  // ============================================================
   // HELPERS
   // ============================================================
 
@@ -769,6 +1027,26 @@ export class SportsSyncStateService {
     return value.toISOString().slice(0, 10);
   }
 
+  private normalizeDateOnly(value: string): string {
+    const normalized = String(value ?? '').trim();
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+      throw new Error(`Invalid synchronization date: ${value}`);
+    }
+
+    this.parseDateOnly(normalized);
+
+    return normalized;
+  }
+
+  private minDateOnly(first: string, second: string): string {
+    return first <= second ? first : second;
+  }
+
+  private maxDateOnly(first: string, second: string): string {
+    return first >= second ? first : second;
+  }
+
   private calculateOverallStatus(
     state: SportsSyncStateDocument,
   ): SportsSyncStateStatus {
@@ -805,5 +1083,9 @@ export class SportsSyncStateService {
 
   private normalize(value: string): string {
     return value.trim().toLowerCase();
+  }
+
+  private addUtcDays(date: Date, days: number): Date {
+    return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
   }
 }

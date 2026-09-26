@@ -51,16 +51,22 @@ export class EspnQueueService {
   // ============================================================
 
   /**
-   * Creates a fixture-refresh job for an active ESPN league.
+   * Creates a fixture-refresh operational queue job.
    *
-   * A triggerEventId can identify why the refresh was requested:
+   * The triggerEventId differentiates operational queue jobs:
    *
    *   DAILY:2026-09-26
    *   STALE:2026-09-26
-   *   EVENT:401884783
+   *   FINISHED:401884783
    *
-   * The trigger is used for operational deduplication and
-   * persistent synchronization-state identity.
+   * However, all FIXTURE_REFRESH jobs for the same league/season
+   * use the SAME persistent SportsSyncState document.
+   *
+   * Sync-state identity:
+   *
+   *   QUEUE:FIXTURE_REFRESH:<league>:<season>
+   *
+   * Operational queue-job identity remains trigger-specific.
    */
   async addFixtureRefreshJob(params: {
     leagueId: string;
@@ -121,6 +127,38 @@ export class EspnQueueService {
   }
 
   // ============================================================
+  // ADD YOUTUBE HIGHLIGHT
+  // ============================================================
+
+  /**
+   * Creates a YouTube-highlight job for one completed ESPN fixture.
+   *
+   * YouTube eligibility is decided by EspnQueueBuilderService
+   * before this method is called.
+   */
+  async addYoutubeHighlightJob(params: {
+    leagueId: string;
+    eventId: string;
+    season: number;
+    priority: number;
+    scheduledFor?: Date;
+  }): Promise<EspnQueueDocument> {
+    return this.addJob({
+      jobType: EspnQueueJobType.YOUTUBE_HIGHLIGHT,
+
+      leagueId: params.leagueId,
+
+      eventId: params.eventId,
+
+      season: params.season,
+
+      priority: params.priority,
+
+      scheduledFor: params.scheduledFor ?? new Date(),
+    });
+  }
+
+  // ============================================================
   // GENERIC ADD
   // ============================================================
 
@@ -139,13 +177,16 @@ export class EspnQueueService {
       throw new Error('ESPN queue leagueId cannot be empty');
     }
 
-    if (params.jobType === EspnQueueJobType.SUMMARY_REFRESH) {
+    if (
+      params.jobType === EspnQueueJobType.SUMMARY_REFRESH ||
+      params.jobType === EspnQueueJobType.YOUTUBE_HIGHLIGHT
+    ) {
       if (!params.eventId?.trim()) {
-        throw new Error('SUMMARY_REFRESH jobs require an eventId');
+        throw new Error(`${params.jobType} jobs require an eventId`);
       }
 
       if (typeof params.season !== 'number') {
-        throw new Error('SUMMARY_REFRESH jobs require a numeric season');
+        throw new Error(`${params.jobType} jobs require a numeric season`);
       }
     }
 
@@ -157,14 +198,33 @@ export class EspnQueueService {
       params.triggerEventId,
     );
 
-    const trackingMode: 'WINDOW' | 'HISTORY' = 'WINDOW';
+    /*
+     * FIXTURE_REFRESH synchronization state is persistent HISTORY.
+     *
+     * The date window belongs to the synchronization state and is
+     * extended by SportsSyncStateService as new future dates become
+     * required.
+     *
+     * Summary/YouTube states remain WINDOW based.
+     */
+    const trackingMode: 'WINDOW' | 'HISTORY' =
+      params.jobType === EspnQueueJobType.FIXTURE_REFRESH
+        ? 'HISTORY'
+        : 'WINDOW';
 
     /*
      * The synchronization state is authoritative.
      *
-     * The worker remains responsible for marking individual
-     * synchronization units successful after actual provider
-     * collection completes.
+     * For FIXTURE_REFRESH, getQueueStateKey() deliberately ignores
+     * triggerEventId/queueJobKey when constructing the state key.
+     *
+     * Therefore:
+     *
+     * DAILY
+     * STALE
+     * FINISHED
+     *
+     * all resolve to one league/season synchronization state.
      */
     const state = await this.sportsSyncStateService.ensureQueueState({
       jobType: params.jobType,
@@ -197,12 +257,6 @@ export class EspnQueueService {
     // ==========================================================
 
     if (existing) {
-      /*
-       * Persistent synchronization state already completed.
-       *
-       * The queue record should never execute the same completed
-       * synchronization again.
-       */
       if (stateComplete) {
         if (existing.status !== EspnQueueStatus.COMPLETED) {
           existing.status = EspnQueueStatus.COMPLETED;
@@ -223,17 +277,10 @@ export class EspnQueueService {
         return existing;
       }
 
-      /*
-       * A completed queue document with incomplete state means
-       * the operational record is stale and must be reopened.
-       */
       if (existing.status === EspnQueueStatus.COMPLETED) {
         return this.reopenJob(existing, params);
       }
 
-      /*
-       * Another worker is already processing this job.
-       */
       if (
         existing.status === EspnQueueStatus.PENDING ||
         existing.status === EspnQueueStatus.PROCESSING
@@ -241,10 +288,6 @@ export class EspnQueueService {
         return existing;
       }
 
-      /*
-       * FAILED remains retryable while synchronization state is
-       * still incomplete.
-       */
       return this.reopenJob(existing, params);
     }
 
@@ -277,11 +320,6 @@ export class EspnQueueService {
         scheduledFor: params.scheduledFor,
       });
     } catch (error) {
-      /*
-       * Two builders/schedulers can legitimately race to create
-       * the same job. The unique jobKey makes the queue itself
-       * the final deduplication authority.
-       */
       if (!this.isDuplicateKeyError(error)) {
         throw error;
       }
@@ -702,28 +740,32 @@ export class EspnQueueService {
     /*
      * Summary is always event-specific.
      *
-     * This guarantees one logical Summary job per fixture.
+     * YouTube highlights are also event-specific because one
+     * completed match can only have one logical highlight job.
      */
-    if (jobType === EspnQueueJobType.SUMMARY_REFRESH) {
+    if (
+      jobType === EspnQueueJobType.SUMMARY_REFRESH ||
+      jobType === EspnQueueJobType.YOUTUBE_HIGHLIGHT
+    ) {
       if (!eventId?.trim()) {
-        throw new Error('SUMMARY_REFRESH jobs require an eventId');
+        throw new Error(`${jobType} jobs require an eventId`);
       }
 
       return [jobType, league, eventId.trim()].join(':');
     }
 
     /*
-     * Fixture refreshes may legitimately be triggered
-     * multiple times for the same league and season.
+     * Fixture-refresh queue documents remain trigger-specific.
      *
-     * The trigger differentiates:
+     * This allows multiple operational jobs:
      *
-     *   DAILY:date
-     *   STALE:date
-     *   EVENT:eventId
+     *   FIXTURE_REFRESH:eng.1:2026:DAILY:2026-09-26
+     *   FIXTURE_REFRESH:eng.1:2026:STALE:2026-09-26
+     *   FIXTURE_REFRESH:eng.1:2026:FINISHED:401884783
      *
-     * When no trigger is supplied, fall back to the
-     * league + season identity.
+     * These are operational queue identities only.
+     *
+     * Their persistent synchronization state is NOT trigger-specific.
      */
     if (triggerEventId?.trim()) {
       return [jobType, league, season ?? 'current', triggerEventId.trim()].join(

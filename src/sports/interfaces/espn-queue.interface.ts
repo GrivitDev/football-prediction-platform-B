@@ -14,6 +14,15 @@ export enum EspnQueueJobType {
    * persisted inside sports_espn_fixtures.payload.summary.
    */
   SUMMARY_REFRESH = 'SUMMARY_REFRESH',
+
+  /**
+   * Search for and persist a YouTube highlight for one
+   * completed ESPN fixture.
+   *
+   * Only ELITE, HIGH and REGIONAL competitions are eligible.
+   * SELECTIVE competitions are never queued.
+   */
+  YOUTUBE_HIGHLIGHT = 'YOUTUBE_HIGHLIGHT',
 }
 
 export enum EspnQueueStatus {
@@ -46,7 +55,7 @@ export interface EspnQueueJob {
   /**
    * ESPN event ID.
    *
-   * Required for SUMMARY_REFRESH.
+   * Required for SUMMARY_REFRESH and YOUTUBE_HIGHLIGHT.
    */
   eventId?: string;
 

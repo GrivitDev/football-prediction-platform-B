@@ -13,6 +13,7 @@ import { CompetitionPriority } from '../enums/competition-priority.enum';
 
 import { EspnQueueService } from './espn-queue.service';
 import { EspnActiveCompetitionService } from './espn-active-competition.service';
+import { SportsSyncStateService } from './sports-sync-state.service';
 
 @Injectable()
 export class EspnQueueBuilderService {
@@ -23,10 +24,14 @@ export class EspnQueueBuilderService {
   private readonly staleFixtureRefreshHours = 48;
   private readonly recentFinishedWindowHours = 48;
 
+  private readonly youtubeFinishedWindowHours = 48;
+
   constructor(
     private readonly espnQueueService: EspnQueueService,
 
     private readonly espnActiveCompetitionService: EspnActiveCompetitionService,
+
+    private readonly sportsSyncStateService: SportsSyncStateService,
 
     @InjectModel(EspnFixture.name)
     private readonly espnFixtureModel: Model<EspnFixtureDocument>,
@@ -36,13 +41,6 @@ export class EspnQueueBuilderService {
   // DAILY FIXTURE REFRESH
   // ============================================================
 
-  /**
-   * Creates one FIXTURE_REFRESH job per active league for the
-   * current Lagos calendar day.
-   *
-   * The trigger is date-specific so today's rolling fixture
-   * window can be refreshed again on the next calendar day.
-   */
   async buildDailyLeagueRefreshQueue(): Promise<{
     active: number;
     queued: number;
@@ -73,6 +71,16 @@ export class EspnQueueBuilderService {
         continue;
       }
 
+      if (!league.seasonStartDate) {
+        skipped += 1;
+
+        this.logger.warn(
+          `Skipping daily fixture refresh for ${league.leagueId}: missing season start date`,
+        );
+
+        continue;
+      }
+
       const leagueId = (league.slug || league.leagueId).trim().toLowerCase();
 
       if (!leagueId) {
@@ -83,6 +91,24 @@ export class EspnQueueBuilderService {
       active += 1;
 
       const priority = this.getQueuePriority(league.priority);
+
+      /*
+       * Extend/reuse the one persistent FIXTURE_REFRESH state.
+       *
+       * This does NOT create another state for the daily trigger.
+       * New dates are appended to the existing state, while dates
+       * already present in MongoDB are marked SUCCESS by the
+       * synchronization-state service.
+       */
+      await this.ensureFixtureRefreshState({
+        leagueId,
+
+        season: league.season,
+
+        priority,
+
+        seasonStartDate: league.seasonStartDate,
+      });
 
       const job = await this.espnQueueService.addFixtureRefreshJob({
         leagueId,
@@ -108,14 +134,6 @@ export class EspnQueueBuilderService {
   // STALE ACTIVE LEAGUES
   // ============================================================
 
-  /**
-   * Ensures an active league receives a fixture refresh when its
-   * most recent persisted fixture collection is older than the
-   * configured 48-hour threshold.
-   *
-   * This is a recovery/safety mechanism in addition to the
-   * normal daily rolling refresh.
-   */
   async buildStaleFixtureRefreshQueue(): Promise<{
     checked: number;
     stale: number;
@@ -142,6 +160,16 @@ export class EspnQueueBuilderService {
 
       if (typeof league.season !== 'number') {
         skipped += 1;
+        continue;
+      }
+
+      if (!league.seasonStartDate) {
+        skipped += 1;
+
+        this.logger.warn(
+          `Skipping stale fixture refresh for ${league.leagueId}: missing season start date`,
+        );
+
         continue;
       }
 
@@ -183,6 +211,20 @@ export class EspnQueueBuilderService {
 
       const priority = this.getQueuePriority(league.priority);
 
+      /*
+       * Reuse the same persistent FIXTURE_REFRESH state before
+       * creating the operational stale queue job.
+       */
+      await this.ensureFixtureRefreshState({
+        leagueId,
+
+        season: league.season,
+
+        priority,
+
+        seasonStartDate: league.seasonStartDate,
+      });
+
       const job = await this.espnQueueService.addFixtureRefreshJob({
         leagueId,
         season: league.season,
@@ -208,12 +250,6 @@ export class EspnQueueBuilderService {
   // STARTUP SUMMARY QUEUE
   // ============================================================
 
-  /**
-   * Startup-only Summary bootstrap.
-   *
-   * Every persisted ESPN fixture without payload.summary is queued.
-   * This is intentionally not restricted to the upcoming window.
-   */
   async buildStartupSummaryRefreshQueue(): Promise<{
     checked: number;
     missingSummary: number;
@@ -299,14 +335,6 @@ export class EspnQueueBuilderService {
   // CONTINUOUS SUMMARY QUEUE
   // ============================================================
 
-  /**
-   * Queues Summary collection for:
-   *
-   * 1. upcoming fixtures inside the next four days;
-   * 2. recently finished fixtures that still have no Summary.
-   *
-   * A fixture is never queued when payload.summary already exists.
-   */
   async buildSummaryRefreshQueue(): Promise<{
     upcomingChecked: number;
     finishedChecked: number;
@@ -437,18 +465,135 @@ export class EspnQueueBuilderService {
   }
 
   // ============================================================
-  // FINISHED FIXTURE FOLLOW-UP
+  // YOUTUBE HIGHLIGHT QUEUE
   // ============================================================
 
   /**
-   * Called immediately after the live ESPN flow detects that a
-   * fixture has finished.
+   * Creates YouTube highlight jobs for recently finished fixtures.
    *
-   * It creates:
-   * - a fixture refresh for the affected league;
-   * - a Summary refresh for the finished event when Summary is
-   *   still missing.
+   * Only active ELITE, HIGH and REGIONAL competitions are eligible.
+   *
+   * SELECTIVE competitions are deliberately excluded before a
+   * queue document is created.
    */
+  async buildYoutubeHighlightQueue(): Promise<{
+    checked: number;
+    eligible: number;
+    queued: number;
+    skipped: number;
+  }> {
+    const now = new Date();
+
+    const finishedSince = new Date(
+      now.getTime() - this.youtubeFinishedWindowHours * 60 * 60 * 1000,
+    );
+
+    const fixtures = await this.espnFixtureModel
+      .find({
+        completed: true,
+
+        fixtureDate: {
+          $gte: finishedSince,
+          $lte: now,
+        },
+      })
+      .select({
+        eventId: 1,
+        leagueId: 1,
+        season: 1,
+        fixtureDate: 1,
+      })
+      .sort({
+        fixtureDate: 1,
+      })
+      .lean()
+      .exec();
+
+    let checked = 0;
+    let eligible = 0;
+    let queued = 0;
+    let skipped = 0;
+
+    for (const fixture of fixtures) {
+      checked += 1;
+
+      if (!fixture.eventId) {
+        skipped += 1;
+        continue;
+      }
+
+      if (!fixture.leagueId) {
+        skipped += 1;
+        continue;
+      }
+
+      if (typeof fixture.season !== 'number') {
+        skipped += 1;
+        continue;
+      }
+
+      const league = await this.espnActiveCompetitionService.getByLeagueId(
+        fixture.leagueId,
+      );
+
+      if (!league?.isActive) {
+        skipped += 1;
+        continue;
+      }
+
+      /*
+       * SELECTIVE is a hard exclusion.
+       *
+       * It is intentionally checked before creating the queue job.
+       */
+      if (league.priority === CompetitionPriority.SELECTIVE) {
+        skipped += 1;
+        continue;
+      }
+
+      /*
+       * Only configured priority levels are eligible.
+       *
+       * getQueuePriority() maps:
+       *   ELITE     → 1
+       *   HIGH      → 2
+       *   REGIONAL  → 3
+       *   SELECTIVE → 4
+       */
+      const priority = this.getQueuePriority(league.priority);
+
+      if (priority > 3) {
+        skipped += 1;
+        continue;
+      }
+
+      eligible += 1;
+
+      const job = await this.espnQueueService.addYoutubeHighlightJob({
+        leagueId: fixture.leagueId,
+        eventId: fixture.eventId,
+        season: fixture.season,
+        priority,
+        scheduledFor: new Date(),
+      });
+
+      if (this.isFreshPendingJob(job)) {
+        queued += 1;
+      }
+    }
+
+    return {
+      checked,
+      eligible,
+      queued,
+      skipped,
+    };
+  }
+
+  // ============================================================
+  // FINISHED FIXTURE FOLLOW-UP
+  // ============================================================
+
   async queueFinishedFixtureFollowUp(params: {
     eventId: string;
     leagueId: string;
@@ -477,6 +622,25 @@ export class EspnQueueBuilderService {
     }
 
     const priority = this.getQueuePriority(activeLeague.priority);
+
+    /*
+     * Finished-fixture follow-up still uses the same persistent
+     * FIXTURE_REFRESH state for the league/season.
+     *
+     * The operational queue job may be FINISHED:<eventId>, but
+     * that trigger does not create another sync-state document.
+     */
+    if (activeLeague.seasonStartDate) {
+      await this.ensureFixtureRefreshState({
+        leagueId,
+
+        season,
+
+        priority,
+
+        seasonStartDate: activeLeague.seasonStartDate,
+      });
+    }
 
     const fixtureRefreshJob = await this.espnQueueService.addFixtureRefreshJob({
       leagueId,
@@ -517,6 +681,48 @@ export class EspnQueueBuilderService {
       fixtureRefreshQueued: this.isFreshPendingJob(fixtureRefreshJob),
       summaryRefreshQueued,
     };
+  }
+
+  // ============================================================
+  // FIXTURE SYNC STATE
+  // ============================================================
+
+  private async ensureFixtureRefreshState(params: {
+    leagueId: string;
+    season: number;
+    priority: number;
+    seasonStartDate: string | Date;
+  }): Promise<void> {
+    const seasonStartDate = new Date(params.seasonStartDate);
+
+    if (Number.isNaN(seasonStartDate.getTime())) {
+      throw new Error(
+        `Invalid season start date for fixture refresh: ${params.leagueId}`,
+      );
+    }
+
+    const dateFrom = this.toDateOnly(seasonStartDate);
+
+    const dateTo = this.toDateOnly(
+      this.addUtcDays(
+        this.startOfUtcDay(new Date()),
+        this.fixtureRefreshForwardDays,
+      ),
+    );
+
+    await this.sportsSyncStateService.ensureFixtureRefreshState({
+      leagueId: params.leagueId,
+
+      season: params.season,
+
+      priority: params.priority,
+
+      dateFrom,
+
+      dateTo,
+
+      trackingMode: 'HISTORY',
+    });
   }
 
   // ============================================================
@@ -697,8 +903,22 @@ export class EspnQueueBuilderService {
   }
 
   // ============================================================
-  // DATE KEY
+  // DATE HELPERS
   // ============================================================
+
+  private startOfUtcDay(date: Date): Date {
+    return new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+    );
+  }
+
+  private addUtcDays(date: Date, days: number): Date {
+    return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+  }
+
+  private toDateOnly(date: Date): string {
+    return date.toISOString().slice(0, 10);
+  }
 
   private getLagosDateKey(date = new Date()): string {
     /*
@@ -711,11 +931,6 @@ export class EspnQueueBuilderService {
   // NOTE
   // ============================================================
 
-  /**
-   * Kept as a small explicit constant for the fixture refresh
-   * architecture. The actual ESPN fixture collection service
-   * decides how its forward window is applied.
-   */
   getFixtureRefreshForwardDays(): number {
     return this.fixtureRefreshForwardDays;
   }

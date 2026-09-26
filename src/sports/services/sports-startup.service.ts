@@ -141,9 +141,11 @@ export class SportsStartupService implements OnModuleInit {
       // PHASE 3
       // FIXTURE COLLECTION
       //
-      // Startup collects the full persisted season window for
-      // active competitions through today + configured forward days.
-      // No Summary/standings/derived/news work runs here.
+      // Startup only reads the persistent synchronization state
+      // here. The synchronization state service has already checked
+      // MongoDB for existing fixtures and marked those dates SUCCESS.
+      //
+      // Only dates still incomplete are sent to ESPN.
       // --------------------------------------------------------
 
       await this.runFixturePhase(leagueContexts);
@@ -301,40 +303,40 @@ export class SportsStartupService implements OnModuleInit {
 
       const priority = this.getQueuePriority(league.priority);
 
-      const stateKey = this.sportsSyncStateService.getQueueStateKey({
-        jobType: EspnQueueJobType.FIXTURE_REFRESH,
+      /*
+       * SportsSyncStateService owns fixture-state initialization.
+       *
+       * Startup does not inspect EspnFixture here.
+       *
+       * The sync-state service:
+       *   1. reuses the existing league/season FIXTURE_REFRESH state,
+       *   2. extends it when a later date is needed,
+       *   3. checks MongoDB fixtures,
+       *   4. marks dates with fixtures SUCCESS,
+       *   5. leaves missing dates PENDING.
+       */
+      const state = await this.sportsSyncStateService.ensureFixtureRefreshState(
+        {
+          leagueId,
 
-        leagueId,
+          season: league.season,
 
-        season: league.season,
-      });
+          priority,
 
-      await this.sportsSyncStateService.ensureQueueState({
-        jobType: EspnQueueJobType.FIXTURE_REFRESH,
+          dateFrom: this.toDateOnly(new Date(league.seasonStartDate)),
 
-        leagueId,
-
-        season: league.season,
-
-        priority,
-
-        trackingMode: 'HISTORY',
-      });
-
-      await this.sportsSyncStateService.ensureDateWindow({
-        stateKey,
-
-        dateFrom: this.toDateOnly(new Date(league.seasonStartDate)),
-
-        dateTo: this.toDateOnly(
-          this.addUtcDays(
-            this.startOfUtcDay(new Date()),
-            this.startupFixtureForwardDays,
+          dateTo: this.toDateOnly(
+            this.addUtcDays(
+              this.startOfUtcDay(new Date()),
+              this.startupFixtureForwardDays,
+            ),
           ),
-        ),
 
-        trackingMode: 'HISTORY',
-      });
+          trackingMode: 'HISTORY',
+        },
+      );
+
+      const stateKey = state.stateKey;
 
       await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
 
@@ -655,6 +657,14 @@ export class SportsStartupService implements OnModuleInit {
               continue;
             }
 
+            /*
+             * FIXTURE_REFRESH sync state is no longer trigger-specific.
+             *
+             * Operational queue jobs may still receive trigger IDs,
+             * but the persistent synchronization state must remain:
+             *
+             *   QUEUE:FIXTURE_REFRESH:<league>:<season>
+             */
             const job = await this.espnQueueService.addFixtureRefreshJob({
               leagueId: state.leagueId,
 
@@ -663,8 +673,6 @@ export class SportsStartupService implements OnModuleInit {
               priority: state.priority ?? 4,
 
               scheduledFor: new Date(),
-
-              triggerEventId: this.extractFixtureTriggerEventId(state.stateKey),
             });
 
             if (
@@ -791,20 +799,6 @@ export class SportsStartupService implements OnModuleInit {
 
       throw error;
     }
-  }
-
-  // ============================================================
-  // FIXTURE REFRESH TRIGGER EXTRACTION
-  // ============================================================
-
-  private extractFixtureTriggerEventId(stateKey: string): string | undefined {
-    const parts = stateKey.split(':');
-
-    if (parts.length < 5) {
-      return undefined;
-    }
-
-    return parts.slice(4).join(':') || undefined;
   }
 
   // ============================================================
