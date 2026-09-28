@@ -448,162 +448,202 @@ export class SportsStartupService implements OnModuleInit {
     processed: number;
     skipped: number;
   }> {
-    const fixtures = await this.espnFixtureModel
-      .find({
-        $or: [
-          {
-            'payload.summary': {
-              $exists: false,
-            },
+    const missingSummaryFilter = {
+      $or: [
+        {
+          'payload.summary': {
+            $exists: false,
           },
-          {
-            'payload.summary': null,
-          },
-        ],
-      })
-      .select({
-        eventId: 1,
-        leagueId: 1,
-        season: 1,
-        completed: 1,
-        payload: 1,
-      })
-      .sort({
-        fixtureDate: 1,
-      })
-      .lean()
+        },
+        {
+          'payload.summary': null,
+        },
+      ],
+    };
+
+    /*
+     * Discover which leagues currently have fixtures without summaries.
+     *
+     * Only the league IDs are loaded here.
+     */
+    const leagueIds = await this.espnFixtureModel
+      .distinct('leagueId', missingSummaryFilter)
       .exec();
 
+    const validLeagueIds = leagueIds.filter(
+      (leagueId): leagueId is string =>
+        typeof leagueId === 'string' && leagueId.trim().length > 0,
+    );
+
+    let checked = 0;
     let missingSummary = 0;
     let processed = 0;
     let skipped = 0;
 
     this.logger.log(
-      `ESPN STARTUP SUMMARY PHASE started: fixtures=${fixtures.length}`,
+      `ESPN STARTUP SUMMARY PHASE started: leagues=${validLeagueIds.length}`,
     );
 
-    for (const fixture of fixtures) {
-      if (!fixture.eventId) {
-        skipped += 1;
-        continue;
-      }
+    /*
+     * Process MongoDB one league at a time.
+     *
+     * Everything below this point remains the same processing flow
+     * that was already being used for each fixture.
+     */
+    for (const leagueId of validLeagueIds) {
+      const fixtures = await this.espnFixtureModel
+        .find({
+          leagueId,
 
-      if (!fixture.leagueId) {
-        skipped += 1;
-        continue;
-      }
+          $or: missingSummaryFilter.$or,
+        })
+        .select({
+          eventId: 1,
+          leagueId: 1,
+          season: 1,
+          completed: 1,
+          payload: 1,
+        })
+        .sort({
+          fixtureDate: 1,
+        })
+        .lean()
+        .exec();
 
-      if (typeof fixture.season !== 'number') {
-        skipped += 1;
-        continue;
-      }
+      this.logger.log(
+        `ESPN STARTUP SUMMARY CHECK: league=${leagueId}, fixtures=${fixtures.length}`,
+      );
 
-      if (this.hasSummary(fixture)) {
-        continue;
-      }
+      for (const fixture of fixtures) {
+        checked += 1;
 
-      missingSummary += 1;
+        if (!fixture.eventId) {
+          skipped += 1;
+          continue;
+        }
 
-      const stateKey = this.sportsSyncStateService.getQueueStateKey({
-        jobType: EspnQueueJobType.SUMMARY_REFRESH,
+        if (!fixture.leagueId) {
+          skipped += 1;
+          continue;
+        }
 
-        leagueId: fixture.leagueId,
+        if (typeof fixture.season !== 'number') {
+          skipped += 1;
+          continue;
+        }
 
-        season: fixture.season,
+        if (this.hasSummary(fixture)) {
+          continue;
+        }
 
-        eventId: fixture.eventId,
-      });
+        missingSummary += 1;
 
-      const priority = await this.getLeaguePriority(fixture.leagueId);
+        const stateKey = this.sportsSyncStateService.getQueueStateKey({
+          jobType: EspnQueueJobType.SUMMARY_REFRESH,
 
-      await this.sportsSyncStateService.ensureQueueState({
-        jobType: EspnQueueJobType.SUMMARY_REFRESH,
+          leagueId: fixture.leagueId,
 
-        leagueId: fixture.leagueId,
+          season: fixture.season,
 
-        season: fixture.season,
+          eventId: fixture.eventId,
+        });
 
-        eventId: fixture.eventId,
+        const priority = await this.getLeaguePriority(fixture.leagueId);
 
-        priority,
+        await this.sportsSyncStateService.ensureQueueState({
+          jobType: EspnQueueJobType.SUMMARY_REFRESH,
 
-        trackingMode: 'WINDOW',
-      });
+          leagueId: fixture.leagueId,
 
-      const steps =
-        fixture.completed === true ? ['summary', 'youtube'] : ['summary'];
+          season: fixture.season,
 
-      await this.sportsSyncStateService.ensureStepUnits(stateKey, steps);
+          eventId: fixture.eventId,
 
-      await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
+          priority,
 
-      try {
-        await this.runTrackedStep(stateKey, 'summary', async () => {
-          const currentFixture = await this.espnFixtureModel
-            .findOne({
-              eventId: fixture.eventId,
+          trackingMode: 'WINDOW',
+        });
 
+        const steps =
+          fixture.completed === true ? ['summary', 'youtube'] : ['summary'];
+
+        await this.sportsSyncStateService.ensureStepUnits(stateKey, steps);
+
+        await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
+
+        try {
+          await this.runTrackedStep(stateKey, 'summary', async () => {
+            const currentFixture = await this.espnFixtureModel
+              .findOne({
+                eventId: fixture.eventId,
+
+                leagueId: fixture.leagueId,
+
+                season: fixture.season,
+              })
+              .select({
+                eventId: 1,
+                'payload.summary': 1,
+              })
+              .lean()
+              .exec();
+
+            if (!currentFixture) {
+              throw new Error(
+                `Startup Summary fixture ${fixture.eventId} not found`,
+              );
+            }
+
+            if (this.hasSummary(currentFixture)) {
+              return;
+            }
+
+            const summary = await this.espnService.getMatchSummary(
+              fixture.leagueId,
+              fixture.eventId,
+            );
+
+            await this.sportsCollectionService.collectEspnMatchSummary({
               leagueId: fixture.leagueId,
 
-              season: fixture.season,
-            })
-            .select({
-              eventId: 1,
-              'payload.summary': 1,
-            })
-            .lean()
-            .exec();
+              eventId: fixture.eventId,
 
-          if (!currentFixture) {
+              summary,
+            });
+          });
+
+          if (fixture.completed === true) {
+            await this.runTrackedStep(stateKey, 'youtube', async () => {
+              await this.youtubeHighlightService.processFixture(
+                fixture.eventId,
+              );
+            });
+          }
+
+          await this.sportsSyncStateService.refreshOverallStatus(stateKey);
+
+          const complete =
+            await this.sportsSyncStateService.isComplete(stateKey);
+
+          if (!complete) {
             throw new Error(
-              `Startup Summary fixture ${fixture.eventId} not found`,
+              `Startup Summary synchronization state ${stateKey} is not complete`,
             );
           }
 
-          if (this.hasSummary(currentFixture)) {
-            return;
-          }
+          processed += 1;
+        } catch (error) {
+          skipped += 1;
 
-          const summary = await this.espnService.getMatchSummary(
-            fixture.leagueId,
-            fixture.eventId,
-          );
-
-          await this.sportsCollectionService.collectEspnMatchSummary({
-            leagueId: fixture.leagueId,
-
-            eventId: fixture.eventId,
-
-            summary,
-          });
-        });
-
-        if (fixture.completed === true) {
-          await this.runTrackedStep(stateKey, 'youtube', async () => {
-            await this.youtubeHighlightService.processFixture(fixture.eventId);
-          });
-        }
-
-        await this.sportsSyncStateService.refreshOverallStatus(stateKey);
-
-        const complete = await this.sportsSyncStateService.isComplete(stateKey);
-
-        if (!complete) {
-          throw new Error(
-            `Startup Summary synchronization state ${stateKey} is not complete`,
+          this.logger.error(
+            `Startup Summary failed for ${fixture.leagueId}/${fixture.eventId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           );
         }
-
-        processed += 1;
-      } catch (error) {
-        skipped += 1;
-
-        this.logger.error(
-          `Startup Summary failed for ${fixture.leagueId}/${fixture.eventId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
       }
+
+      this.logger.log(`ESPN STARTUP SUMMARY league completed: ${leagueId}`);
     }
 
     /*
@@ -618,7 +658,7 @@ export class SportsStartupService implements OnModuleInit {
     }
 
     return {
-      checked: fixtures.length,
+      checked,
       missingSummary,
       processed,
       skipped,
