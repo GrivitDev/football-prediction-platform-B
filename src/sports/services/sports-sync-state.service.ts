@@ -107,10 +107,8 @@ export class SportsSyncStateService {
   }): Promise<SportsSyncStateDocument> {
     const stateKey = this.getQueueStateKey(params);
 
-    const isFixtureRefresh =
-      String(params.jobType) === String(EspnQueueJobType.FIXTURE_REFRESH);
-
-    const isSummaryRefresh =
+    const isPersistentLeagueSeasonState =
+      String(params.jobType) === String(EspnQueueJobType.FIXTURE_REFRESH) ||
       String(params.jobType) === String(EspnQueueJobType.SUMMARY_REFRESH);
 
     return this.syncStateModel
@@ -128,17 +126,15 @@ export class SportsSyncStateService {
 
             season: params.season,
 
-            /*
-             * Persistent fixture/summary synchronization states are
-             * league/season scoped. Their event identity lives in
-             * the synchronization units instead.
-             */
-            eventId:
-              isFixtureRefresh || isSummaryRefresh ? undefined : params.eventId,
-
             priority: params.priority,
 
             trackingMode: params.trackingMode,
+
+            ...(isPersistentLeagueSeasonState
+              ? {}
+              : {
+                  eventId: params.eventId,
+                }),
 
             ...(params.queueJobKey
               ? {
@@ -146,6 +142,14 @@ export class SportsSyncStateService {
                 }
               : {}),
           },
+
+          ...(isPersistentLeagueSeasonState
+            ? {
+                $unset: {
+                  eventId: 1,
+                },
+              }
+            : {}),
 
           $setOnInsert: {
             stateKey,
@@ -323,14 +327,20 @@ export class SportsSyncStateService {
   /**
    * Keeps one persistent SUMMARY_REFRESH state for a league/season.
    *
-   * Every fixture event becomes a SUMMARY unit:
+   * MongoDB fixtures are the source of truth when reconciling the
+   * persistent synchronization ledger.
+   *
+   * Every persisted ESPN fixture becomes:
    *
    *   STEP:SUMMARY:<eventId>
    *
-   * The state is reconciled against MongoDB:
+   * Existing Summary:
    *
-   *   summary exists  -> SUCCESS
-   *   summary missing  -> PENDING / FAILED
+   *   SUCCESS
+   *
+   * Missing Summary:
+   *
+   *   PENDING / FAILED
    *
    * This method does not call ESPN.
    */
@@ -376,6 +386,12 @@ export class SportsSyncStateService {
 
     const state = await this.requireState(stateKey);
 
+    /*
+     * Read every fixture for this league/season once.
+     *
+     * This is the source of truth for whether a Summary actually
+     * exists in the canonical sports_espn_fixtures collection.
+     */
     const fixtures = await this.espnFixtureModel
       .find({
         leagueId,
@@ -385,12 +401,17 @@ export class SportsSyncStateService {
       .select({
         eventId: 1,
 
-        'payload.summary': 1,
+        payload: 1,
       })
       .lean()
       .exec();
 
-    const existingSummaryUnits = new Map(
+    /*
+     * Existing synchronization units are indexed once so that
+     * reconciling thousands of fixtures does not repeatedly scan
+     * the entire state.units array.
+     */
+    const existingUnits = new Map(
       state.units
         .filter(
           (unit) =>
@@ -404,15 +425,17 @@ export class SportsSyncStateService {
     let changed = false;
 
     for (const fixture of fixtures) {
-      if (!fixture.eventId) {
+      const eventId = String(fixture.eventId ?? '').trim();
+
+      if (!eventId) {
         continue;
       }
 
-      const stepKey = this.getSummaryStepKey(fixture.eventId);
+      const stepKey = this.getSummaryStepKey(eventId);
 
       const hasSummary = this.hasSummaryPayload(fixture.payload);
 
-      const existing = existingSummaryUnits.get(stepKey);
+      const existing = existingUnits.get(stepKey);
 
       if (!existing) {
         const unit = {
@@ -435,13 +458,21 @@ export class SportsSyncStateService {
             : {}),
         };
 
-        existingSummaryUnits.set(stepKey, unit);
+        state.units.push(unit);
+
+        existingUnits.set(stepKey, unit);
 
         changed = true;
 
         continue;
       }
 
+      /*
+       * MongoDB says the Summary exists.
+       *
+       * The state must agree with MongoDB regardless of the
+       * previous state recorded for this event.
+       */
       if (hasSummary) {
         if (existing.status !== SportsSyncUnitStatus.SUCCESS) {
           existing.status = SportsSyncUnitStatus.SUCCESS;
@@ -461,20 +492,20 @@ export class SportsSyncStateService {
       }
 
       /*
-       * Actual MongoDB data says the summary is missing.
+       * MongoDB says the Summary does not exist.
        *
-       * A previously SUCCESS unit must therefore no longer be
-       * considered synchronized.
+       * A previous SUCCESS can no longer remain SUCCESS.
+       *
+       * FAILED is preserved so the retry/error history remains
+       * visible. PROCESSING is left for resetInterruptedUnits()
+       * to recover immediately afterward.
        */
-      if (
-        existing.status === SportsSyncUnitStatus.SUCCESS ||
-        existing.status === SportsSyncUnitStatus.PROCESSING
-      ) {
+      if (existing.status === SportsSyncUnitStatus.SUCCESS) {
         existing.status = SportsSyncUnitStatus.PENDING;
 
-        existing.completedAt = undefined;
-
         existing.startedAt = undefined;
+
+        existing.completedAt = undefined;
 
         existing.nextAttemptAt = undefined;
 
@@ -484,40 +515,12 @@ export class SportsSyncStateService {
       }
     }
 
-    const summaryUnits = Array.from(existingSummaryUnits.values());
-
-    /*
-     * SUMMARY_REFRESH owns summary synchronization only.
-     *
-     * No YouTube units are stored here.
-     */
-    if (
-      state.units.length !== summaryUnits.length ||
-      state.units.some(
-        (unit, index) => state.units[index]?.key !== summaryUnits[index]?.key,
-      )
-    ) {
-      state.units = summaryUnits;
-
-      changed = true;
-    }
-
     const nextStatus = this.calculateOverallStatus(state);
 
     if (state.status !== nextStatus) {
       state.status = nextStatus;
 
       changed = true;
-    }
-
-    if (state.status === SportsSyncStateStatus.SUCCESS) {
-      state.lastSuccessfulAt = new Date();
-
-      state.lastCompletedAt = new Date();
-
-      state.lastError = undefined;
-
-      state.consecutiveFailures = 0;
     }
 
     if (changed) {
@@ -530,7 +533,403 @@ export class SportsSyncStateService {
   }
 
   /**
-   * Returns the synchronization unit key used for one summary
+   * Ensures one Summary event unit exists inside the persistent
+   * league/season Summary state.
+   *
+   * This remains useful for normal queue processing when a specific
+   * event is discovered independently of startup reconciliation.
+   */
+  async ensureSummaryEventState(params: {
+    leagueId: string;
+    season: number;
+    eventId: string;
+    priority: number;
+    hasSummary?: boolean;
+    trackingMode?: 'WINDOW' | 'HISTORY';
+  }): Promise<SportsSyncStateDocument> {
+    const leagueId = this.normalize(params.leagueId);
+
+    const eventId = String(params.eventId).trim();
+
+    if (!leagueId) {
+      throw new Error('Summary event state requires a valid league ID');
+    }
+
+    if (typeof params.season !== 'number') {
+      throw new Error('Summary event state requires a valid season');
+    }
+
+    if (!eventId) {
+      throw new Error('Summary event state requires a valid event ID');
+    }
+
+    const stateKey = this.getQueueStateKey({
+      jobType: EspnQueueJobType.SUMMARY_REFRESH,
+
+      leagueId,
+
+      season: params.season,
+    });
+
+    await this.ensureQueueState({
+      jobType: EspnQueueJobType.SUMMARY_REFRESH,
+
+      leagueId,
+
+      season: params.season,
+
+      priority: params.priority,
+
+      trackingMode: params.trackingMode ?? 'HISTORY',
+    });
+
+    const state = await this.requireState(stateKey);
+
+    const stepKey = this.getSummaryStepKey(eventId);
+
+    const existing = state.units.find(
+      (unit) =>
+        unit.type === SportsSyncUnitType.STEP && unit.stepKey === stepKey,
+    );
+
+    let changed = false;
+
+    if (!existing) {
+      state.units.push({
+        key: `STEP:${stepKey}`,
+
+        type: SportsSyncUnitType.STEP,
+
+        stepKey,
+
+        status:
+          params.hasSummary === true
+            ? SportsSyncUnitStatus.SUCCESS
+            : SportsSyncUnitStatus.PENDING,
+
+        attempts: 0,
+
+        ...(params.hasSummary === true
+          ? {
+              completedAt: new Date(),
+            }
+          : {}),
+      });
+
+      changed = true;
+    } else if (params.hasSummary === true) {
+      if (existing.status !== SportsSyncUnitStatus.SUCCESS) {
+        existing.status = SportsSyncUnitStatus.SUCCESS;
+
+        existing.completedAt = new Date();
+
+        existing.startedAt = undefined;
+
+        existing.nextAttemptAt = undefined;
+
+        existing.lastError = undefined;
+
+        changed = true;
+      }
+    } else if (
+      existing.status === SportsSyncUnitStatus.SUCCESS ||
+      existing.status === SportsSyncUnitStatus.PROCESSING
+    ) {
+      existing.status = SportsSyncUnitStatus.PENDING;
+
+      existing.startedAt = undefined;
+
+      existing.completedAt = undefined;
+
+      existing.nextAttemptAt = undefined;
+
+      existing.lastError = undefined;
+
+      changed = true;
+    }
+
+    if (changed) {
+      state.status = this.calculateOverallStatus(state);
+
+      state.markModified('units');
+
+      await state.save();
+    }
+
+    return state;
+  }
+
+  /**
+   * Marks all summary events participating in the current startup
+   * batch as PROCESSING in one state-document write.
+   */
+  async markSummaryEventsProcessing(
+    stateKey: string,
+    eventIds: string[],
+  ): Promise<void> {
+    const state = await this.requireState(stateKey);
+
+    const eventIdSet = new Set(
+      eventIds.map((eventId) => String(eventId).trim()).filter(Boolean),
+    );
+
+    if (eventIdSet.size === 0) {
+      return;
+    }
+
+    const unitsByStepKey = new Map(
+      state.units
+        .filter(
+          (unit) =>
+            unit.type === SportsSyncUnitType.STEP &&
+            typeof unit.stepKey === 'string',
+        )
+        .map((unit) => [unit.stepKey as string, unit]),
+    );
+
+    const now = new Date();
+
+    let changed = false;
+
+    for (const eventId of eventIdSet) {
+      const stepKey = this.getSummaryStepKey(eventId);
+
+      const unit = unitsByStepKey.get(stepKey);
+
+      if (!unit) {
+        throw new Error(
+          `Summary synchronization unit ${stepKey} does not exist in ${stateKey}`,
+        );
+      }
+
+      if (unit.status === SportsSyncUnitStatus.SUCCESS) {
+        continue;
+      }
+
+      unit.status = SportsSyncUnitStatus.PROCESSING;
+
+      unit.attempts += 1;
+
+      unit.startedAt = now;
+
+      unit.completedAt = undefined;
+
+      unit.nextAttemptAt = undefined;
+
+      unit.lastError = undefined;
+
+      changed = true;
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    state.status = SportsSyncStateStatus.PROCESSING;
+
+    state.markModified('units');
+
+    await state.save();
+  }
+
+  /**
+   * Records that one individual ESPN Summary request completed
+   * successfully.
+   *
+   * This write is intentionally immediate so the synchronization
+   * ledger shows live progress while the actual fixture document
+   * waits for the final league/season bulkWrite().
+   *
+   * SUCCESS here means:
+   *
+   *   ESPN request completed successfully.
+   *
+   * It does not mean:
+   *
+   *   fixture persistence completed.
+   *
+   * If the final bulkWrite fails, markSummaryBulkWriteFailed()
+   * returns these successful fetch units to FAILED.
+   */
+  async markSummaryEventFetchSuccess(
+    stateKey: string,
+    eventId: string,
+  ): Promise<void> {
+    const stepKey = this.getSummaryStepKey(eventId);
+
+    const now = new Date();
+
+    const result = await this.syncStateModel
+      .updateOne(
+        {
+          stateKey,
+
+          'units.key': `STEP:${stepKey}`,
+        },
+        {
+          $set: {
+            'units.$.status': SportsSyncUnitStatus.SUCCESS,
+
+            'units.$.completedAt': now,
+          },
+
+          $unset: {
+            'units.$.startedAt': 1,
+
+            'units.$.nextAttemptAt': 1,
+
+            'units.$.lastError': 1,
+          },
+        },
+      )
+      .exec();
+
+    if (result.matchedCount === 0) {
+      throw new Error(
+        `Summary synchronization unit ${stepKey} does not exist in ${stateKey}`,
+      );
+    }
+  }
+
+  /**
+   * Records one individual ESPN Summary fetch failure immediately.
+   */
+  async markSummaryEventFetchFailed(
+    stateKey: string,
+    eventId: string,
+    error: unknown,
+  ): Promise<void> {
+    const stepKey = this.getSummaryStepKey(eventId);
+
+    const message = error instanceof Error ? error.message : String(error);
+
+    const nextAttemptAt = new Date(Date.now() + this.getRetryDelay(1));
+
+    const result = await this.syncStateModel
+      .updateOne(
+        {
+          stateKey,
+
+          'units.key': `STEP:${stepKey}`,
+        },
+        {
+          $set: {
+            'units.$.status': SportsSyncUnitStatus.FAILED,
+
+            'units.$.nextAttemptAt': nextAttemptAt,
+
+            'units.$.lastError': message,
+
+            status: SportsSyncStateStatus.PARTIAL,
+
+            lastError: message,
+          },
+
+          $unset: {
+            'units.$.startedAt': 1,
+
+            'units.$.completedAt': 1,
+          },
+
+          $inc: {
+            consecutiveFailures: 1,
+          },
+        },
+      )
+      .exec();
+
+    if (result.matchedCount === 0) {
+      throw new Error(
+        `Summary synchronization unit ${stepKey} does not exist in ${stateKey}`,
+      );
+    }
+  }
+
+  /**
+   * The ESPN calls may all have completed successfully while the
+   * final fixture bulkWrite fails.
+   *
+   * Every fetched Summary belonging to that bulk batch is therefore
+   * returned to FAILED.
+   *
+   * The next startup reconciliation checks the actual fixture
+   * collection and restores SUCCESS for any Summary that really
+   * exists in MongoDB.
+   */
+  async markSummaryBulkWriteFailed(
+    stateKey: string,
+    eventIds: string[],
+    error: unknown,
+  ): Promise<void> {
+    const state = await this.requireState(stateKey);
+
+    const unitsByStepKey = new Map(
+      state.units
+        .filter(
+          (unit) =>
+            unit.type === SportsSyncUnitType.STEP &&
+            typeof unit.stepKey === 'string',
+        )
+        .map((unit) => [unit.stepKey as string, unit]),
+    );
+
+    const message = error instanceof Error ? error.message : String(error);
+
+    const now = new Date();
+
+    const nextAttemptAt = new Date(now.getTime() + this.getRetryDelay(1));
+
+    let changed = false;
+
+    let failuresAdded = 0;
+
+    for (const eventId of eventIds) {
+      const normalizedEventId = String(eventId).trim();
+
+      if (!normalizedEventId) {
+        continue;
+      }
+
+      const stepKey = this.getSummaryStepKey(normalizedEventId);
+
+      const unit = unitsByStepKey.get(stepKey);
+
+      if (!unit) {
+        continue;
+      }
+
+      unit.status = SportsSyncUnitStatus.FAILED;
+
+      unit.startedAt = undefined;
+
+      unit.completedAt = undefined;
+
+      unit.nextAttemptAt = nextAttemptAt;
+
+      unit.lastError = message;
+
+      failuresAdded += 1;
+
+      changed = true;
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    state.status = SportsSyncStateStatus.PARTIAL;
+
+    state.lastError = message;
+
+    state.consecutiveFailures += failuresAdded;
+
+    state.markModified('units');
+
+    await state.save();
+  }
+
+  /**
+   * Returns the synchronization unit key used for one Summary
    * event inside SUMMARY_REFRESH.
    *
    * Example:
@@ -548,7 +947,7 @@ export class SportsSyncStateService {
   }
 
   /**
-   * Returns incomplete summary event IDs from a persistent
+   * Returns incomplete Summary event IDs from a persistent
    * SUMMARY_REFRESH state.
    */
   async getIncompleteSummaryEvents(stateKey: string): Promise<string[]> {

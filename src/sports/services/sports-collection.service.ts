@@ -2447,6 +2447,156 @@ export class SportsCollectionService {
   }
 
   // ============================================================
+  // ESPN — MATCH SUMMARY BULK PERSISTENCE
+  // ============================================================
+
+  /**
+   * Persist multiple ESPN summaries into their existing canonical
+   * fixture documents in one MongoDB bulkWrite operation.
+   *
+   * This method deliberately updates only:
+   *
+   *   payload.summary
+   *   payload.summaryCollectedAt
+   *   collectedAt
+   *
+   * Existing fixture payload fields are preserved.
+   *
+   * No fixture document is created here. Summary persistence must
+   * belong to an already collected ESPN fixture.
+   */
+  async collectEspnMatchSummariesBulk(
+    summaries: Array<{
+      leagueId: string;
+      eventId: string;
+      summary: unknown;
+    }>,
+  ): Promise<{
+    requested: number;
+    matched: number;
+    modified: number;
+  }> {
+    if (summaries.length === 0) {
+      return {
+        requested: 0,
+        matched: 0,
+        modified: 0,
+      };
+    }
+
+    const collectedAt = new Date();
+
+    const uniqueSummaries = new Map<
+      string,
+      {
+        leagueId: string;
+        eventId: string;
+        summary: unknown;
+      }
+    >();
+
+    for (const item of summaries) {
+      const eventId = String(item.eventId ?? '').trim();
+
+      if (!eventId) {
+        continue;
+      }
+
+      uniqueSummaries.set(eventId, {
+        leagueId: this.normalizeLeagueId(item.leagueId),
+
+        eventId,
+
+        summary: item.summary,
+      });
+    }
+
+    const operations: Parameters<Model<EspnFixtureDocument>['bulkWrite']>[0] =
+      [];
+
+    for (const item of uniqueSummaries.values()) {
+      operations.push({
+        updateOne: {
+          filter: {
+            eventId: item.eventId,
+          },
+
+          update: {
+            $set: {
+              leagueId: item.leagueId,
+
+              'payload.summary': item.summary,
+
+              'payload.summaryCollectedAt': collectedAt,
+
+              collectedAt,
+            },
+          },
+
+          /*
+           * The fixture must already exist.
+           *
+           * We deliberately do not use upsert here because a Summary
+           * response must never create a fixture that was not already
+           * collected by the fixture pipeline.
+           */
+          upsert: false,
+        },
+      });
+    }
+
+    if (operations.length === 0) {
+      return {
+        requested: summaries.length,
+
+        matched: 0,
+
+        modified: 0,
+      };
+    }
+
+    /*
+     * Unordered bulk writes allow MongoDB to process independent
+     * fixture updates efficiently.
+     *
+     * A thrown BulkWriteError means the batch persistence did not
+     * complete successfully. The caller is responsible for moving
+     * the corresponding synchronization units back to FAILED.
+     */
+    const result = await this.espnFixtureModel.bulkWrite(operations, {
+      ordered: false,
+    });
+
+    const matched =
+      typeof result.matchedCount === 'number' ? result.matchedCount : 0;
+
+    const modified =
+      typeof result.modifiedCount === 'number' ? result.modifiedCount : 0;
+
+    /*
+     * Because upsert=false is intentional, every requested summary
+     * must have matched an existing fixture.
+     *
+     * A mismatch means that at least one summary could not be
+     * persisted to its canonical fixture document.
+     */
+    if (matched !== operations.length) {
+      throw new Error(
+        `ESPN summary bulk persistence matched ${matched} of ` +
+          `${operations.length} requested fixtures`,
+      );
+    }
+
+    return {
+      requested: operations.length,
+
+      matched,
+
+      modified,
+    };
+  }
+
+  // ============================================================
   // FOOTBALL-DATA — COMPETITION
   // ============================================================
 

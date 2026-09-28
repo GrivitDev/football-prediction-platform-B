@@ -2,17 +2,9 @@
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-
 import { EspnActiveCompetitionService } from './espn-active-competition.service';
 import { EspnQueueService } from './espn-queue.service';
 import { SportsSyncStateService } from './sports-sync-state.service';
-
-import {
-  EspnFixture,
-  EspnFixtureDocument,
-} from '../schemas/espn/espn-fixture.schema';
 
 import { CompetitionPriority } from '../enums/competition-priority.enum';
 import { EspnQueueJobType } from '../interfaces/espn-queue.interface';
@@ -55,6 +47,17 @@ export class SportsStartupService implements OnModuleInit {
 
   private readonly startupFixtureForwardDays = 8;
 
+  /**
+   * Summary requests are performed concurrently inside one league.
+   *
+   * The league itself remains sequential:
+   *
+   *   league 1 -> all summaries -> bulk write
+   *   league 2 -> all summaries -> bulk write
+   *   ...
+   */
+  private readonly startupSummaryConcurrency = 4;
+
   constructor(
     private readonly espnService: EspnService,
 
@@ -69,9 +72,6 @@ export class SportsStartupService implements OnModuleInit {
     private readonly sportsCollectionService: SportsCollectionService,
 
     private readonly sportsSyncStateService: SportsSyncStateService,
-
-    @InjectModel(EspnFixture.name)
-    private readonly espnFixtureModel: Model<EspnFixtureDocument>,
   ) {}
 
   // ============================================================
@@ -446,17 +446,30 @@ export class SportsStartupService implements OnModuleInit {
     );
 
     for (const context of contexts) {
-      await this.sportsSyncStateService.resetInterruptedUnits(
-        context.summaryStateKey,
+      /*
+       * Reconcile MongoDB and persistent summary state once for
+       * this league/season.
+       */
+      const state = await this.sportsSyncStateService.ensureSummaryRefreshState(
+        {
+          leagueId: context.leagueId,
+
+          season: context.season,
+
+          priority: context.priority,
+
+          trackingMode: 'HISTORY',
+        },
       );
 
-      const state = await this.sportsSyncStateService.requireState(
-        context.summaryStateKey,
-      );
+      await this.sportsSyncStateService.resetInterruptedUnits(state.stateKey);
 
+      /*
+       * Re-read the state after interrupted-unit recovery.
+       */
       const incompleteEvents =
         await this.sportsSyncStateService.getIncompleteSummaryEvents(
-          context.summaryStateKey,
+          state.stateKey,
         );
 
       checked += state.units.length;
@@ -469,76 +482,123 @@ export class SportsStartupService implements OnModuleInit {
           `remainingEvents=${incompleteEvents.length}`,
       );
 
-      for (const eventId of incompleteEvents) {
-        const stepKey = this.sportsSyncStateService.getSummaryStepKey(eventId);
+      if (incompleteEvents.length === 0) {
+        continue;
+      }
+
+      /*
+       * One state-document write marks the whole batch PROCESSING.
+       *
+       * Individual ESPN completions then update their own summary
+       * synchronization units immediately.
+       */
+      await this.sportsSyncStateService.markSummaryEventsProcessing(
+        state.stateKey,
+        incompleteEvents,
+      );
+
+      const batchStartedAt = Date.now();
+
+      const batchResults = await this.processSummaryBatch(
+        context,
+        state.stateKey,
+        incompleteEvents,
+      );
+
+      const successfulResults = batchResults.filter(
+        (result) => result.success && result.summary !== undefined,
+      );
+
+      const failedResults = batchResults.filter((result) => !result.success);
+
+      this.logger.log(
+        `SUMMARY ESPN FETCH PHASE completed for ${context.leagueId}: ` +
+          `total=${batchResults.length}, ` +
+          `successful=${successfulResults.length}, ` +
+          `failed=${failedResults.length}, ` +
+          `duration=${Date.now() - batchStartedAt}ms`,
+      );
+
+      /*
+       * Persist all successfully fetched summaries into the
+       * canonical fixture collection in ONE bulk operation.
+       */
+      if (successfulResults.length > 0) {
+        const bulkStartedAt = Date.now();
 
         try {
-          await this.runTrackedStep(
-            context.summaryStateKey,
-            stepKey,
-            async () => {
-              const currentFixture = await this.espnFixtureModel
-                .findOne({
-                  eventId,
-
-                  leagueId: context.leagueId,
-
-                  season: context.season,
-                })
-                .select({
-                  eventId: 1,
-
-                  'payload.summary': 1,
-                })
-                .lean()
-                .exec();
-
-              if (!currentFixture) {
-                throw new Error(`Startup Summary fixture ${eventId} not found`);
-              }
-
-              if (this.hasSummary(currentFixture)) {
-                return;
-              }
-
-              const summary = await this.espnService.getMatchSummary(
-                context.leagueId,
-                eventId,
-              );
-
-              await this.sportsCollectionService.collectEspnMatchSummary({
+          const bulkResult =
+            await this.sportsCollectionService.collectEspnMatchSummariesBulk(
+              successfulResults.map((result) => ({
                 leagueId: context.leagueId,
 
-                eventId,
+                eventId: result.eventId,
 
-                summary,
-              });
-            },
+                summary: result.summary,
+              })),
+            );
+
+          this.logger.log(
+            `SUMMARY fixture bulk write completed for ${context.leagueId}: ` +
+              `requested=${bulkResult.requested}, ` +
+              `matched=${bulkResult.matched}, ` +
+              `modified=${bulkResult.modified}, ` +
+              `duration=${Date.now() - bulkStartedAt}ms`,
           );
-
-          processed += 1;
         } catch (error) {
-          skipped += 1;
+          const message =
+            error instanceof Error ? error.message : String(error);
 
           this.logger.error(
-            `Startup Summary failed for ${context.leagueId}/${eventId}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            `SUMMARY fixture bulk write FAILED for ${context.leagueId}: ` +
+              `${message}`,
+          );
+
+          /*
+           * Every summary fetched in this bulk belongs back in
+           * FAILED because canonical fixture persistence did not
+           * complete successfully.
+           */
+          await this.sportsSyncStateService.markSummaryBulkWriteFailed(
+            state.stateKey,
+
+            successfulResults.map((result) => result.eventId),
+
+            error,
+          );
+
+          throw new Error(
+            `Summary bulk persistence failed for ${context.leagueId}: ${message}`,
           );
         }
       }
 
-      await this.sportsSyncStateService.refreshOverallStatus(
-        context.summaryStateKey,
-      );
+      processed += successfulResults.length;
+
+      skipped += failedResults.length;
+
+      /*
+       * SUCCESS means:
+       *
+       *   ESPN fetch succeeded
+       *   +
+       *   canonical fixture bulk persistence succeeded.
+       *
+       * FAILED means:
+       *
+       *   ESPN fetch failed
+       *   OR
+       *   canonical fixture bulk persistence failed.
+       */
+      await this.sportsSyncStateService.refreshOverallStatus(state.stateKey);
 
       const complete = await this.sportsSyncStateService.isComplete(
-        context.summaryStateKey,
+        state.stateKey,
       );
 
       if (!complete) {
         throw new Error(
-          `Startup Summary synchronization state ${context.summaryStateKey} is not complete`,
+          `Startup Summary synchronization state ${state.stateKey} is not complete`,
         );
       }
     }
@@ -558,6 +618,155 @@ export class SportsStartupService implements OnModuleInit {
 
       skipped,
     };
+  }
+
+  // ============================================================
+  // SUMMARY BATCH PROCESSING
+  // ============================================================
+
+  private async processSummaryBatch(
+    context: StartupLeagueContext,
+    stateKey: string,
+    eventIds: string[],
+  ): Promise<
+    Array<{
+      eventId: string;
+      success: boolean;
+      summary?: unknown;
+      error?: unknown;
+    }>
+  > {
+    const results: Array<{
+      eventId: string;
+      success: boolean;
+      summary?: unknown;
+      error?: unknown;
+    }> = [];
+
+    let nextIndex = 0;
+
+    let completed = 0;
+
+    const total = eventIds.length;
+
+    const workerCount = Math.min(this.startupSummaryConcurrency, total);
+
+    const runWorker = async (): Promise<void> => {
+      while (true) {
+        const index = nextIndex++;
+
+        if (index >= total) {
+          return;
+        }
+
+        const eventId = eventIds[index];
+
+        const startedAt = Date.now();
+
+        try {
+          const summary = await this.espnService.getMatchSummary(
+            context.leagueId,
+            eventId,
+          );
+
+          const duration = Date.now() - startedAt;
+
+          /*
+           * A completed HTTP/API request without a usable Summary
+           * is not a successful synchronization result.
+           */
+          if (!this.hasSummaryPayload(summary)) {
+            throw new Error(
+              `ESPN returned no usable summary for event ${eventId}`,
+            );
+          }
+
+          completed += 1;
+
+          this.logger.log(
+            `SUMMARY FETCH completed: ` +
+              `${context.leagueId}/${eventId} ` +
+              `duration=${duration}ms ` +
+              `progress=${completed}/${total}`,
+          );
+
+          try {
+            await this.sportsSyncStateService.markSummaryEventFetchSuccess(
+              stateKey,
+              eventId,
+            );
+          } catch (stateError) {
+            this.logger.error(
+              `Failed to record Summary fetch success for ` +
+                `${context.leagueId}/${eventId}: ${
+                  stateError instanceof Error
+                    ? stateError.message
+                    : String(stateError)
+                }`,
+            );
+          }
+
+          results.push({
+            eventId,
+
+            success: true,
+
+            summary,
+          });
+        } catch (error) {
+          const duration = Date.now() - startedAt;
+
+          completed += 1;
+
+          const message =
+            error instanceof Error ? error.message : String(error);
+
+          this.logger.error(
+            `SUMMARY FETCH failed: ` +
+              `${context.leagueId}/${eventId} ` +
+              `duration=${duration}ms ` +
+              `progress=${completed}/${total} ` +
+              `error=${message}`,
+          );
+
+          try {
+            await this.sportsSyncStateService.markSummaryEventFetchFailed(
+              stateKey,
+              eventId,
+              error,
+            );
+          } catch (stateError) {
+            this.logger.error(
+              `Failed to record Summary fetch failure for ` +
+                `${context.leagueId}/${eventId}: ${
+                  stateError instanceof Error
+                    ? stateError.message
+                    : String(stateError)
+                }`,
+            );
+          }
+
+          results.push({
+            eventId,
+
+            success: false,
+
+            error,
+          });
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from(
+        {
+          length: workerCount,
+        },
+        () => runWorker(),
+      ),
+    );
+
+    return results;
   }
 
   // ============================================================
@@ -660,55 +869,22 @@ export class SportsStartupService implements OnModuleInit {
   }
 
   // ============================================================
-  // TRACKED STEP
-  // ============================================================
-
-  private async runTrackedStep(
-    stateKey: string,
-    stepKey: string,
-    action: () => Promise<void>,
-  ): Promise<void> {
-    const successful = await this.sportsSyncStateService.isUnitSuccessful(
-      stateKey,
-      `STEP:${stepKey}`,
-    );
-
-    if (successful) {
-      return;
-    }
-
-    await this.sportsSyncStateService.markStepProcessing(stateKey, stepKey);
-
-    try {
-      await action();
-
-      await this.sportsSyncStateService.markStepSuccess(stateKey, stepKey);
-    } catch (error) {
-      await this.sportsSyncStateService.markStepFailed(
-        stateKey,
-        stepKey,
-        error,
-      );
-
-      throw error;
-    }
-  }
-
-  // ============================================================
   // SUMMARY
   // ============================================================
 
-  private hasSummary(fixture: Pick<EspnFixtureDocument, 'payload'>): boolean {
-    const payload = fixture.payload;
-
+  private hasSummaryPayload(payload: unknown): boolean {
     if (!payload || typeof payload !== 'object') {
       return false;
     }
 
+    const record = payload as Record<string, unknown>;
+
+    const summary = record.summary;
+
     return Boolean(
-      payload.summary &&
-      typeof payload.summary === 'object' &&
-      Object.keys(payload.summary).length > 0,
+      summary &&
+      typeof summary === 'object' &&
+      Object.keys(summary as Record<string, unknown>).length > 0,
     );
   }
 
