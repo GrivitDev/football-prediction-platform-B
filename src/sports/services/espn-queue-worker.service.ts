@@ -532,6 +532,8 @@ export class EspnQueueWorkerService implements OnModuleInit {
       throw new Error('Summary refresh job requires season');
     }
 
+    const season = job.season;
+
     const leagueId = this.stringifyJobId(job.leagueId);
 
     const eventId = this.stringifyJobId(job.eventId);
@@ -544,7 +546,7 @@ export class EspnQueueWorkerService implements OnModuleInit {
     const state = await this.sportsSyncStateService.ensureSummaryRefreshState({
       leagueId,
 
-      season: job.season,
+      season,
 
       priority,
 
@@ -565,7 +567,7 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
           leagueId,
 
-          season: job.season,
+          season,
         })
         .select({
           eventId: 1,
