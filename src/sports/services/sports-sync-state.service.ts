@@ -1,3 +1,5 @@
+// backend/src/sports/services/sports-sync-state.service.ts
+
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -43,20 +45,21 @@ export class SportsSyncStateService {
     const leagueId = this.normalize(params.leagueId);
 
     /*
-     * FIXTURE_REFRESH is intentionally one persistent state per
-     * league + season + job type.
+     * FIXTURE_REFRESH and SUMMARY_REFRESH are persistent
+     * league/season synchronization ledgers.
      *
-     * Operational queue jobs may still use triggerEventId values
-     * such as:
+     * Operational queue triggers such as:
      *
      *   DAILY:2026-09-26
      *   STALE:2026-09-26
      *   FINISHED:401884783
      *
-     * but those values must NEVER create another synchronization
-     * state document.
+     * never create another synchronization state.
      */
-    if (String(params.jobType) === String(EspnQueueJobType.FIXTURE_REFRESH)) {
+    if (
+      String(params.jobType) === String(EspnQueueJobType.FIXTURE_REFRESH) ||
+      String(params.jobType) === String(EspnQueueJobType.SUMMARY_REFRESH)
+    ) {
       return [
         'QUEUE',
         params.jobType,
@@ -66,7 +69,8 @@ export class SportsSyncStateService {
     }
 
     /*
-     * Summary remains event-specific.
+     * Other operational event-specific jobs may still have their
+     * own state identity when explicitly required.
      */
     if (params.eventId) {
       return ['QUEUE', params.jobType, leagueId, params.eventId.trim()].join(
@@ -74,10 +78,6 @@ export class SportsSyncStateService {
       );
     }
 
-    /*
-     * When a queue job key is supplied and there is no event,
-     * it provides a stable operational identity for that state.
-     */
     if (params.queueJobKey?.trim()) {
       return ['QUEUE', params.jobType, params.queueJobKey.trim()].join(':');
     }
@@ -110,6 +110,9 @@ export class SportsSyncStateService {
     const isFixtureRefresh =
       String(params.jobType) === String(EspnQueueJobType.FIXTURE_REFRESH);
 
+    const isSummaryRefresh =
+      String(params.jobType) === String(EspnQueueJobType.SUMMARY_REFRESH);
+
     return this.syncStateModel
       .findOneAndUpdate(
         {
@@ -126,10 +129,12 @@ export class SportsSyncStateService {
             season: params.season,
 
             /*
-             * FIXTURE_REFRESH state is league/season scoped.
-             * It must never retain an event identity.
+             * Persistent fixture/summary synchronization states are
+             * league/season scoped. Their event identity lives in
+             * the synchronization units instead.
              */
-            eventId: isFixtureRefresh ? undefined : params.eventId,
+            eventId:
+              isFixtureRefresh || isSummaryRefresh ? undefined : params.eventId,
 
             priority: params.priority,
 
@@ -161,21 +166,18 @@ export class SportsSyncStateService {
       .exec();
   }
 
+  // ============================================================
+  // FIXTURE REFRESH STATE
+  // ============================================================
+
   /**
-   * Ensures the persistent FIXTURE_REFRESH state for one active
-   * league/season.
+   * Keeps one persistent FIXTURE_REFRESH state for a league/season.
    *
-   * Responsibilities:
+   * The queue owns operational windows and triggers.
+   * This state owns the permanent record of synchronized fixture
+   * dates.
    *
-   * 1. Keep one state document for the league + season.
-   * 2. Extend the existing date window instead of creating another
-   *    synchronization state.
-   * 3. Check MongoDB fixtures for the requested date window.
-   * 4. Mark dates that already contain fixtures as SUCCESS.
-   * 5. Leave dates without fixtures as PENDING so the caller can
-   *    verify those dates through ESPN.
-   *
-   * This service deliberately does NOT call ESPN.
+   * This method does not call ESPN.
    */
   async ensureFixtureRefreshState(params: {
     leagueId: string;
@@ -225,23 +227,6 @@ export class SportsSyncStateService {
 
     let state = await this.requireState(stateKey);
 
-    /*
-     * Never shrink an existing persistent fixture window.
-     *
-     * Existing example:
-     *
-     *   2026-07-01 -> 2026-09-26
-     *
-     * Requested extension:
-     *
-     *   2026-07-01 -> 2026-10-04
-     *
-     * Result:
-     *
-     *   2026-07-01 -> 2026-10-04
-     *
-     * Only new date units are added.
-     */
     const effectiveDateFrom = state.dateFrom
       ? this.minDateOnly(state.dateFrom, requestedDateFrom)
       : requestedDateFrom;
@@ -263,12 +248,8 @@ export class SportsSyncStateService {
     state = await this.requireState(stateKey);
 
     /*
-     * MongoDB is the first source of truth for already collected
-     * fixtures.
-     *
-     * Any date inside this persistent state window that already
-     * contains at least one fixture becomes SUCCESS and therefore
-     * will not be sent to ESPN by the startup/worker phase.
+     * A date with at least one persisted fixture is already
+     * synchronized and therefore does not need another ESPN call.
      */
     const fixtureDateKeys = await this.getFixtureDateKeys({
       leagueId,
@@ -308,7 +289,13 @@ export class SportsSyncStateService {
       changed = true;
     }
 
-    state.status = this.calculateOverallStatus(state);
+    const nextStatus = this.calculateOverallStatus(state);
+
+    if (state.status !== nextStatus) {
+      state.status = nextStatus;
+
+      changed = true;
+    }
 
     if (state.status === SportsSyncStateStatus.SUCCESS) {
       state.lastSuccessfulAt = new Date();
@@ -329,6 +316,279 @@ export class SportsSyncStateService {
     return state;
   }
 
+  // ============================================================
+  // SUMMARY REFRESH STATE
+  // ============================================================
+
+  /**
+   * Keeps one persistent SUMMARY_REFRESH state for a league/season.
+   *
+   * Every fixture event becomes a SUMMARY unit:
+   *
+   *   STEP:SUMMARY:<eventId>
+   *
+   * The state is reconciled against MongoDB:
+   *
+   *   summary exists  -> SUCCESS
+   *   summary missing  -> PENDING / FAILED
+   *
+   * This method does not call ESPN.
+   */
+  async ensureSummaryRefreshState(params: {
+    leagueId: string;
+    season: number;
+    priority: number;
+    trackingMode?: 'WINDOW' | 'HISTORY';
+  }): Promise<SportsSyncStateDocument> {
+    const leagueId = this.normalize(params.leagueId);
+
+    if (!leagueId) {
+      throw new Error('Summary refresh state requires a valid league ID');
+    }
+
+    if (typeof params.season !== 'number') {
+      throw new Error(
+        `Summary refresh state for ${leagueId} requires a valid season`,
+      );
+    }
+
+    const trackingMode = params.trackingMode ?? 'HISTORY';
+
+    const stateKey = this.getQueueStateKey({
+      jobType: EspnQueueJobType.SUMMARY_REFRESH,
+
+      leagueId,
+
+      season: params.season,
+    });
+
+    await this.ensureQueueState({
+      jobType: EspnQueueJobType.SUMMARY_REFRESH,
+
+      leagueId,
+
+      season: params.season,
+
+      priority: params.priority,
+
+      trackingMode,
+    });
+
+    const state = await this.requireState(stateKey);
+
+    const fixtures = await this.espnFixtureModel
+      .find({
+        leagueId,
+
+        season: params.season,
+      })
+      .select({
+        eventId: 1,
+
+        'payload.summary': 1,
+      })
+      .lean()
+      .exec();
+
+    const existingSummaryUnits = new Map(
+      state.units
+        .filter(
+          (unit) =>
+            unit.type === SportsSyncUnitType.STEP &&
+            typeof unit.stepKey === 'string' &&
+            unit.stepKey.startsWith('SUMMARY:'),
+        )
+        .map((unit) => [unit.stepKey as string, unit]),
+    );
+
+    let changed = false;
+
+    for (const fixture of fixtures) {
+      if (!fixture.eventId) {
+        continue;
+      }
+
+      const stepKey = this.getSummaryStepKey(fixture.eventId);
+
+      const hasSummary = this.hasSummaryPayload(fixture.payload);
+
+      const existing = existingSummaryUnits.get(stepKey);
+
+      if (!existing) {
+        const unit = {
+          key: `STEP:${stepKey}`,
+
+          type: SportsSyncUnitType.STEP,
+
+          stepKey,
+
+          status: hasSummary
+            ? SportsSyncUnitStatus.SUCCESS
+            : SportsSyncUnitStatus.PENDING,
+
+          attempts: 0,
+
+          ...(hasSummary
+            ? {
+                completedAt: new Date(),
+              }
+            : {}),
+        };
+
+        existingSummaryUnits.set(stepKey, unit);
+
+        changed = true;
+
+        continue;
+      }
+
+      if (hasSummary) {
+        if (existing.status !== SportsSyncUnitStatus.SUCCESS) {
+          existing.status = SportsSyncUnitStatus.SUCCESS;
+
+          existing.completedAt = new Date();
+
+          existing.startedAt = undefined;
+
+          existing.nextAttemptAt = undefined;
+
+          existing.lastError = undefined;
+
+          changed = true;
+        }
+
+        continue;
+      }
+
+      /*
+       * Actual MongoDB data says the summary is missing.
+       *
+       * A previously SUCCESS unit must therefore no longer be
+       * considered synchronized.
+       */
+      if (
+        existing.status === SportsSyncUnitStatus.SUCCESS ||
+        existing.status === SportsSyncUnitStatus.PROCESSING
+      ) {
+        existing.status = SportsSyncUnitStatus.PENDING;
+
+        existing.completedAt = undefined;
+
+        existing.startedAt = undefined;
+
+        existing.nextAttemptAt = undefined;
+
+        existing.lastError = undefined;
+
+        changed = true;
+      }
+    }
+
+    const summaryUnits = Array.from(existingSummaryUnits.values());
+
+    /*
+     * SUMMARY_REFRESH owns summary synchronization only.
+     *
+     * No YouTube units are stored here.
+     */
+    if (
+      state.units.length !== summaryUnits.length ||
+      state.units.some(
+        (unit, index) => state.units[index]?.key !== summaryUnits[index]?.key,
+      )
+    ) {
+      state.units = summaryUnits;
+
+      changed = true;
+    }
+
+    const nextStatus = this.calculateOverallStatus(state);
+
+    if (state.status !== nextStatus) {
+      state.status = nextStatus;
+
+      changed = true;
+    }
+
+    if (state.status === SportsSyncStateStatus.SUCCESS) {
+      state.lastSuccessfulAt = new Date();
+
+      state.lastCompletedAt = new Date();
+
+      state.lastError = undefined;
+
+      state.consecutiveFailures = 0;
+    }
+
+    if (changed) {
+      state.markModified('units');
+
+      await state.save();
+    }
+
+    return state;
+  }
+
+  /**
+   * Returns the synchronization unit key used for one summary
+   * event inside SUMMARY_REFRESH.
+   *
+   * Example:
+   *
+   *   SUMMARY:401884783
+   */
+  getSummaryStepKey(eventId: string): string {
+    const normalizedEventId = String(eventId).trim();
+
+    if (!normalizedEventId) {
+      throw new Error('Summary synchronization requires an event ID');
+    }
+
+    return `SUMMARY:${normalizedEventId}`;
+  }
+
+  /**
+   * Returns incomplete summary event IDs from a persistent
+   * SUMMARY_REFRESH state.
+   */
+  async getIncompleteSummaryEvents(stateKey: string): Promise<string[]> {
+    const state = await this.requireState(stateKey);
+
+    return state.units
+      .filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.STEP &&
+          typeof unit.stepKey === 'string' &&
+          unit.stepKey.startsWith('SUMMARY:') &&
+          (unit.status === SportsSyncUnitStatus.PENDING ||
+            unit.status === SportsSyncUnitStatus.FAILED),
+      )
+      .map((unit) => String(unit.stepKey).slice('SUMMARY:'.length))
+      .filter(Boolean)
+      .sort();
+  }
+
+  async isSummaryEventSuccessful(
+    stateKey: string,
+    eventId: string,
+  ): Promise<boolean> {
+    const state = await this.requireState(stateKey);
+
+    const stepKey = this.getSummaryStepKey(eventId);
+
+    const unit = state.units.find(
+      (candidate) =>
+        candidate.type === SportsSyncUnitType.STEP &&
+        candidate.key === `STEP:${stepKey}`,
+    );
+
+    return unit?.status === SportsSyncUnitStatus.SUCCESS;
+  }
+
+  // ============================================================
+  // GENERAL STATE
+  // ============================================================
+
   async getState(stateKey: string): Promise<SportsSyncStateDocument | null> {
     return this.syncStateModel
       .findOne({
@@ -347,14 +607,6 @@ export class SportsSyncStateService {
     return state;
   }
 
-  /**
-   * Returns every persistent queue state that still contains
-   * incomplete work.
-   *
-   * This is intentionally independent of the operational queue
-   * collection. The queue document may have FAILED or may have
-   * already been cleaned after its retention period.
-   */
   async getIncompleteQueueStates(
     jobTypes?: string[],
   ): Promise<SportsSyncStateDocument[]> {
@@ -407,13 +659,8 @@ export class SportsSyncStateService {
       (unit) => unit.type === SportsSyncUnitType.STEP,
     );
 
-    /*
-     * HISTORY mode never shrinks an already accumulated range.
-     *
-     * This makes the same synchronization state reusable when
-     * new future dates are appended.
-     */
     let effectiveDateFrom = desiredDateFrom;
+
     let effectiveDateTo = desiredDateTo;
 
     if (state.dateFrom) {
@@ -484,7 +731,7 @@ export class SportsSyncStateService {
   }
 
   // ============================================================
-  // STEP UNITS
+  // GENERIC STEP UNITS
   // ============================================================
 
   async ensureStepUnits(
@@ -499,17 +746,6 @@ export class SportsSyncStateService {
         .map((unit) => [unit.stepKey ?? unit.key, unit]),
     );
 
-    /*
-     * Never discard an already tracked step.
-     *
-     * New architecture callers only create:
-     *
-     *   summary
-     *   youtube
-     *   odds
-     *
-     * or the fixture-refresh date units.
-     */
     for (const stepKey of stepKeys) {
       if (existingSteps.has(stepKey)) {
         continue;
@@ -981,6 +1217,22 @@ export class SportsSyncStateService {
   // ============================================================
   // HELPERS
   // ============================================================
+
+  private hasSummaryPayload(payload: unknown): boolean {
+    if (!payload || typeof payload !== 'object') {
+      return false;
+    }
+
+    const payloadRecord = payload as Record<string, unknown>;
+
+    const summary = payloadRecord.summary;
+
+    return Boolean(
+      summary &&
+      typeof summary === 'object' &&
+      Object.keys(summary as Record<string, unknown>).length > 0,
+    );
+  }
 
   private isStateComplete(state: SportsSyncStateDocument): boolean {
     return (

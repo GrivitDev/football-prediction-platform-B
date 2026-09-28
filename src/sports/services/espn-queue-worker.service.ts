@@ -70,6 +70,10 @@ export class EspnQueueWorkerService implements OnModuleInit {
     private readonly espnFixtureModel: Model<EspnFixtureDocument>,
   ) {}
 
+  // ============================================================
+  // MODULE INIT
+  // ============================================================
+
   onModuleInit(): void {
     this.logger.log(
       'ESPN queue worker initialized and waiting for startup release',
@@ -298,12 +302,59 @@ export class EspnQueueWorkerService implements OnModuleInit {
     try {
       await this.processJob(queueJob);
 
-      const stateKey = this.getStateKeyFromJob(queueJob);
+      /*
+       * Only fixture and summary synchronization work is validated
+       * against SportsSyncState.
+       *
+       * YouTube is intentionally operational queue work only.
+       */
+      switch (queueJob.type) {
+        case EspnQueueJobType.FIXTURE_REFRESH: {
+          const stateKey = this.getStateKeyFromJob(queueJob);
 
-      const complete = await this.sportsSyncStateService.isComplete(stateKey);
+          const complete =
+            await this.sportsSyncStateService.isComplete(stateKey);
 
-      if (!complete) {
-        throw new Error(`Synchronization state ${stateKey} is not complete`);
+          if (!complete) {
+            throw new Error(
+              `Synchronization state ${stateKey} is not complete`,
+            );
+          }
+
+          break;
+        }
+
+        case EspnQueueJobType.SUMMARY_REFRESH: {
+          const stateKey = this.getStateKeyFromJob(queueJob);
+
+          if (!queueJob.eventId) {
+            throw new Error(
+              'Summary refresh queue job has no eventId after processing',
+            );
+          }
+
+          const eventId = this.stringifyJobId(queueJob.eventId);
+
+          const successful =
+            await this.sportsSyncStateService.isSummaryEventSuccessful(
+              stateKey,
+              eventId,
+            );
+
+          if (!successful) {
+            throw new Error(
+              `Summary synchronization for ${eventId} is not complete in ${stateKey}`,
+            );
+          }
+
+          break;
+        }
+
+        case EspnQueueJobType.YOUTUBE_HIGHLIGHT:
+          break;
+
+        default:
+          break;
       }
 
       await this.espnQueueService.markCompleted(String(queueJob._id));
@@ -376,24 +427,6 @@ export class EspnQueueWorkerService implements OnModuleInit {
       );
     }
 
-    /*
-     * The worker no longer initializes fixture dates with
-     * ensureDateWindow().
-     *
-     * SportsSyncStateService owns fixture-refresh state preparation:
-     *
-     * 1. Reuse the one league/season FIXTURE_REFRESH state.
-     * 2. Extend its date window when necessary.
-     * 3. Check sports_espn_fixtures in MongoDB.
-     * 4. Mark existing fixture dates SUCCESS.
-     * 5. Leave dates without fixtures PENDING.
-     *
-     * The worker then calls ESPN only for those incomplete dates.
-     *
-     * We deliberately use today as the requested starting point.
-     * When a persistent state already exists, its earlier historical
-     * dateFrom is preserved by SportsSyncStateService.
-     */
     const priority =
       typeof job.priority === 'number' && Number.isFinite(job.priority)
         ? job.priority
@@ -422,11 +455,6 @@ export class EspnQueueWorkerService implements OnModuleInit {
       trackingMode: 'HISTORY',
     });
 
-    /*
-     * Use the canonical state key returned by the synchronization
-     * service. It is intentionally independent of the operational
-     * trigger/queue-job identity.
-     */
     const canonicalStateKey = state.stateKey;
 
     await this.sportsSyncStateService.resetInterruptedUnits(canonicalStateKey);
@@ -508,40 +536,52 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
     const eventId = this.stringifyJobId(job.eventId);
 
-    const stateKey = this.getStateKeyFromJob(job);
+    const priority =
+      typeof job.priority === 'number' && Number.isFinite(job.priority)
+        ? job.priority
+        : 4;
 
-    const fixture = await this.espnFixtureModel
-      .findOne({
-        eventId,
-      })
-      .lean()
-      .exec();
+    const state = await this.sportsSyncStateService.ensureSummaryRefreshState({
+      leagueId,
 
-    if (!fixture) {
-      throw new Error(
-        `Summary refresh fixture ${eventId} not found in sports_espn_fixtures`,
-      );
-    }
+      season: job.season,
 
-    /*
-     * YouTube is no longer part of SUMMARY_REFRESH.
-     *
-     * It has its own ESPN queue job so that finished-match
-     * YouTube work can be tracked and retried independently.
-     */
-    await this.sportsSyncStateService.ensureStepUnits(stateKey, ['summary']);
+      priority,
+
+      trackingMode: 'HISTORY',
+    });
+
+    const stateKey = state.stateKey;
 
     await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
 
-    await this.runTrackedStep(stateKey, 'summary', async () => {
+    const summaryStepKey =
+      this.sportsSyncStateService.getSummaryStepKey(eventId);
+
+    await this.runTrackedStep(stateKey, summaryStepKey, async () => {
       const currentFixture = await this.espnFixtureModel
         .findOne({
           eventId,
+
+          leagueId,
+
+          season: job.season,
+        })
+        .select({
+          eventId: 1,
+
+          'payload.summary': 1,
         })
         .lean()
         .exec();
 
-      if (currentFixture?.payload?.summary) {
+      if (!currentFixture) {
+        throw new Error(
+          `Summary refresh fixture ${eventId} not found in sports_espn_fixtures`,
+        );
+      }
+
+      if (this.hasSummary(currentFixture)) {
         return;
       }
 
@@ -576,17 +616,12 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
     const eventId = this.stringifyJobId(job.eventId);
 
-    const stateKey = this.getStateKeyFromJob(job);
-
-    await this.sportsSyncStateService.ensureStepUnits(stateKey, ['youtube']);
-
-    await this.sportsSyncStateService.resetInterruptedUnits(stateKey);
-
-    await this.runTrackedStep(stateKey, 'youtube', async () => {
-      await this.youtubeHighlightService.processFixture(eventId);
-    });
-
-    await this.sportsSyncStateService.refreshOverallStatus(stateKey);
+    /*
+     * YouTube is intentionally not represented in SportsSyncState.
+     *
+     * The operational queue owns the job and its retries.
+     */
+    await this.youtubeHighlightService.processFixture(eventId);
   }
 
   // ============================================================
@@ -652,6 +687,24 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
       queueJobKey: job.jobKey ? this.stringifyJobId(job.jobKey) : undefined,
     });
+  }
+
+  // ============================================================
+  // SUMMARY
+  // ============================================================
+
+  private hasSummary(fixture: Pick<EspnFixtureDocument, 'payload'>): boolean {
+    const payload = fixture.payload;
+
+    if (!payload || typeof payload !== 'object') {
+      return false;
+    }
+
+    return Boolean(
+      payload.summary &&
+      typeof payload.summary === 'object' &&
+      Object.keys(payload.summary).length > 0,
+    );
   }
 
   // ============================================================
