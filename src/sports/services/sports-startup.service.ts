@@ -186,7 +186,7 @@ export class SportsStartupService implements OnModuleInit {
           `checked=${summaryResult.checked}, ` +
           `missing=${summaryResult.missingSummary}, ` +
           `processed=${summaryResult.processed}, ` +
-          `skipped=${summaryResult.skipped}`,
+          `failedAttempts=${summaryResult.failedAttempts}`,
       );
 
       // --------------------------------------------------------
@@ -507,7 +507,7 @@ export class SportsStartupService implements OnModuleInit {
     checked: number;
     missingSummary: number;
     processed: number;
-    skipped: number;
+    failedAttempts: number;
   }> {
     let checked = 0;
 
@@ -515,7 +515,7 @@ export class SportsStartupService implements OnModuleInit {
 
     let processed = 0;
 
-    let skipped = 0;
+    let failedAttempts = 0;
 
     this.logger.log(
       `ESPN STARTUP SUMMARY PHASE started: leagues=${contexts.length}`,
@@ -524,21 +524,8 @@ export class SportsStartupService implements OnModuleInit {
     // ----------------------------------------------------------
     // HARD PHASE BARRIER
     //
-    // Before even creating/reconciling a SUMMARY_REFRESH state,
-    // verify that EVERY active league's FIXTURE_REFRESH state is
-    // complete.
-    //
-    // This guarantees:
-    //
-    //   fixture phase
-    //          ↓
-    //   fixture completion
-    //          ↓
-    //   summary reconciliation
-    //          ↓
-    //   summary processing
-    //
-    // No Summary work can begin while any fixture state is incomplete.
+    // Every league must have completed its fixture phase before
+    // Summary reconciliation can begin.
     // ----------------------------------------------------------
 
     for (const context of contexts) {
@@ -549,17 +536,19 @@ export class SportsStartupService implements OnModuleInit {
     }
 
     // ----------------------------------------------------------
-    // SUMMARY STATE RECONCILIATION + COLLECTION
+    // SUMMARY STATE RECONCILIATION
+    //
+    // Build/reconcile the persistent Summary ledger for every
+    // league before beginning collection.
+    //
+    // IMPORTANT:
+    //
+    // We reconcile ALL leagues first.
+    // A failure in one league cannot prevent another league from
+    // entering the Summary phase.
     // ----------------------------------------------------------
 
     for (const context of contexts) {
-      /*
-       * The fixture barrier has already passed for every league.
-       *
-       * MongoDB now represents the completed startup fixture phase,
-       * so SUMMARY_REFRESH can safely be reconciled against the
-       * canonical fixture collection.
-       */
       const state = await this.sportsSyncStateService.ensureSummaryRefreshState(
         {
           leagueId: context.leagueId,
@@ -574,9 +563,6 @@ export class SportsStartupService implements OnModuleInit {
 
       await this.sportsSyncStateService.resetInterruptedUnits(state.stateKey);
 
-      /*
-       * Re-read the state after interrupted-unit recovery.
-       */
       const incompleteEvents =
         await this.sportsSyncStateService.getIncompleteSummaryEvents(
           state.stateKey,
@@ -587,147 +573,320 @@ export class SportsStartupService implements OnModuleInit {
       missingSummary += incompleteEvents.length;
 
       this.logger.log(
-        `Summary bootstrap for ${context.leagueId}: ` +
+        `Summary state prepared for ${context.leagueId}: ` +
           `checked=${state.units.length}, ` +
-          `remainingEvents=${incompleteEvents.length}`,
+          `missing=${incompleteEvents.length}`,
       );
+    }
 
-      if (incompleteEvents.length === 0) {
-        continue;
-      }
+    // ----------------------------------------------------------
+    // NON-BLOCKING LEAGUE SCHEDULER
+    //
+    // One pass processes every league that currently has work due.
+    //
+    // Failed events are NOT fatal.
+    //
+    // After all leagues have had their turn, the scheduler waits
+    // for the earliest retry time and starts another pass.
+    //
+    // Therefore:
+    //
+    //   League A failure
+    //        ↓
+    //   League B continues
+    //        ↓
+    //   League C continues
+    //        ↓
+    //   retry League A when due
+    // ----------------------------------------------------------
 
-      /*
-       * One state-document write marks the whole batch PROCESSING.
-       *
-       * Individual ESPN completions then update their own summary
-       * synchronization units immediately.
-       */
-      await this.sportsSyncStateService.markSummaryEventsProcessing(
-        state.stateKey,
-        incompleteEvents,
-      );
+    while (true) {
+      let allComplete = true;
 
-      const batchStartedAt = Date.now();
+      let roundProcessedWork = false;
 
-      const batchResults = await this.processSummaryBatch(
-        context,
-        state.stateKey,
-        incompleteEvents,
-      );
+      let earliestRetryAt: Date | null = null;
 
-      const successfulResults = batchResults.filter(
-        (result) => result.success && result.summary !== undefined,
-      );
+      for (const context of contexts) {
+        const state = await this.sportsSyncStateService.requireState(
+          context.summaryStateKey,
+        );
 
-      const failedResults = batchResults.filter((result) => !result.success);
+        const dueEvents =
+          await this.sportsSyncStateService.getDueIncompleteSummaryEvents(
+            state.stateKey,
+          );
 
-      this.logger.log(
-        `SUMMARY ESPN FETCH PHASE completed for ${context.leagueId}: ` +
-          `total=${batchResults.length}, ` +
-          `successful=${successfulResults.length}, ` +
-          `failed=${failedResults.length}, ` +
-          `duration=${Date.now() - batchStartedAt}ms`,
-      );
+        // ------------------------------------------------------
+        // Nothing currently due for this league.
+        //
+        // It may already be complete, or it may simply have
+        // failed events waiting for their retry timestamp.
+        // ------------------------------------------------------
 
-      /*
-       * Persist all successfully fetched summaries into the
-       * canonical fixture collection in ONE bulk operation.
-       */
-      if (successfulResults.length > 0) {
-        const bulkStartedAt = Date.now();
+        if (dueEvents.length === 0) {
+          const complete = await this.sportsSyncStateService.isComplete(
+            state.stateKey,
+          );
 
-        try {
-          const bulkResult =
-            await this.sportsCollectionService.collectEspnMatchSummariesBulk(
-              successfulResults.map((result) => ({
-                leagueId: context.leagueId,
-
-                eventId: result.eventId,
-
-                summary: result.summary,
-              })),
+          if (complete) {
+            this.logger.log(
+              `Summary bootstrap completed for ${context.leagueId}`,
             );
 
+            continue;
+          }
+
+          allComplete = false;
+
+          const nextRetryAt =
+            await this.sportsSyncStateService.getNextIncompleteSummaryRetryAt(
+              state.stateKey,
+            );
+
+          if (nextRetryAt) {
+            if (
+              !earliestRetryAt ||
+              nextRetryAt.getTime() < earliestRetryAt.getTime()
+            ) {
+              earliestRetryAt = nextRetryAt;
+            }
+          }
+
+          continue;
+        }
+
+        allComplete = false;
+
+        roundProcessedWork = true;
+
+        this.logger.log(
+          `Summary bootstrap processing ${context.leagueId}: ` +
+            `dueEvents=${dueEvents.length}`,
+        );
+
+        // ------------------------------------------------------
+        // Mark the entire current league batch PROCESSING.
+        // ------------------------------------------------------
+
+        await this.sportsSyncStateService.markSummaryEventsProcessing(
+          state.stateKey,
+          dueEvents,
+        );
+
+        const batchStartedAt = Date.now();
+
+        // ------------------------------------------------------
+        // FETCH ALL DUE EVENTS FOR THIS LEAGUE
+        //
+        // processSummaryBatch() uses 4 concurrent workers.
+        //
+        // A failure on one event is isolated and does not stop
+        // another event from being requested.
+        // ------------------------------------------------------
+
+        const batchResults = await this.processSummaryBatch(
+          context,
+          state.stateKey,
+          dueEvents,
+        );
+
+        const successfulResults = batchResults.filter(
+          (result) => result.success && result.summary !== undefined,
+        );
+
+        const failedResults = batchResults.filter((result) => !result.success);
+
+        this.logger.log(
+          `SUMMARY ESPN FETCH PHASE completed for ${context.leagueId}: ` +
+            `total=${batchResults.length}, ` +
+            `successful=${successfulResults.length}, ` +
+            `failed=${failedResults.length}, ` +
+            `duration=${Date.now() - batchStartedAt}ms`,
+        );
+
+        failedAttempts += failedResults.length;
+
+        // ------------------------------------------------------
+        // BULK WRITE
+        //
+        // All successful Summary responses for THIS league are
+        // persisted in one MongoDB bulk operation.
+        //
+        // A bulk-write failure is also isolated to this league.
+        // It must not stop the next league from processing.
+        // ------------------------------------------------------
+
+        if (successfulResults.length > 0) {
+          const bulkStartedAt = Date.now();
+
+          try {
+            const bulkResult =
+              await this.sportsCollectionService.collectEspnMatchSummariesBulk(
+                successfulResults.map((result) => ({
+                  leagueId: context.leagueId,
+
+                  eventId: result.eventId,
+
+                  summary: result.summary,
+                })),
+              );
+
+            this.logger.log(
+              `SUMMARY fixture bulk write completed for ${context.leagueId}: ` +
+                `requested=${bulkResult.requested}, ` +
+                `matched=${bulkResult.matched}, ` +
+                `modified=${bulkResult.modified}, ` +
+                `duration=${Date.now() - bulkStartedAt}ms`,
+            );
+
+            /*
+             * Only successful fetches whose canonical MongoDB write
+             * succeeded count as processed.
+             */
+            processed += successfulResults.length;
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+
+            this.logger.error(
+              `SUMMARY fixture bulk write FAILED for ${context.leagueId}: ` +
+                `${message}`,
+            );
+
+            /*
+             * The ESPN calls succeeded, but canonical persistence
+             * failed.
+             *
+             * Return those events to FAILED so they can be retried
+             * during a later scheduler round.
+             */
+            await this.sportsSyncStateService.markSummaryBulkWriteFailed(
+              state.stateKey,
+
+              successfulResults.map((result) => result.eventId),
+
+              error,
+            );
+
+            failedAttempts += successfulResults.length;
+          }
+        }
+
+        // ------------------------------------------------------
+        // RECALCULATE THE LEAGUE STATE
+        // ------------------------------------------------------
+
+        await this.sportsSyncStateService.refreshOverallStatus(state.stateKey);
+
+        const complete = await this.sportsSyncStateService.isComplete(
+          state.stateKey,
+        );
+
+        if (complete) {
           this.logger.log(
-            `SUMMARY fixture bulk write completed for ${context.leagueId}: ` +
-              `requested=${bulkResult.requested}, ` +
-              `matched=${bulkResult.matched}, ` +
-              `modified=${bulkResult.modified}, ` +
-              `duration=${Date.now() - bulkStartedAt}ms`,
+            `Summary bootstrap completed for ${context.leagueId}`,
           );
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-
-          this.logger.error(
-            `SUMMARY fixture bulk write FAILED for ${context.leagueId}: ` +
-              `${message}`,
-          );
-
+        } else {
           /*
-           * Every summary fetched in this bulk belongs back in
-           * FAILED because canonical fixture persistence did not
-           * complete successfully.
+           * This league still has failed/pending work.
+           *
+           * DO NOT throw.
+           *
+           * The scheduler immediately moves to the next league.
            */
-          await this.sportsSyncStateService.markSummaryBulkWriteFailed(
-            state.stateKey,
+          const nextRetryAt =
+            await this.sportsSyncStateService.getNextIncompleteSummaryRetryAt(
+              state.stateKey,
+            );
 
-            successfulResults.map((result) => result.eventId),
+          if (nextRetryAt) {
+            if (
+              !earliestRetryAt ||
+              nextRetryAt.getTime() < earliestRetryAt.getTime()
+            ) {
+              earliestRetryAt = nextRetryAt;
+            }
 
-            error,
-          );
+            this.logger.warn(
+              `Summary retry scheduled for ${context.leagueId} at ` +
+                `${nextRetryAt.toISOString()}`,
+            );
+          } else {
+            const stillIncomplete =
+              await this.sportsSyncStateService.getIncompleteSummaryEvents(
+                state.stateKey,
+              );
 
-          throw new Error(
-            `Summary bulk persistence failed for ${context.leagueId}: ${message}`,
-          );
+            if (stillIncomplete.length > 0) {
+              this.logger.warn(
+                `Summary synchronization remains incomplete for ` +
+                  `${context.leagueId}: ` +
+                  `remaining=${stillIncomplete.length}. ` +
+                  `The scheduler will continue processing other leagues.`,
+              );
+            }
+          }
         }
       }
 
-      processed += successfulResults.length;
+      // ----------------------------------------------------------
+      // ALL LEAGUES COMPLETE
+      // ----------------------------------------------------------
 
-      skipped += failedResults.length;
+      if (allComplete) {
+        this.logger.log('ESPN STARTUP SUMMARY PHASE completed successfully');
 
-      /*
-       * SUCCESS means:
-       *
-       *   ESPN fetch succeeded
-       *   +
-       *   canonical fixture bulk persistence succeeded.
-       *
-       * FAILED means:
-       *
-       *   ESPN fetch failed
-       *   OR
-       *   canonical fixture bulk persistence failed.
-       */
-      await this.sportsSyncStateService.refreshOverallStatus(state.stateKey);
+        return {
+          checked,
 
-      const complete = await this.sportsSyncStateService.isComplete(
-        state.stateKey,
-      );
+          missingSummary,
 
-      if (!complete) {
-        throw new Error(
-          `Startup Summary synchronization state ${state.stateKey} is not complete`,
+          processed,
+
+          failedAttempts,
+        };
+      }
+
+      // ----------------------------------------------------------
+      // WAIT FOR THE EARLIEST RETRY
+      //
+      // We only wait after every league has had its current turn.
+      //
+      // This is what makes the scheduler non-blocking across leagues.
+      // ----------------------------------------------------------
+
+      if (earliestRetryAt) {
+        const delay = Math.max(0, earliestRetryAt.getTime() - Date.now());
+
+        this.logger.log(
+          `Summary scheduler waiting for next retry: ` +
+            `${earliestRetryAt.toISOString()} ` +
+            `(wait=${delay}ms)`,
         );
+
+        await this.sleep(delay);
+
+        continue;
+      }
+
+      // ----------------------------------------------------------
+      // SAFETY FALLBACK
+      //
+      // There is still incomplete work but no retry timestamp.
+      // This should only happen for an unexpected state transition.
+      // Avoid a tight CPU loop.
+      // ----------------------------------------------------------
+
+      if (!roundProcessedWork) {
+        this.logger.warn(
+          'Summary scheduler found incomplete work without a retry timestamp. ' +
+            'Retrying state inspection shortly.',
+        );
+
+        await this.sleep(1000);
       }
     }
-
-    if (skipped > 0) {
-      throw new Error(
-        `Startup Summary phase did not complete for ${skipped} fixture(s)`,
-      );
-    }
-
-    return {
-      checked,
-
-      missingSummary,
-
-      processed,
-
-      skipped,
-    };
   }
 
   // ============================================================

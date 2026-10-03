@@ -801,9 +801,33 @@ export class SportsSyncStateService {
   ): Promise<void> {
     const stepKey = this.getSummaryStepKey(eventId);
 
+    const state = await this.requireState(stateKey);
+
+    const unit = state.units.find(
+      (candidate) =>
+        candidate.type === SportsSyncUnitType.STEP &&
+        candidate.key === `STEP:${stepKey}`,
+    );
+
+    if (!unit) {
+      throw new Error(
+        `Summary synchronization unit ${stepKey} does not exist in ${stateKey}`,
+      );
+    }
+
     const message = error instanceof Error ? error.message : String(error);
 
-    const nextAttemptAt = new Date(Date.now() + this.getRetryDelay(1));
+    /*
+     * markSummaryEventsProcessing() increments attempts before
+     * the ESPN request starts.
+     *
+     * Therefore this represents the actual attempt number.
+     */
+    const attemptNumber = Math.max(1, unit.attempts);
+
+    const nextAttemptAt = new Date(
+      Date.now() + this.getRetryDelay(attemptNumber),
+    );
 
     const result = await this.syncStateModel
       .updateOne(
@@ -965,6 +989,60 @@ export class SportsSyncStateService {
       .map((unit) => String(unit.stepKey).slice('SUMMARY:'.length))
       .filter(Boolean)
       .sort();
+  }
+
+  async getDueIncompleteSummaryEvents(stateKey: string): Promise<string[]> {
+    const state = await this.requireState(stateKey);
+
+    const now = Date.now();
+
+    return state.units
+      .filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.STEP &&
+          typeof unit.stepKey === 'string' &&
+          unit.stepKey.startsWith('SUMMARY:') &&
+          (unit.status === SportsSyncUnitStatus.PENDING ||
+            unit.status === SportsSyncUnitStatus.FAILED),
+      )
+      .filter((unit) => {
+        if (!unit.nextAttemptAt) {
+          return true;
+        }
+
+        return new Date(unit.nextAttemptAt).getTime() <= now;
+      })
+      .map((unit) => String(unit.stepKey).slice('SUMMARY:'.length))
+      .filter(Boolean)
+      .sort();
+  }
+
+  async getNextIncompleteSummaryRetryAt(
+    stateKey: string,
+  ): Promise<Date | null> {
+    const state = await this.requireState(stateKey);
+
+    const now = Date.now();
+
+    const retryTimes = state.units
+      .filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.STEP &&
+          typeof unit.stepKey === 'string' &&
+          unit.stepKey.startsWith('SUMMARY:') &&
+          (unit.status === SportsSyncUnitStatus.PENDING ||
+            unit.status === SportsSyncUnitStatus.FAILED) &&
+          unit.nextAttemptAt,
+      )
+      .map((unit) => new Date(unit.nextAttemptAt as Date).getTime())
+      .filter((time) => time > now)
+      .sort((a, b) => a - b);
+
+    if (retryTimes.length === 0) {
+      return null;
+    }
+
+    return new Date(retryTimes[0]);
   }
 
   async isSummaryEventSuccessful(
