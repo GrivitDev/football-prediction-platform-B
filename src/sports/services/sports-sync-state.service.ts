@@ -1113,9 +1113,7 @@ export class SportsSyncStateService {
 
       state.units = [
         ...historicalUnits,
-
         ...effectiveDateUnits,
-
         ...existingStepUnits,
       ];
     } else {
@@ -1346,18 +1344,16 @@ export class SportsSyncStateService {
 
     unit.completedAt = new Date();
 
-    unit.startedAt = undefined;
-
     unit.nextAttemptAt = undefined;
 
     unit.lastError = undefined;
+
+    state.lastCompletedAt = new Date();
 
     state.status = this.calculateOverallStatus(state);
 
     if (state.status === SportsSyncStateStatus.SUCCESS) {
       state.lastSuccessfulAt = new Date();
-
-      state.lastCompletedAt = new Date();
 
       state.lastError = undefined;
 
@@ -1442,42 +1438,31 @@ export class SportsSyncStateService {
   }
 
   /**
-   * Enforces the permanent startup boundary between fixture
-   * synchronization and summary synchronization.
+   * Verifies that the persistent FIXTURE_REFRESH state for a
+   * league/season is completely synchronized.
    *
-   * Summary startup synchronization must never begin until the
-   * persistent FIXTURE_REFRESH ledger for the same league/season
-   * is complete.
+   * This is the startup phase barrier used before SUMMARY_REFRESH
+   * state reconciliation begins.
+   *
+   * It does not create or modify synchronization state.
    */
   async assertFixtureRefreshComplete(
     leagueId: string,
     season: number,
   ): Promise<void> {
-    const normalizedLeagueId = this.normalize(leagueId);
-
-    if (!normalizedLeagueId) {
-      throw new Error('Fixture completion check requires a valid league ID');
-    }
-
-    if (typeof season !== 'number') {
-      throw new Error(
-        `Fixture completion check for ${normalizedLeagueId} requires a valid season`,
-      );
-    }
-
     const stateKey = this.getQueueStateKey({
       jobType: EspnQueueJobType.FIXTURE_REFRESH,
 
-      leagueId: normalizedLeagueId,
+      leagueId,
 
       season,
     });
 
-    const state = await this.requireState(stateKey);
+    const complete = await this.isComplete(stateKey);
 
-    if (!this.isStateComplete(state)) {
+    if (!complete) {
       throw new Error(
-        `Fixture synchronization state ${stateKey} is not complete; Summary synchronization is blocked`,
+        `Fixture synchronization state ${stateKey} is not complete`,
       );
     }
   }
@@ -1521,6 +1506,8 @@ export class SportsSyncStateService {
 
             status: SportsSyncStateStatus.PENDING,
 
+            trackingMode: 'WINDOW',
+
             units: [],
 
             consecutiveFailures: 0,
@@ -1532,6 +1519,76 @@ export class SportsSyncStateService {
           setDefaultsOnInsert: true,
         },
       )
+      .exec();
+  }
+
+  async markCronStarted(taskKey: string): Promise<void> {
+    const state = await this.requireState(this.getCronStateKey(taskKey));
+
+    state.status = SportsSyncStateStatus.PROCESSING;
+
+    state.lastStartedAt = new Date();
+
+    state.lastError = undefined;
+
+    await state.save();
+  }
+
+  async markCronSuccess(params: {
+    taskKey: string;
+    nextRunAt?: Date;
+  }): Promise<void> {
+    const state = await this.requireState(this.getCronStateKey(params.taskKey));
+
+    const now = new Date();
+
+    state.status = SportsSyncStateStatus.SUCCESS;
+
+    state.lastStartedAt ??= now;
+
+    state.lastSuccessfulAt = now;
+
+    state.lastCompletedAt = now;
+
+    state.lastError = undefined;
+
+    state.consecutiveFailures = 0;
+
+    if (params.nextRunAt) {
+      state.nextRunAt = params.nextRunAt;
+    }
+
+    await state.save();
+  }
+
+  async markCronFailure(params: {
+    taskKey: string;
+    error: unknown;
+    nextRunAt?: Date;
+  }): Promise<void> {
+    const state = await this.requireState(this.getCronStateKey(params.taskKey));
+
+    state.status = SportsSyncStateStatus.FAILED;
+
+    state.lastError =
+      params.error instanceof Error
+        ? params.error.message
+        : String(params.error);
+
+    state.consecutiveFailures += 1;
+
+    if (params.nextRunAt) {
+      state.nextRunAt = params.nextRunAt;
+    }
+
+    await state.save();
+  }
+
+  async getCronState(taskKey: string): Promise<SportsSyncStateDocument | null> {
+    return this.syncStateModel
+      .findOne({
+        stateKey: this.getCronStateKey(taskKey),
+      })
       .exec();
   }
 
