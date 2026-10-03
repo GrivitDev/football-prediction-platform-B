@@ -273,6 +273,10 @@ export class SportsStartupService implements OnModuleInit {
   // PREPARE LEAGUE CONTEXTS
   // ============================================================
 
+  // ============================================================
+  // PREPARE LEAGUE CONTEXTS
+  // ============================================================
+
   private async prepareLeagueContexts(
     activeLeagues: ActiveLeague[],
   ): Promise<StartupLeagueContext[]> {
@@ -370,11 +374,6 @@ export class SportsStartupService implements OnModuleInit {
     return contexts;
   }
 
-  // ============================================================
-  // PHASE 3
-  // FIXTURE COLLECTION
-  // ============================================================
-
   private async runFixturePhase(
     contexts: StartupLeagueContext[],
   ): Promise<void> {
@@ -383,45 +382,80 @@ export class SportsStartupService implements OnModuleInit {
     this.logger.log(`ESPN FIXTURE PHASE started: leagues=${contexts.length}`);
 
     for (const context of contexts) {
-      const incompleteDates =
-        await this.sportsSyncStateService.getIncompleteDates(
+      while (true) {
+        const incompleteDates =
+          await this.sportsSyncStateService.getDueIncompleteDates(
+            context.fixtureStateKey,
+          );
+
+        this.logger.log(
+          `Fixture bootstrap for ${context.leagueId}: ` +
+            `dueDates=${incompleteDates.length}`,
+        );
+
+        for (const dateKey of incompleteDates) {
+          try {
+            await this.processFixtureDate(
+              context.fixtureStateKey,
+              context.leagueId,
+              dateKey,
+            );
+          } catch (error) {
+            this.logger.error(
+              `Fixture bootstrap failed for ${context.leagueId} ${dateKey}: ` +
+                `${error instanceof Error ? error.message : String(error)}. ` +
+                `The fixture synchronization unit will be retried.`,
+            );
+          }
+        }
+
+        await this.sportsSyncStateService.refreshOverallStatus(
           context.fixtureStateKey,
         );
 
-      this.logger.log(
-        `Fixture bootstrap for ${context.leagueId}: ` +
-          `remainingDates=${incompleteDates.length}`,
-      );
+        const complete = await this.sportsSyncStateService.isComplete(
+          context.fixtureStateKey,
+        );
 
-      for (const dateKey of incompleteDates) {
-        try {
-          await this.processFixtureDate(
-            context.fixtureStateKey,
-            context.leagueId,
-            dateKey,
+        if (complete) {
+          this.logger.log(
+            `Fixture bootstrap completed for ${context.leagueId}`,
           );
-        } catch (error) {
-          failures.push(
-            `${context.leagueId} ${dateKey}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
+
+          break;
         }
-      }
 
-      await this.sportsSyncStateService.refreshOverallStatus(
-        context.fixtureStateKey,
-      );
+        const nextRetryAt =
+          await this.sportsSyncStateService.getNextIncompleteDateRetryAt(
+            context.fixtureStateKey,
+          );
 
-      const complete = await this.sportsSyncStateService.isComplete(
-        context.fixtureStateKey,
-      );
+        if (nextRetryAt) {
+          const delay = Math.max(0, nextRetryAt.getTime() - Date.now());
 
-      if (!complete) {
+          this.logger.warn(
+            `Fixture retry scheduled for ${context.leagueId} at ` +
+              `${nextRetryAt.toISOString()} ` +
+              `(wait=${delay}ms)`,
+          );
+
+          await this.sleep(delay);
+
+          continue;
+        }
+
+        /*
+         * The state is incomplete, but there is no retryable date
+         * and no future retry scheduled.
+         *
+         * This indicates an unexpected synchronization state.
+         */
         failures.push(
           `${context.leagueId}: fixture synchronization state ` +
-            `${context.fixtureStateKey} is not complete`,
+            `${context.fixtureStateKey} is not complete and has no scheduled retry`,
         );
+
+        break;
       }
     }
 
@@ -980,5 +1014,11 @@ export class SportsStartupService implements OnModuleInit {
 
   private toDateOnly(date: Date): string {
     return date.toISOString().slice(0, 10);
+  }
+
+  private sleep(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, milliseconds);
+    });
   }
 }

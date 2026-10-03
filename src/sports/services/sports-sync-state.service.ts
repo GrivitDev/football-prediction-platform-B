@@ -1231,6 +1231,54 @@ export class SportsSyncStateService {
       .sort((a, b) => a.localeCompare(b));
   }
 
+  async getDueIncompleteDates(stateKey: string): Promise<string[]> {
+    const state = await this.requireState(stateKey);
+
+    const now = Date.now();
+
+    return state.units
+      .filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.DATE &&
+          (unit.status === SportsSyncUnitStatus.PENDING ||
+            unit.status === SportsSyncUnitStatus.FAILED),
+      )
+      .filter((unit) => {
+        if (!unit.nextAttemptAt) {
+          return true;
+        }
+
+        return new Date(unit.nextAttemptAt).getTime() <= now;
+      })
+      .map((unit) => unit.dateKey)
+      .filter((date): date is string => Boolean(date))
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  async getNextIncompleteDateRetryAt(stateKey: string): Promise<Date | null> {
+    const state = await this.requireState(stateKey);
+
+    const now = Date.now();
+
+    const retryTimes = state.units
+      .filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.DATE &&
+          (unit.status === SportsSyncUnitStatus.PENDING ||
+            unit.status === SportsSyncUnitStatus.FAILED) &&
+          unit.nextAttemptAt,
+      )
+      .map((unit) => new Date(unit.nextAttemptAt as Date).getTime())
+      .filter((time) => time > now)
+      .sort((a, b) => a - b);
+
+    if (retryTimes.length === 0) {
+      return null;
+    }
+
+    return new Date(retryTimes[0]);
+  }
+
   async markDateProcessing(stateKey: string, dateKey: string): Promise<void> {
     await this.markUnitProcessing(stateKey, `DATE:${dateKey}`);
   }
