@@ -2,8 +2,6 @@ import { Module } from '@nestjs/common';
 
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
-import { MongooseModule } from '@nestjs/mongoose';
-
 import { ScheduleModule } from '@nestjs/schedule';
 
 import { AuthModule } from './auth/auth.module';
@@ -39,6 +37,7 @@ import { EmailModule } from './notifications/email.module';
 import { PaymentGatewaysModule } from './payment-gateways/payment-gateways.module';
 import { ArticleModule } from './articles/article.module';
 import { SystemMonitorModule } from './system-monitor/system-monitor.module';
+import { MongooseModule } from '@nestjs/mongoose';
 
 @Module({
   imports: [
@@ -53,7 +52,7 @@ import { SystemMonitorModule } from './system-monitor/system-monitor.module';
 
       inject: [ConfigService],
 
-      useFactory: async (configService: ConfigService) => ({
+      useFactory: (configService: ConfigService) => ({
         uri: configService.get<string>('MONGODB_URI'),
       }),
     }),

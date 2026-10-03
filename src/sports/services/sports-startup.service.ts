@@ -122,6 +122,14 @@ export class SportsStartupService implements OnModuleInit {
           `failed=${detailResult.failed}`,
       );
 
+      // --------------------------------------------------------
+      // AUTHORITATIVE ACTIVE LEAGUE LIST
+      //
+      // Catalogue/detail synchronization is complete.
+      // The active competition collection is now the authoritative
+      // source for which leagues participate in startup sync.
+      // --------------------------------------------------------
+
       const activeLeagues =
         await this.espnActiveCompetitionService.getActiveLeagues();
 
@@ -130,14 +138,30 @@ export class SportsStartupService implements OnModuleInit {
       );
 
       // --------------------------------------------------------
-      // PREPARE ACTIVE-LEAGUE SYNC STATES
+      // PREPARE FIXTURE SYNCHRONIZATION STATES
+      //
+      // IMPORTANT:
+      //
+      // This phase prepares ONLY FIXTURE_REFRESH state.
+      //
+      // SUMMARY_REFRESH state is intentionally NOT created or
+      // reconciled here.
+      //
+      // Summary begins only after the complete fixture phase.
       // --------------------------------------------------------
 
       const leagueContexts = await this.prepareLeagueContexts(activeLeagues);
 
+      this.logger.log(
+        `ESPN fixture synchronization states prepared: leagues=${leagueContexts.length}`,
+      );
+
       // --------------------------------------------------------
       // PHASE 3
       // FIXTURE COLLECTION
+      //
+      // Every active league must complete its fixture state before
+      // startup is allowed to enter the Summary phase.
       // --------------------------------------------------------
 
       await this.runFixturePhase(leagueContexts);
@@ -147,6 +171,9 @@ export class SportsStartupService implements OnModuleInit {
       // --------------------------------------------------------
       // PHASE 4
       // SUMMARY COLLECTION
+      //
+      // runStartupSummaryPhase() contains a hard fixture-completion
+      // barrier before it creates/reconciles any Summary state.
       //
       // Startup only synchronizes fixtures + summaries.
       // YouTube is deliberately not part of startup.
@@ -276,6 +303,9 @@ export class SportsStartupService implements OnModuleInit {
 
       // --------------------------------------------------------
       // FIXTURE STATE
+      //
+      // This is the ONLY synchronization state that is created or
+      // reconciled during preparation.
       // --------------------------------------------------------
 
       const fixtureState =
@@ -303,23 +333,24 @@ export class SportsStartupService implements OnModuleInit {
       );
 
       // --------------------------------------------------------
-      // SUMMARY STATE
+      // SUMMARY STATE KEY
+      //
+      // DO NOT call ensureSummaryRefreshState() here.
+      //
+      // We only calculate the persistent key that will be used
+      // after the fixture phase has completed.
+      //
+      // This means no Summary state is read, created, reconciled,
+      // or populated before fixtures are complete.
       // --------------------------------------------------------
 
-      const summaryState =
-        await this.sportsSyncStateService.ensureSummaryRefreshState({
-          leagueId,
+      const summaryStateKey = this.sportsSyncStateService.getQueueStateKey({
+        jobType: EspnQueueJobType.SUMMARY_REFRESH,
 
-          season: league.season,
+        leagueId,
 
-          priority,
-
-          trackingMode: 'HISTORY',
-        });
-
-      await this.sportsSyncStateService.resetInterruptedUnits(
-        summaryState.stateKey,
-      );
+        season: league.season,
+      });
 
       contexts.push({
         league,
@@ -332,7 +363,7 @@ export class SportsStartupService implements OnModuleInit {
 
         fixtureStateKey: fixtureState.stateKey,
 
-        summaryStateKey: summaryState.stateKey,
+        summaryStateKey,
       });
     }
 
@@ -381,6 +412,17 @@ export class SportsStartupService implements OnModuleInit {
       await this.sportsSyncStateService.refreshOverallStatus(
         context.fixtureStateKey,
       );
+
+      const complete = await this.sportsSyncStateService.isComplete(
+        context.fixtureStateKey,
+      );
+
+      if (!complete) {
+        failures.push(
+          `${context.leagueId}: fixture synchronization state ` +
+            `${context.fixtureStateKey} is not complete`,
+        );
+      }
     }
 
     if (failures.length > 0) {
@@ -445,10 +487,44 @@ export class SportsStartupService implements OnModuleInit {
       `ESPN STARTUP SUMMARY PHASE started: leagues=${contexts.length}`,
     );
 
+    // ----------------------------------------------------------
+    // HARD PHASE BARRIER
+    //
+    // Before even creating/reconciling a SUMMARY_REFRESH state,
+    // verify that EVERY active league's FIXTURE_REFRESH state is
+    // complete.
+    //
+    // This guarantees:
+    //
+    //   fixture phase
+    //          ↓
+    //   fixture completion
+    //          ↓
+    //   summary reconciliation
+    //          ↓
+    //   summary processing
+    //
+    // No Summary work can begin while any fixture state is incomplete.
+    // ----------------------------------------------------------
+
+    for (const context of contexts) {
+      await this.sportsSyncStateService.assertFixtureRefreshComplete(
+        context.leagueId,
+        context.season,
+      );
+    }
+
+    // ----------------------------------------------------------
+    // SUMMARY STATE RECONCILIATION + COLLECTION
+    // ----------------------------------------------------------
+
     for (const context of contexts) {
       /*
-       * Reconcile MongoDB and persistent summary state once for
-       * this league/season.
+       * The fixture barrier has already passed for every league.
+       *
+       * MongoDB now represents the completed startup fixture phase,
+       * so SUMMARY_REFRESH can safely be reconciled against the
+       * canonical fixture collection.
        */
       const state = await this.sportsSyncStateService.ensureSummaryRefreshState(
         {
