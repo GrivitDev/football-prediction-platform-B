@@ -25,15 +25,10 @@ type ActiveLeague = Awaited<
 
 interface StartupLeagueContext {
   league: ActiveLeague;
-
   leagueId: string;
-
   season: number;
-
   priority: number;
-
   fixtureStateKey: string;
-
   summaryStateKey: string;
 }
 
@@ -48,13 +43,8 @@ export class SportsStartupService implements OnModuleInit {
   private readonly startupFixtureForwardDays = 8;
 
   /**
-   * Summary requests are performed concurrently inside one league.
-   *
-   * The league itself remains sequential:
-   *
-   *   league 1 -> all summaries -> bulk write
-   *   league 2 -> all summaries -> bulk write
-   *   ...
+   * Maximum number of concurrent Summary requests
+   * inside one league.
    */
   private readonly startupSummaryConcurrency = 4;
 
@@ -124,10 +114,6 @@ export class SportsStartupService implements OnModuleInit {
 
       // --------------------------------------------------------
       // AUTHORITATIVE ACTIVE LEAGUE LIST
-      //
-      // Catalogue/detail synchronization is complete.
-      // The active competition collection is now the authoritative
-      // source for which leagues participate in startup sync.
       // --------------------------------------------------------
 
       const activeLeagues =
@@ -140,14 +126,10 @@ export class SportsStartupService implements OnModuleInit {
       // --------------------------------------------------------
       // PREPARE FIXTURE SYNCHRONIZATION STATES
       //
-      // IMPORTANT:
+      // ONLY FIXTURE_REFRESH state is prepared here.
       //
-      // This phase prepares ONLY FIXTURE_REFRESH state.
-      //
-      // SUMMARY_REFRESH state is intentionally NOT created or
-      // reconciled here.
-      //
-      // Summary begins only after the complete fixture phase.
+      // SUMMARY_REFRESH state is deliberately not reconciled
+      // until every fixture state has completed.
       // --------------------------------------------------------
 
       const leagueContexts = await this.prepareLeagueContexts(activeLeagues);
@@ -159,9 +141,6 @@ export class SportsStartupService implements OnModuleInit {
       // --------------------------------------------------------
       // PHASE 3
       // FIXTURE COLLECTION
-      //
-      // Every active league must complete its fixture state before
-      // startup is allowed to enter the Summary phase.
       // --------------------------------------------------------
 
       await this.runFixturePhase(leagueContexts);
@@ -171,12 +150,6 @@ export class SportsStartupService implements OnModuleInit {
       // --------------------------------------------------------
       // PHASE 4
       // SUMMARY COLLECTION
-      //
-      // runStartupSummaryPhase() contains a hard fixture-completion
-      // barrier before it creates/reconciles any Summary state.
-      //
-      // Startup only synchronizes fixtures + summaries.
-      // YouTube is deliberately not part of startup.
       // --------------------------------------------------------
 
       const summaryResult = await this.runStartupSummaryPhase(leagueContexts);
@@ -216,12 +189,7 @@ export class SportsStartupService implements OnModuleInit {
       }
 
       // --------------------------------------------------------
-      // RESTORE PRE-EXISTING NORMAL FIXTURE QUEUE WORK
-      //
-      // Summary jobs are not restored from state because the
-      // summary state is league/season scoped and contains many
-      // event units. Normal summary queue discovery rebuilds
-      // operational jobs from that persistent state after startup.
+      // RESTORE NORMAL OPERATIONS
       // --------------------------------------------------------
 
       const restored = await this.restoreNormalOperationsQueueStates();
@@ -248,7 +216,7 @@ export class SportsStartupService implements OnModuleInit {
       );
 
       // --------------------------------------------------------
-      // FINAL RELEASE
+      // RELEASE NORMAL OPERATIONS
       // --------------------------------------------------------
 
       this.espnQueueService.markStartupReady();
@@ -268,10 +236,6 @@ export class SportsStartupService implements OnModuleInit {
       );
     }
   }
-
-  // ============================================================
-  // PREPARE LEAGUE CONTEXTS
-  // ============================================================
 
   // ============================================================
   // PREPARE LEAGUE CONTEXTS
@@ -308,16 +272,13 @@ export class SportsStartupService implements OnModuleInit {
       // --------------------------------------------------------
       // FIXTURE STATE
       //
-      // This is the ONLY synchronization state that is created or
-      // reconciled during preparation.
+      // This is the only synchronization state prepared here.
       // --------------------------------------------------------
 
       const fixtureState =
         await this.sportsSyncStateService.ensureFixtureRefreshState({
           leagueId,
-
           season: league.season,
-
           priority,
 
           dateFrom: this.toDateOnly(new Date(league.seasonStartDate)),
@@ -339,40 +300,32 @@ export class SportsStartupService implements OnModuleInit {
       // --------------------------------------------------------
       // SUMMARY STATE KEY
       //
-      // DO NOT call ensureSummaryRefreshState() here.
-      //
-      // We only calculate the persistent key that will be used
-      // after the fixture phase has completed.
-      //
-      // This means no Summary state is read, created, reconciled,
-      // or populated before fixtures are complete.
+      // Do not create/reconcile Summary state yet.
       // --------------------------------------------------------
 
       const summaryStateKey = this.sportsSyncStateService.getQueueStateKey({
         jobType: EspnQueueJobType.SUMMARY_REFRESH,
-
         leagueId,
-
         season: league.season,
       });
 
       contexts.push({
         league,
-
         leagueId,
-
         season: league.season,
-
         priority,
-
         fixtureStateKey: fixtureState.stateKey,
-
         summaryStateKey,
       });
     }
 
     return contexts;
   }
+
+  // ============================================================
+  // PHASE 3
+  // FIXTURE COLLECTION
+  // ============================================================
 
   private async runFixturePhase(
     contexts: StartupLeagueContext[],
@@ -402,7 +355,8 @@ export class SportsStartupService implements OnModuleInit {
             );
           } catch (error) {
             this.logger.error(
-              `Fixture bootstrap failed for ${context.leagueId} ${dateKey}: ` +
+              `Fixture bootstrap failed for ` +
+                `${context.leagueId} ${dateKey}: ` +
                 `${error instanceof Error ? error.message : String(error)}. ` +
                 `The fixture synchronization unit will be retried.`,
             );
@@ -444,15 +398,10 @@ export class SportsStartupService implements OnModuleInit {
           continue;
         }
 
-        /*
-         * The state is incomplete, but there is no retryable date
-         * and no future retry scheduled.
-         *
-         * This indicates an unexpected synchronization state.
-         */
         failures.push(
           `${context.leagueId}: fixture synchronization state ` +
-            `${context.fixtureStateKey} is not complete and has no scheduled retry`,
+            `${context.fixtureStateKey} is not complete and ` +
+            `has no scheduled retry`,
         );
 
         break;
@@ -510,11 +459,8 @@ export class SportsStartupService implements OnModuleInit {
     failedAttempts: number;
   }> {
     let checked = 0;
-
     let missingSummary = 0;
-
     let processed = 0;
-
     let failedAttempts = 0;
 
     this.logger.log(
@@ -522,10 +468,10 @@ export class SportsStartupService implements OnModuleInit {
     );
 
     // ----------------------------------------------------------
-    // HARD PHASE BARRIER
+    // HARD FIXTURE BARRIER
     //
-    // Every league must have completed its fixture phase before
-    // Summary reconciliation can begin.
+    // No Summary reconciliation or ESPN Summary request can begin
+    // until EVERY fixture synchronization state is complete.
     // ----------------------------------------------------------
 
     for (const context of contexts) {
@@ -538,25 +484,18 @@ export class SportsStartupService implements OnModuleInit {
     // ----------------------------------------------------------
     // SUMMARY STATE RECONCILIATION
     //
-    // Build/reconcile the persistent Summary ledger for every
-    // league before beginning collection.
+    // This reads MongoDB fixtures and creates/reconciles the
+    // persistent Summary synchronization ledger.
     //
-    // IMPORTANT:
-    //
-    // We reconcile ALL leagues first.
-    // A failure in one league cannot prevent another league from
-    // entering the Summary phase.
+    // No ESPN Summary API request happens here.
     // ----------------------------------------------------------
 
     for (const context of contexts) {
       const state = await this.sportsSyncStateService.ensureSummaryRefreshState(
         {
           leagueId: context.leagueId,
-
           season: context.season,
-
           priority: context.priority,
-
           trackingMode: 'HISTORY',
         },
       );
@@ -569,42 +508,28 @@ export class SportsStartupService implements OnModuleInit {
         );
 
       checked += state.units.length;
-
       missingSummary += incompleteEvents.length;
 
       this.logger.log(
         `Summary state prepared for ${context.leagueId}: ` +
-          `checked=${state.units.length}, ` +
+          `fixtures=${state.units.length}, ` +
           `missing=${incompleteEvents.length}`,
       );
     }
 
     // ----------------------------------------------------------
-    // NON-BLOCKING LEAGUE SCHEDULER
+    // NON-BLOCKING ROUND-ROBIN SUMMARY SCHEDULER
     //
-    // One pass processes every league that currently has work due.
+    // Every league gets its turn.
     //
-    // Failed events are NOT fatal.
+    // A failed league does not block the next league.
     //
-    // After all leagues have had their turn, the scheduler waits
-    // for the earliest retry time and starts another pass.
-    //
-    // Therefore:
-    //
-    //   League A failure
-    //        ↓
-    //   League B continues
-    //        ↓
-    //   League C continues
-    //        ↓
-    //   retry League A when due
+    // Failed events are retried when their retry time arrives.
     // ----------------------------------------------------------
 
     while (true) {
       let allComplete = true;
-
-      let roundProcessedWork = false;
-
+      let processedWorkThisRound = false;
       let earliestRetryAt: Date | null = null;
 
       for (const context of contexts) {
@@ -618,10 +543,7 @@ export class SportsStartupService implements OnModuleInit {
           );
 
         // ------------------------------------------------------
-        // Nothing currently due for this league.
-        //
-        // It may already be complete, or it may simply have
-        // failed events waiting for their retry timestamp.
+        // NOTHING DUE FOR THIS LEAGUE
         // ------------------------------------------------------
 
         if (dueEvents.length === 0) {
@@ -644,21 +566,19 @@ export class SportsStartupService implements OnModuleInit {
               state.stateKey,
             );
 
-          if (nextRetryAt) {
-            if (
-              !earliestRetryAt ||
-              nextRetryAt.getTime() < earliestRetryAt.getTime()
-            ) {
-              earliestRetryAt = nextRetryAt;
-            }
+          if (
+            nextRetryAt &&
+            (!earliestRetryAt ||
+              nextRetryAt.getTime() < earliestRetryAt.getTime())
+          ) {
+            earliestRetryAt = nextRetryAt;
           }
 
           continue;
         }
 
         allComplete = false;
-
-        roundProcessedWork = true;
+        processedWorkThisRound = true;
 
         this.logger.log(
           `Summary bootstrap processing ${context.leagueId}: ` +
@@ -666,7 +586,7 @@ export class SportsStartupService implements OnModuleInit {
         );
 
         // ------------------------------------------------------
-        // Mark the entire current league batch PROCESSING.
+        // MARK ENTIRE LEAGUE BATCH AS PROCESSING
         // ------------------------------------------------------
 
         await this.sportsSyncStateService.markSummaryEventsProcessing(
@@ -677,22 +597,20 @@ export class SportsStartupService implements OnModuleInit {
         const batchStartedAt = Date.now();
 
         // ------------------------------------------------------
-        // FETCH ALL DUE EVENTS FOR THIS LEAGUE
+        // ESPN SUMMARY FETCH
         //
-        // processSummaryBatch() uses 4 concurrent workers.
+        // IMPORTANT:
         //
-        // A failure on one event is isolated and does not stop
-        // another event from being requested.
+        // Whatever getMatchSummary() returns is accepted exactly
+        // as returned.
+        //
+        // There is NO hasSummaryPayload() check here.
         // ------------------------------------------------------
 
-        const batchResults = await this.processSummaryBatch(
-          context,
-          state.stateKey,
-          dueEvents,
-        );
+        const batchResults = await this.processSummaryBatch(context, dueEvents);
 
         const successfulResults = batchResults.filter(
-          (result) => result.success && result.summary !== undefined,
+          (result) => result.success,
         );
 
         const failedResults = batchResults.filter((result) => !result.success);
@@ -708,14 +626,16 @@ export class SportsStartupService implements OnModuleInit {
         failedAttempts += failedResults.length;
 
         // ------------------------------------------------------
-        // BULK WRITE
+        // ONE FIXTURE BULK WRITE FOR THIS LEAGUE
         //
-        // All successful Summary responses for THIS league are
-        // persisted in one MongoDB bulk operation.
+        // Successful ESPN responses are written to:
         //
-        // A bulk-write failure is also isolated to this league.
-        // It must not stop the next league from processing.
+        //   sports_espn_fixtures.payload.summary
+        //
+        // No individual fixture write is performed here.
         // ------------------------------------------------------
+
+        let fixtureBulkWriteSucceeded = true;
 
         if (successfulResults.length > 0) {
           const bulkStartedAt = Date.now();
@@ -725,9 +645,7 @@ export class SportsStartupService implements OnModuleInit {
               await this.sportsCollectionService.collectEspnMatchSummariesBulk(
                 successfulResults.map((result) => ({
                   leagueId: context.leagueId,
-
                   eventId: result.eventId,
-
                   summary: result.summary,
                 })),
               );
@@ -739,13 +657,9 @@ export class SportsStartupService implements OnModuleInit {
                 `modified=${bulkResult.modified}, ` +
                 `duration=${Date.now() - bulkStartedAt}ms`,
             );
-
-            /*
-             * Only successful fetches whose canonical MongoDB write
-             * succeeded count as processed.
-             */
-            processed += successfulResults.length;
           } catch (error) {
+            fixtureBulkWriteSucceeded = false;
+
             const message =
               error instanceof Error ? error.message : String(error);
 
@@ -754,18 +668,9 @@ export class SportsStartupService implements OnModuleInit {
                 `${message}`,
             );
 
-            /*
-             * The ESPN calls succeeded, but canonical persistence
-             * failed.
-             *
-             * Return those events to FAILED so they can be retried
-             * during a later scheduler round.
-             */
             await this.sportsSyncStateService.markSummaryBulkWriteFailed(
               state.stateKey,
-
               successfulResults.map((result) => result.eventId),
-
               error,
             );
 
@@ -774,7 +679,43 @@ export class SportsStartupService implements OnModuleInit {
         }
 
         // ------------------------------------------------------
-        // RECALCULATE THE LEAGUE STATE
+        // MARK SUCCESSFUL FETCHES SUCCESSFUL
+        //
+        // Only do this after fixture persistence succeeds.
+        // ------------------------------------------------------
+
+        if (fixtureBulkWriteSucceeded) {
+          await Promise.all(
+            successfulResults.map((result) =>
+              this.sportsSyncStateService.markSummaryEventFetchSuccess(
+                state.stateKey,
+                result.eventId,
+              ),
+            ),
+          );
+
+          processed += successfulResults.length;
+        }
+
+        // ------------------------------------------------------
+        // MARK ACTUAL API FAILURES FAILED
+        //
+        // They receive a retry timestamp inside the sync-state
+        // service.
+        // ------------------------------------------------------
+
+        await Promise.all(
+          failedResults.map((result) =>
+            this.sportsSyncStateService.markSummaryEventFetchFailed(
+              state.stateKey,
+              result.eventId,
+              result.error,
+            ),
+          ),
+        );
+
+        // ------------------------------------------------------
+        // REFRESH OVERALL STATE
         // ------------------------------------------------------
 
         await this.sportsSyncStateService.refreshOverallStatus(state.stateKey);
@@ -787,74 +728,51 @@ export class SportsStartupService implements OnModuleInit {
           this.logger.log(
             `Summary bootstrap completed for ${context.leagueId}`,
           );
-        } else {
-          /*
-           * This league still has failed/pending work.
-           *
-           * DO NOT throw.
-           *
-           * The scheduler immediately moves to the next league.
-           */
-          const nextRetryAt =
-            await this.sportsSyncStateService.getNextIncompleteSummaryRetryAt(
-              state.stateKey,
-            );
 
-          if (nextRetryAt) {
-            if (
-              !earliestRetryAt ||
-              nextRetryAt.getTime() < earliestRetryAt.getTime()
-            ) {
-              earliestRetryAt = nextRetryAt;
-            }
-
-            this.logger.warn(
-              `Summary retry scheduled for ${context.leagueId} at ` +
-                `${nextRetryAt.toISOString()}`,
-            );
-          } else {
-            const stillIncomplete =
-              await this.sportsSyncStateService.getIncompleteSummaryEvents(
-                state.stateKey,
-              );
-
-            if (stillIncomplete.length > 0) {
-              this.logger.warn(
-                `Summary synchronization remains incomplete for ` +
-                  `${context.leagueId}: ` +
-                  `remaining=${stillIncomplete.length}. ` +
-                  `The scheduler will continue processing other leagues.`,
-              );
-            }
-          }
+          continue;
         }
+
+        allComplete = false;
+
+        const nextRetryAt =
+          await this.sportsSyncStateService.getNextIncompleteSummaryRetryAt(
+            state.stateKey,
+          );
+
+        if (
+          nextRetryAt &&
+          (!earliestRetryAt ||
+            nextRetryAt.getTime() < earliestRetryAt.getTime())
+        ) {
+          earliestRetryAt = nextRetryAt;
+        }
+
+        this.logger.warn(
+          `Summary bootstrap incomplete for ${context.leagueId}; ` +
+            `failed/pending events will be retried later.`,
+        );
       }
 
-      // ----------------------------------------------------------
+      // --------------------------------------------------------
       // ALL LEAGUES COMPLETE
-      // ----------------------------------------------------------
+      // --------------------------------------------------------
 
       if (allComplete) {
         this.logger.log('ESPN STARTUP SUMMARY PHASE completed successfully');
 
         return {
           checked,
-
           missingSummary,
-
           processed,
-
           failedAttempts,
         };
       }
 
-      // ----------------------------------------------------------
-      // WAIT FOR THE EARLIEST RETRY
+      // --------------------------------------------------------
+      // WAIT FOR EARLIEST RETRY
       //
-      // We only wait after every league has had its current turn.
-      //
-      // This is what makes the scheduler non-blocking across leagues.
-      // ----------------------------------------------------------
+      // Every league has already had its turn in this round.
+      // --------------------------------------------------------
 
       if (earliestRetryAt) {
         const delay = Math.max(0, earliestRetryAt.getTime() - Date.now());
@@ -870,20 +788,11 @@ export class SportsStartupService implements OnModuleInit {
         continue;
       }
 
-      // ----------------------------------------------------------
+      // --------------------------------------------------------
       // SAFETY FALLBACK
-      //
-      // There is still incomplete work but no retry timestamp.
-      // This should only happen for an unexpected state transition.
-      // Avoid a tight CPU loop.
-      // ----------------------------------------------------------
+      // --------------------------------------------------------
 
-      if (!roundProcessedWork) {
-        this.logger.warn(
-          'Summary scheduler found incomplete work without a retry timestamp. ' +
-            'Retrying state inspection shortly.',
-        );
-
+      if (!processedWorkThisRound) {
         await this.sleep(1000);
       }
     }
@@ -895,7 +804,6 @@ export class SportsStartupService implements OnModuleInit {
 
   private async processSummaryBatch(
     context: StartupLeagueContext,
-    stateKey: string,
     eventIds: string[],
   ): Promise<
     Array<{
@@ -913,7 +821,6 @@ export class SportsStartupService implements OnModuleInit {
     }> = [];
 
     let nextIndex = 0;
-
     let completed = 0;
 
     const total = eventIds.length;
@@ -933,98 +840,56 @@ export class SportsStartupService implements OnModuleInit {
         const startedAt = Date.now();
 
         try {
+          // ----------------------------------------------------
+          // ACCEPT ESPN RESPONSE AS-IS
+          //
+          // No response-content validation.
+          // No nested "summary" property check.
+          // No payload-shape test.
+          // ----------------------------------------------------
+
           const summary = await this.espnService.getMatchSummary(
             context.leagueId,
             eventId,
           );
-
-          const duration = Date.now() - startedAt;
-
-          /*
-           * A completed HTTP/API request without a usable Summary
-           * is not a successful synchronization result.
-           */
-          if (!this.hasSummaryPayload(summary)) {
-            throw new Error(
-              `ESPN returned no usable summary for event ${eventId}`,
-            );
-          }
 
           completed += 1;
 
           this.logger.log(
             `SUMMARY FETCH completed: ` +
               `${context.leagueId}/${eventId} ` +
-              `duration=${duration}ms ` +
+              `duration=${Date.now() - startedAt}ms ` +
               `progress=${completed}/${total}`,
           );
 
-          try {
-            await this.sportsSyncStateService.markSummaryEventFetchSuccess(
-              stateKey,
-              eventId,
-            );
-          } catch (stateError) {
-            this.logger.error(
-              `Failed to record Summary fetch success for ` +
-                `${context.leagueId}/${eventId}: ${
-                  stateError instanceof Error
-                    ? stateError.message
-                    : String(stateError)
-                }`,
-            );
-          }
-
           results.push({
             eventId,
-
             success: true,
-
             summary,
           });
         } catch (error) {
-          const duration = Date.now() - startedAt;
-
           completed += 1;
-
-          const message =
-            error instanceof Error ? error.message : String(error);
 
           this.logger.error(
             `SUMMARY FETCH failed: ` +
               `${context.leagueId}/${eventId} ` +
-              `duration=${duration}ms ` +
+              `duration=${Date.now() - startedAt}ms ` +
               `progress=${completed}/${total} ` +
-              `error=${message}`,
+              `error=${error instanceof Error ? error.message : String(error)}`,
           );
-
-          try {
-            await this.sportsSyncStateService.markSummaryEventFetchFailed(
-              stateKey,
-              eventId,
-              error,
-            );
-          } catch (stateError) {
-            this.logger.error(
-              `Failed to record Summary fetch failure for ` +
-                `${context.leagueId}/${eventId}: ${
-                  stateError instanceof Error
-                    ? stateError.message
-                    : String(stateError)
-                }`,
-            );
-          }
 
           results.push({
             eventId,
-
             success: false,
-
             error,
           });
         }
       }
     };
+
+    if (workerCount === 0) {
+      return results;
+    }
 
     await Promise.all(
       Array.from(
@@ -1052,7 +917,6 @@ export class SportsStartupService implements OnModuleInit {
     ]);
 
     let queued = 0;
-
     let skipped = 0;
 
     for (const state of states) {
@@ -1072,21 +936,10 @@ export class SportsStartupService implements OnModuleInit {
           continue;
         }
 
-        /*
-         * The persistent FIXTURE_REFRESH state is independent of
-         * the operational trigger that originally created work.
-         *
-         * Rebuilding one normal fixture queue job is enough because
-         * the worker reads the persistent state and processes every
-         * incomplete fixture date.
-         */
         const job = await this.espnQueueService.addFixtureRefreshJob({
           leagueId: state.leagueId,
-
           season: state.season,
-
           priority: state.priority ?? 4,
-
           scheduledFor: new Date(),
         });
 
@@ -1100,18 +953,16 @@ export class SportsStartupService implements OnModuleInit {
         skipped += 1;
 
         this.logger.error(
-          `Failed to restore normal synchronization state ${state.stateKey}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `Failed to restore normal synchronization state ` +
+            `${state.stateKey}: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
 
     return {
       states: states.length,
-
       queued,
-
       skipped,
     };
   }
@@ -1138,26 +989,6 @@ export class SportsStartupService implements OnModuleInit {
   }
 
   // ============================================================
-  // SUMMARY
-  // ============================================================
-
-  private hasSummaryPayload(payload: unknown): boolean {
-    if (!payload || typeof payload !== 'object') {
-      return false;
-    }
-
-    const record = payload as Record<string, unknown>;
-
-    const summary = record.summary;
-
-    return Boolean(
-      summary &&
-      typeof summary === 'object' &&
-      Object.keys(summary as Record<string, unknown>).length > 0,
-    );
-  }
-
-  // ============================================================
   // DATE HELPERS
   // ============================================================
 
@@ -1175,8 +1006,16 @@ export class SportsStartupService implements OnModuleInit {
     return date.toISOString().slice(0, 10);
   }
 
-  private sleep(milliseconds: number): Promise<void> {
-    return new Promise((resolve) => {
+  // ============================================================
+  // SLEEP
+  // ============================================================
+
+  private async sleep(milliseconds: number): Promise<void> {
+    if (milliseconds <= 0) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
       setTimeout(resolve, milliseconds);
     });
   }
