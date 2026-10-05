@@ -99,9 +99,11 @@ export class SettlementService {
     // ESPN SETTLEMENT
     // ==========================================================
 
-    const fixture = await this.sportsDataReadService.getFixtureByEventId(
+    const settlementData = await this.sportsDataReadService.getSettlementData(
       prediction.matchId,
     );
+
+    const fixture = settlementData?.fixture;
 
     if (!fixture) {
       throw new BadRequestException(
@@ -123,7 +125,7 @@ export class SettlementService {
       );
     }
 
-    const summary = this.getStoredSummary(fixture);
+    const summary = settlementData?.summary ?? this.getStoredSummary(fixture);
 
     const settlements = this.settleMarkets(prediction, fixture, score, summary);
 
@@ -187,11 +189,11 @@ export class SettlementService {
       ...new Set(predictions.map((prediction) => String(prediction.matchId))),
     ];
 
-    const fixtures =
-      await this.sportsDataReadService.getFixturesByEventIds(matchIds);
+    const settlementData =
+      await this.sportsDataReadService.getSettlementDataByEventIds(matchIds);
 
-    const fixturesById = new Map<string, EspnFixtureDocument>(
-      fixtures.map((fixture) => [String(fixture.eventId), fixture]),
+    const settlementDataById = new Map(
+      settlementData.map((item) => [String(item.fixture.eventId), item]),
     );
 
     let settledCount = 0;
@@ -200,7 +202,8 @@ export class SettlementService {
     for (const prediction of predictions) {
       const matchId = String(prediction.matchId);
 
-      const fixture = fixturesById.get(matchId);
+      const currentSettlementData = settlementDataById.get(matchId);
+      const fixture = currentSettlementData?.fixture;
 
       if (!fixture) {
         skippedCount++;
@@ -234,7 +237,8 @@ export class SettlementService {
         continue;
       }
 
-      const summary = this.getStoredSummary(fixture);
+      const summary =
+        currentSettlementData?.summary ?? this.getStoredSummary(fixture);
 
       try {
         const settlements = this.settleMarkets(

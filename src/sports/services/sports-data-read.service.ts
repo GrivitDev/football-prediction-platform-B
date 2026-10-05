@@ -15,6 +15,11 @@ import {
 
 import { ActiveCompetitionStatus } from '../interfaces/active-competition.interface';
 
+import {
+  SportsPredictionData,
+  SportsSettlementData,
+} from '../interfaces/prediction-data.interface';
+
 // ============================================================
 // ESPN
 // ============================================================
@@ -474,7 +479,8 @@ export class SportsDataReadService {
         season: 1,
         fixtureDate: 1,
         completed: 1,
-        payload: 1,
+        'payload.summary': 1,
+        'payload.summaryCollectedAt': 1,
       })
       .lean()
       .exec();
@@ -1523,6 +1529,238 @@ export class SportsDataReadService {
       },
       filter,
     );
+  }
+
+  // ============================================================
+  // PREDICTION READ CONTRACT
+  // ============================================================
+
+  /**
+   * Returns the canonical Sports snapshot that Predictions are allowed
+   * to consume. This method owns all Sports-side readiness checks.
+   *
+   * No caller in the Predictions module should reconstruct fixture,
+   * Summary, team, or competition readiness independently.
+   */
+  async getPredictionData(
+    eventId: string,
+  ): Promise<SportsPredictionData | null> {
+    const normalizedEventId = eventId.trim();
+
+    if (!normalizedEventId) {
+      return null;
+    }
+
+    const fixture = await this.espnFixtureModel
+      .findOne({
+        eventId: normalizedEventId,
+      })
+      .lean()
+      .exec();
+
+    if (!fixture) {
+      return null;
+    }
+
+    const [competition, teams] = await Promise.all([
+      this.activeCompetitionModel
+        .findOne({
+          competitionId: fixture.leagueId,
+        })
+        .lean()
+        .exec(),
+
+      this.espnTeamModel
+        .find({
+          leagueId: fixture.leagueId,
+          teamId: {
+            $in: [fixture.homeTeamId, fixture.awayTeamId],
+          },
+        })
+        .select({
+          teamId: 1,
+          leagueId: 1,
+          name: 1,
+          displayName: 1,
+          shortDisplayName: 1,
+          logo: 1,
+          collectedAt: 1,
+        })
+        .lean()
+        .exec(),
+    ]);
+
+    const payload =
+      fixture.payload && typeof fixture.payload === 'object'
+        ? fixture.payload
+        : undefined;
+
+    const summary =
+      payload?.summary && typeof payload.summary === 'object'
+        ? (payload.summary as Record<string, unknown>)
+        : null;
+
+    const summaryCollectedAt = payload?.summaryCollectedAt ?? null;
+
+    const now = new Date();
+
+    const fixtureIsFuture = fixture.fixtureDate > now;
+    const fixtureIsNotLive = fixture.live !== true;
+    const fixtureIsNotCompleted = fixture.completed !== true;
+    const summaryAvailable = Boolean(summary);
+    const summaryTimestampAvailable = Boolean(summaryCollectedAt);
+    const competitionAvailable = Boolean(competition);
+    const competitionOperational = Boolean(
+      competition &&
+      [
+        ActiveCompetitionStatus.ACTIVE,
+        ActiveCompetitionStatus.UPCOMING,
+      ].includes(competition.status),
+    );
+    const seasonMatches = Boolean(
+      !competition?.season || competition.season === fixture.season,
+    );
+    const homeTeam = teams.find(
+      (team) => String(team.teamId) === String(fixture.homeTeamId),
+    );
+    const awayTeam = teams.find(
+      (team) => String(team.teamId) === String(fixture.awayTeamId),
+    );
+    const teamsAvailable = Boolean(homeTeam && awayTeam);
+
+    const notReadyReasons: string[] = [];
+
+    if (!fixtureIsFuture) {
+      notReadyReasons.push('FIXTURE_NOT_FUTURE');
+    }
+
+    if (!fixtureIsNotLive) {
+      notReadyReasons.push('FIXTURE_LIVE');
+    }
+
+    if (!fixtureIsNotCompleted) {
+      notReadyReasons.push('FIXTURE_COMPLETED');
+    }
+
+    if (!summaryAvailable) {
+      notReadyReasons.push('SUMMARY_MISSING');
+    }
+
+    if (!summaryTimestampAvailable) {
+      notReadyReasons.push('SUMMARY_TIMESTAMP_MISSING');
+    }
+
+    if (!competitionAvailable) {
+      notReadyReasons.push('COMPETITION_MISSING');
+    } else if (!competitionOperational) {
+      notReadyReasons.push('COMPETITION_NOT_OPERATIONAL');
+    }
+
+    if (!seasonMatches) {
+      notReadyReasons.push('SEASON_MISMATCH');
+    }
+
+    if (!teamsAvailable) {
+      notReadyReasons.push('TEAMS_MISSING');
+    }
+
+    return {
+      ready: notReadyReasons.length === 0,
+      reason: notReadyReasons[0] ?? null,
+      reasons: notReadyReasons,
+
+      fixture,
+
+      summary,
+
+      competition,
+
+      homeTeam: homeTeam ?? null,
+      awayTeam: awayTeam ?? null,
+
+      fixtureCollectedAt: fixture.collectedAt ?? null,
+      summaryCollectedAt,
+    };
+  }
+
+  // ============================================================
+  // SETTLEMENT READ CONTRACT
+  // ============================================================
+
+  async getSettlementData(
+    eventId: string,
+  ): Promise<SportsSettlementData | null> {
+    const normalizedEventId = eventId.trim();
+
+    if (!normalizedEventId) {
+      return null;
+    }
+
+    const fixture = await this.espnFixtureModel
+      .findOne({
+        eventId: normalizedEventId,
+      })
+      .lean()
+      .exec();
+
+    if (!fixture) {
+      return null;
+    }
+
+    const payload =
+      fixture.payload && typeof fixture.payload === 'object'
+        ? fixture.payload
+        : undefined;
+
+    const summary =
+      payload?.summary && typeof payload.summary === 'object'
+        ? (payload.summary as Record<string, unknown>)
+        : null;
+
+    return {
+      fixture,
+      summary,
+      summaryCollectedAt: payload?.summaryCollectedAt ?? null,
+    };
+  }
+
+  async getSettlementDataByEventIds(
+    eventIds: string[],
+  ): Promise<SportsSettlementData[]> {
+    const normalizedEventIds = [
+      ...new Set(eventIds.map((id) => id.trim()).filter(Boolean)),
+    ];
+
+    if (!normalizedEventIds.length) {
+      return [];
+    }
+
+    const fixtures = await this.espnFixtureModel
+      .find({
+        eventId: {
+          $in: normalizedEventIds,
+        },
+      })
+      .lean()
+      .exec();
+
+    return fixtures.map((fixture) => {
+      const payload =
+        fixture.payload && typeof fixture.payload === 'object'
+          ? fixture.payload
+          : undefined;
+
+      const summary =
+        payload?.summary && typeof payload.summary === 'object'
+          ? (payload.summary as Record<string, unknown>)
+          : null;
+
+      return {
+        fixture,
+        summary,
+        summaryCollectedAt: payload?.summaryCollectedAt ?? null,
+      };
+    });
   }
 
   // ============================================================

@@ -22,6 +22,13 @@ import { EspnQueueJobType } from '../interfaces/espn-queue.interface';
 
 @Injectable()
 export class SportsSyncStateService {
+  /**
+   * Maximum number of lightweight fixture records MongoDB streams into
+   * Node during Summary-state reconciliation. The actual ESPN payload is
+   * never projected into the application process.
+   */
+  private readonly summaryFixtureCursorBatchSize = 500;
+
   constructor(
     @InjectModel(SportsSyncState.name)
     private readonly syncStateModel: Model<SportsSyncStateDocument>,
@@ -391,7 +398,7 @@ export class SportsSyncStateService {
      * This is the source of truth for whether a Summary actually
      * exists in the canonical sports_espn_fixtures collection.
      */
-    const fixtures = await this.espnFixtureModel
+    const fixtureCursor = this.espnFixtureModel
       .aggregate<{
         eventId?: string;
         hasSummary?: boolean;
@@ -427,7 +434,9 @@ export class SportsSyncStateService {
           },
         },
       ])
-      .exec();
+      .cursor({
+        batchSize: this.summaryFixtureCursorBatchSize,
+      });
 
     /*
      * Existing synchronization units are indexed once so that
@@ -447,7 +456,7 @@ export class SportsSyncStateService {
 
     let changed = false;
 
-    for (const fixture of fixtures) {
+    for await (const fixture of fixtureCursor) {
       const eventId = String(fixture.eventId ?? '').trim();
 
       if (!eventId) {
@@ -2193,22 +2202,6 @@ export class SportsSyncStateService {
   // ============================================================
   // HELPERS
   // ============================================================
-
-  private hasSummaryPayload(payload: unknown): boolean {
-    if (!payload || typeof payload !== 'object') {
-      return false;
-    }
-
-    const payloadRecord = payload as Record<string, unknown>;
-
-    const summary = payloadRecord.summary;
-
-    return Boolean(
-      summary &&
-      typeof summary === 'object' &&
-      Object.keys(summary as Record<string, unknown>).length > 0,
-    );
-  }
 
   private isStateComplete(state: SportsSyncStateDocument): boolean {
     return (

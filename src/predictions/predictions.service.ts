@@ -74,6 +74,18 @@ export class PredictionsService {
 
       confidence: calculated.confidence,
 
+      predictionOdds: calculated.predictionOdds,
+
+      predictionFairOdds: calculated.predictionFairOdds,
+
+      predictionOddsSource: calculated.predictionOddsSource,
+
+      sportsDataSnapshot: calculated.sportsDataSnapshot,
+
+      modelVersion: calculated.modelVersion,
+
+      calculatedAt: calculated.calculatedAt,
+
       accessType: dto.accessType,
 
       price: dto.price ?? 0,
@@ -156,6 +168,18 @@ export class PredictionsService {
       updateData.markets = calculated.markets;
 
       updateData.confidence = calculated.confidence;
+
+      updateData.predictionOdds = calculated.predictionOdds;
+
+      updateData.predictionFairOdds = calculated.predictionFairOdds;
+
+      updateData.predictionOddsSource = calculated.predictionOddsSource;
+
+      updateData.sportsDataSnapshot = calculated.sportsDataSnapshot;
+
+      updateData.modelVersion = calculated.modelVersion;
+
+      updateData.calculatedAt = calculated.calculatedAt;
     }
 
     if (!Object.keys(updateData).length) {

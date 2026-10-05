@@ -15,6 +15,8 @@ export type PredictionStatus = 'pending' | 'won' | 'lost' | 'void';
 export type PredictionMarketStatus =
   'pending' | 'won' | 'lost' | 'void' | 'push';
 
+export type PredictionOddsSource = 'ESPN' | 'FAIR';
+
 @Schema({ _id: false })
 export class PredictionMarketEntry {
   @Prop({
@@ -40,6 +42,31 @@ export class PredictionMarketEntry {
     max: 100,
   })
   probability!: number;
+
+  /**
+   * Decimal odds used by the prediction.
+   *
+   * ESPN odds are preferred when the Summary exposes a directly
+   * identifiable price for this exact selection. Otherwise this
+   * contains the model fair price derived from the calculated probability.
+   */
+  @Prop({
+    min: 1,
+  })
+  odds?: number;
+
+  /**
+   * Decimal fair odds implied by the prediction model probability.
+   */
+  @Prop({
+    min: 1,
+  })
+  fairOdds?: number;
+
+  @Prop({
+    enum: ['ESPN', 'FAIR'],
+  })
+  oddsSource?: PredictionOddsSource;
 
   /**
    * Settlement status for this individual market.
@@ -173,6 +200,52 @@ export class Prediction {
   })
   confidence!: number;
 
+  /**
+   * Decimal odds for the system-selected HOME/DRAW/AWAY prediction.
+   */
+  @Prop({
+    min: 1,
+  })
+  predictionOdds?: number;
+
+  /**
+   * Decimal fair odds implied by the system probability for the selected result.
+   */
+  @Prop({
+    min: 1,
+  })
+  predictionFairOdds?: number;
+
+  @Prop({
+    enum: ['ESPN', 'FAIR'],
+  })
+  predictionOddsSource?: PredictionOddsSource;
+
+  /**
+   * Snapshot timestamps from the Sports module used to calculate this prediction.
+   */
+  @Prop({
+    type: {
+      fixtureCollectedAt: { type: Date, required: true },
+      summaryCollectedAt: { type: Date, required: true },
+    },
+    _id: false,
+  })
+  sportsDataSnapshot?: {
+    fixtureCollectedAt: Date;
+    summaryCollectedAt: Date;
+  };
+
+  @Prop({
+    trim: true,
+  })
+  modelVersion?: string;
+
+  @Prop({
+    type: Date,
+  })
+  calculatedAt?: Date;
+
   @Prop({
     enum: ['free', 'regular', 'vip', 'premium'],
     default: 'free',
@@ -228,3 +301,16 @@ PredictionSchema.index(
     unique: true,
   },
 );
+
+PredictionSchema.index({
+  deleted: 1,
+  settled: 1,
+  status: 1,
+  kickoffTimestamp: 1,
+});
+
+PredictionSchema.index({
+  deleted: 1,
+  leagueCode: 1,
+  kickoffTimestamp: 1,
+});

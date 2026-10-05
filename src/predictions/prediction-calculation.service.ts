@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 
-import { ActiveCompetitionService } from '../sports/services/active-competition.service';
 import { SportsDataReadService } from '../sports/services/sports-data-read.service';
-import { EspnFixtureDocument } from '../sports/schemas/espn/espn-fixture.schema';
+import type { SportsPredictionData } from '../sports/interfaces/prediction-data.interface';
+
+import type { PredictionOddsSource } from './schemas/prediction.schema';
 
 import {
   PredictionMarket,
@@ -14,16 +15,16 @@ interface RequestedMarket {
   selection: string;
 }
 
-interface MarketCalculation {
+interface MarketProbabilityCalculation {
   market: PredictionMarket;
   selection: string;
   probability: number;
 }
 
-interface TeamLookup {
-  teamId: string | number;
-  name?: string;
-  logo?: string;
+interface MarketCalculation extends MarketProbabilityCalculation {
+  odds: number;
+  fairOdds: number;
+  oddsSource: PredictionOddsSource;
 }
 
 export interface CalculatedPrediction {
@@ -56,6 +57,21 @@ export interface CalculatedPrediction {
   };
 
   confidence: number;
+
+  predictionOdds: number;
+
+  predictionFairOdds: number;
+
+  predictionOddsSource: PredictionOddsSource;
+
+  sportsDataSnapshot: {
+    fixtureCollectedAt: Date;
+    summaryCollectedAt: Date;
+  };
+
+  modelVersion: string;
+
+  calculatedAt: Date;
 
   markets: MarketCalculation[];
 }
@@ -146,17 +162,6 @@ interface SummaryPayload {
   [key: string]: unknown;
 }
 
-interface FixtureSummaryResponse {
-  eventId?: string;
-  leagueId?: string;
-  season?: number;
-  fixtureDate?: string | Date;
-  summary?: unknown;
-  summaryCollectedAt?: string | Date;
-  payload?: {
-    summary?: unknown;
-  };
-}
 
 type ScoreProbability = {
   home: number;
@@ -164,11 +169,11 @@ type ScoreProbability = {
   probability: number;
 };
 
+const PREDICTION_MODEL_VERSION = 'prediction-engine-2.0';
+
 @Injectable()
 export class PredictionCalculationService {
   constructor(
-    private readonly activeCompetitionService: ActiveCompetitionService,
-
     private readonly sportsDataReadService: SportsDataReadService,
   ) {}
 
@@ -194,19 +199,29 @@ export class PredictionCalculationService {
       );
     }
 
-    const fixture =
-      await this.sportsDataReadService.getFixtureByEventId(normalizedMatchId);
+    /*
+     * SportsDataReadService owns the complete Sports readiness contract.
+     * Prediction calculation never calls ESPN or reconstructs sync state.
+     */
+    const predictionData =
+      await this.sportsDataReadService.getPredictionData(normalizedMatchId);
 
-    if (!fixture) {
+    if (!predictionData) {
       throw new BadRequestException(
-        'ESPN fixture is not available for the selected match',
+        'Sports data is not available for the selected match',
       );
     }
 
-    const summaryResponse =
-      await this.sportsDataReadService.getFixtureSummary(normalizedMatchId);
+    if (!predictionData.ready) {
+      throw new BadRequestException(
+        `Match is not prediction-ready: ${
+          predictionData.reason ?? 'SPORTS_DATA_NOT_READY'
+        }`,
+      );
+    }
 
-    const summary = this.extractSummary(summaryResponse);
+    const fixture = predictionData.fixture;
+    const summary = predictionData.summary;
 
     if (!summary) {
       throw new BadRequestException(
@@ -230,60 +245,72 @@ export class PredictionCalculationService {
       calculatedMarkets,
     );
 
-    const competition = await this.activeCompetitionService.getByCompetitionId(
-      fixture.leagueId,
+    const predictionProbability =
+      prediction === 'HOME'
+        ? probabilities.home
+        : prediction === 'DRAW'
+          ? probabilities.draw
+          : probabilities.away;
+
+    const predictionFairOdds = this.calculateFairOdds(predictionProbability);
+
+    const espnPredictionOdds = this.resolveSummaryResultOdds(
+      summary,
+      prediction,
     );
 
-    const teams = await this.sportsDataReadService.getTeams(fixture.leagueId);
+    const predictionOdds = espnPredictionOdds ?? predictionFairOdds;
+    const predictionOddsSource: PredictionOddsSource = espnPredictionOdds
+      ? 'ESPN'
+      : 'FAIR';
 
-    const isTeamLookup = (team: unknown): team is TeamLookup => {
-      if (typeof team !== 'object' || team === null) {
-        return false;
-      }
-
-      const candidate = team as Record<string, unknown>;
-
-      return (
-        (typeof candidate.teamId === 'string' ||
-          typeof candidate.teamId === 'number') &&
-        (candidate.name === undefined || typeof candidate.name === 'string') &&
-        (candidate.logo === undefined || typeof candidate.logo === 'string')
-      );
-    };
-
-    const teamList = teams as unknown as readonly unknown[];
-
-    const homeTeam = teamList.find(
-      (team): team is TeamLookup =>
-        isTeamLookup(team) &&
-        String(team.teamId) === String(fixture.homeTeamId),
-    );
-
-    const awayTeam = teamList.find(
-      (team): team is TeamLookup =>
-        isTeamLookup(team) &&
-        String(team.teamId) === String(fixture.awayTeamId),
+    const marketsWithOdds = calculatedMarkets.map((market) =>
+      this.attachMarketOdds(summary, market),
     );
 
     const homeTeamName =
-      fixture.homeTeamId && homeTeam?.name
-        ? String(homeTeam.name)
-        : model.home.name;
+      this.toString(predictionData.homeTeam?.displayName) ??
+      this.toString(predictionData.homeTeam?.name) ??
+      model.home.name;
 
     const awayTeamName =
-      fixture.awayTeamId && awayTeam?.name
-        ? String(awayTeam.name)
-        : model.away.name;
+      this.toString(predictionData.awayTeam?.displayName) ??
+      this.toString(predictionData.awayTeam?.name) ??
+      model.away.name;
 
-    const leagueCountry = this.extractLeagueCountry(competition?.espnPayload);
+    const homeTeamBadge =
+      this.toString(predictionData.homeTeam?.logo) ??
+      this.extractFixtureTeamLogo(fixture, 'home');
 
-    const league = competition
+    const awayTeamBadge =
+      this.toString(predictionData.awayTeam?.logo) ??
+      this.extractFixtureTeamLogo(fixture, 'away');
+
+    const league = predictionData.competition
       ? {
           code: fixture.leagueId,
-          name: competition.name,
-          country: leagueCountry ?? '',
+          name: predictionData.competition.name,
+          country:
+            this.extractLeagueCountry(predictionData.competition.espnPayload) ??
+            '',
         }
       : undefined;
+
+    const fixtureCollectedAt = new Date(predictionData.fixtureCollectedAt);
+    const summaryCollectedAt = new Date(
+      String(predictionData.summaryCollectedAt),
+    );
+
+    if (
+      !Number.isFinite(fixtureCollectedAt.getTime()) ||
+      !Number.isFinite(summaryCollectedAt.getTime())
+    ) {
+      throw new BadRequestException(
+        'Sports data snapshot timestamps are invalid',
+      );
+    }
+
+    const calculatedAt = new Date();
 
     return {
       matchId: fixture.eventId,
@@ -296,11 +323,9 @@ export class PredictionCalculationService {
 
       awayTeam: awayTeamName,
 
-      homeTeamBadge:
-        homeTeam?.logo ?? this.extractFixtureTeamLogo(fixture, 'home'),
+      homeTeamBadge,
 
-      awayTeamBadge:
-        awayTeam?.logo ?? this.extractFixtureTeamLogo(fixture, 'away'),
+      awayTeamBadge,
 
       matchDate: fixture.fixtureDate.toISOString(),
 
@@ -312,7 +337,22 @@ export class PredictionCalculationService {
 
       confidence,
 
-      markets: calculatedMarkets,
+      predictionOdds,
+
+      predictionFairOdds,
+
+      predictionOddsSource,
+
+      sportsDataSnapshot: {
+        fixtureCollectedAt,
+        summaryCollectedAt,
+      },
+
+      modelVersion: PREDICTION_MODEL_VERSION,
+
+      calculatedAt,
+
+      markets: marketsWithOdds,
     };
   }
 
@@ -321,7 +361,7 @@ export class PredictionCalculationService {
   // ============================================================
 
   private buildMatchModel(
-    fixture: EspnFixtureDocument,
+    fixture: SportsPredictionData['fixture'],
     summary: SummaryPayload,
   ): MatchModel {
     const extractedTeams = this.extractTeams(summary, fixture);
@@ -438,7 +478,7 @@ export class PredictionCalculationService {
       return null;
     }
 
-    const value = response as FixtureSummaryResponse;
+    const value = response as Record<string, unknown>;
 
     if (value.summary && typeof value.summary === 'object') {
       return value.summary as SummaryPayload;
@@ -457,7 +497,7 @@ export class PredictionCalculationService {
 
   private extractTeams(
     summary: SummaryPayload,
-    fixture: EspnFixtureDocument,
+    fixture: SportsPredictionData['fixture'],
   ): {
     home: TeamModel;
     away: TeamModel;
@@ -1104,7 +1144,7 @@ export class PredictionCalculationService {
   private calculateMarket(
     model: MatchModel,
     requested: RequestedMarket,
-  ): MarketCalculation {
+  ): MarketProbabilityCalculation {
     const market = this.normalizeMarket(requested.market);
 
     const selection = this.normalizeSelection(requested.selection);
@@ -2008,6 +2048,250 @@ export class PredictionCalculationService {
   }
 
   // ============================================================
+  // ODDS
+  // ============================================================
+
+  /**
+   * Convert an ESPN price into decimal odds. ESPN can expose moneyline
+   * prices in American format, while some payload variants expose decimal
+   * prices directly.
+   */
+  private toDecimalOdds(value: unknown): number | undefined {
+    const number = this.toNumber(value);
+
+    if (number === null || !Number.isFinite(number)) {
+      return undefined;
+    }
+
+    if (number >= 1.01 && number < 50) {
+      return Number(number.toFixed(2));
+    }
+
+    if (number >= 100) {
+      return Number((1 + number / 100).toFixed(2));
+    }
+
+    if (number <= -100) {
+      return Number((1 + 100 / Math.abs(number)).toFixed(2));
+    }
+
+    return undefined;
+  }
+
+  private calculateFairOdds(probability: number): number {
+    if (!Number.isFinite(probability) || probability <= 0) {
+      return 1000;
+    }
+
+    return Number(Math.max(1, 100 / probability).toFixed(2));
+  }
+
+  private getSummaryOddsRecords(summary: SummaryPayload): Record<string, unknown>[] {
+    if (!Array.isArray(summary.odds)) {
+      return [];
+    }
+
+    return summary.odds
+      .filter((value): value is Record<string, unknown> =>
+        Boolean(value && typeof value === 'object' && !Array.isArray(value)),
+      )
+      .sort((left, right) => {
+        const leftProvider = this.asRecord(left.provider);
+        const rightProvider = this.asRecord(right.provider);
+        const leftPriority = this.toNumber(leftProvider?.priority) ?? 9999;
+        const rightPriority = this.toNumber(rightProvider?.priority) ?? 9999;
+
+        return leftPriority - rightPriority;
+      });
+  }
+
+  private resolveSummaryResultOdds(
+    summary: SummaryPayload,
+    prediction: 'HOME' | 'DRAW' | 'AWAY',
+  ): number | undefined {
+    const records = this.getSummaryOddsRecords(summary);
+
+    for (const record of records) {
+      const moneyline = this.asRecord(record.moneyline);
+
+      const raw =
+        prediction === 'HOME'
+          ? moneyline?.home ??
+            this.asRecord(record.homeTeamOdds)?.moneyLine
+          : prediction === 'DRAW'
+            ? moneyline?.draw
+            : moneyline?.away ?? this.asRecord(record.awayTeamOdds)?.moneyLine;
+
+      const odds = this.toDecimalOdds(raw);
+
+      if (odds !== undefined) {
+        return odds;
+      }
+    }
+
+    return undefined;
+  }
+
+  private attachMarketOdds(
+    summary: SummaryPayload,
+    market: MarketProbabilityCalculation,
+  ): MarketCalculation {
+    const fairOdds = this.calculateFairOdds(market.probability);
+    const espnOdds = this.resolveSummaryMarketOdds(
+      summary,
+      market.market,
+      market.selection,
+    );
+
+    return {
+      ...market,
+      odds: espnOdds ?? fairOdds,
+      fairOdds,
+      oddsSource: espnOdds ? 'ESPN' : 'FAIR',
+    };
+  }
+
+  private resolveSummaryMarketOdds(
+    summary: SummaryPayload,
+    market: PredictionMarket,
+    selection: string,
+  ): number | undefined {
+    if (market !== PredictionMarkets.OVER_UNDER) {
+      return undefined;
+    }
+
+    const parsed = selection.match(/^(OVER|UNDER)_(\d+(?:\.5)?)$/);
+
+    if (!parsed) {
+      return undefined;
+    }
+
+    const side = parsed[1].toLowerCase();
+    const line = parsed[2];
+
+    for (const record of this.getSummaryOddsRecords(summary)) {
+      const recordLine = this.toNumber(
+        record.overUnder ?? record.total ?? record.line,
+      );
+
+      if (recordLine !== null && Number(recordLine) !== Number(line)) {
+        continue;
+      }
+
+      const directKeys = [
+        `${side}Odds`,
+        `${side}Odd`,
+        `${side}Price`,
+        `${side}TotalOdds`,
+        `${side}MoneyLine`,
+      ];
+
+      for (const key of directKeys) {
+        const odds = this.toDecimalOdds(record[key]);
+
+        if (odds !== undefined) {
+          return odds;
+        }
+      }
+
+      const nestedOdds = this.findOddsByContext(record, side, line);
+
+      if (nestedOdds !== undefined) {
+        return nestedOdds;
+      }
+    }
+
+    return undefined;
+  }
+
+  private findOddsByContext(
+    value: unknown,
+    side: string,
+    line: string,
+    context = '',
+    depth = 0,
+  ): number | undefined {
+    if (depth > 6 || value === null || value === undefined) {
+      return undefined;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = this.findOddsByContext(
+          item,
+          side,
+          line,
+          context,
+          depth + 1,
+        );
+
+        if (found !== undefined) {
+          return found;
+        }
+      }
+
+      return undefined;
+    }
+
+    if (typeof value !== 'object') {
+      return undefined;
+    }
+
+    const record = value as Record<string, unknown>;
+    const localContext = [
+      context,
+      this.toString(record.details),
+      this.toString(record.label),
+      this.toString(record.name),
+      this.toString(record.selection),
+      this.toString(record.type),
+      this.toString(record.description),
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    const sideMatches = localContext.includes(side);
+    const lineMatches = localContext.includes(line);
+
+    if (sideMatches && lineMatches) {
+      for (const key of [
+        'price',
+        'odds',
+        'decimalOdds',
+        'americanOdds',
+        'moneyLine',
+        'totalOdds',
+        'spreadOdds',
+        'value',
+      ]) {
+        const odds = this.toDecimalOdds(record[key]);
+
+        if (odds !== undefined) {
+          return odds;
+        }
+      }
+    }
+
+    for (const [key, child] of Object.entries(record)) {
+      const nextContext = `${localContext} ${key}`;
+      const found = this.findOddsByContext(
+        child,
+        side,
+        line,
+        nextContext,
+        depth + 1,
+      );
+
+      if (found !== undefined) {
+        return found;
+      }
+    }
+
+    return undefined;
+  }
+
+  // ============================================================
   // CONFIDENCE
   // ============================================================
 
@@ -2018,7 +2302,7 @@ export class PredictionCalculationService {
       draw: number;
       away: number;
     },
-    markets: MarketCalculation[],
+    markets: Array<Pick<MarketCalculation, 'probability'>>,
   ): number {
     const ordered = [
       probabilities.home,
@@ -2384,7 +2668,7 @@ export class PredictionCalculationService {
   }
 
   private extractFixtureTeamName(
-    fixture: EspnFixtureDocument,
+    fixture: SportsPredictionData['fixture'],
     side: 'home' | 'away',
   ): string | undefined {
     const payload: Record<string, unknown> =
@@ -2437,7 +2721,7 @@ export class PredictionCalculationService {
   }
 
   private extractFixtureTeamLogo(
-    fixture: EspnFixtureDocument,
+    fixture: SportsPredictionData['fixture'],
     side: 'home' | 'away',
   ): string | undefined {
     const payload: Record<string, unknown> =
