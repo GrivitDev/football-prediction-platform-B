@@ -92,10 +92,10 @@ export class SportsCollectionService {
   private readonly logger = new Logger(SportsCollectionService.name);
 
   /**
-   * Keep Mongo write batches bounded when a monthly ESPN scoreboard
+   * Keep Mongo write batches small and bounded when an ESPN scoreboard
    * response contains a large number of events.
    */
-  private readonly mongoBulkChunkSize = 100;
+  private readonly mongoBulkChunkSize = 50;
 
   /**
    * Full season/live-discovery collection window.
@@ -377,71 +377,13 @@ export class SportsCollectionService {
 
     const events = this.extractArray(response, ['events', 'items']);
 
-    const eventIds = events
-      .map((event) => {
-        if (!event || typeof event !== 'object') {
-          return undefined;
-        }
-
-        return this.toStringValue((event as { id?: unknown }).id);
-      })
-      .filter((eventId): eventId is string => Boolean(eventId));
-
-    const existingFixtures =
-      eventIds.length > 0
-        ? await this.espnFixtureModel
-            .find({
-              eventId: {
-                $in: eventIds,
-              },
-            })
-            .select({
-              eventId: 1,
-              'payload.summary': 1,
-              'payload.summaryCollectedAt': 1,
-            })
-            .lean()
-            .exec()
-        : [];
-
-    const existingSummaryMap = new Map<
-      string,
-      {
-        summary?: unknown;
-        summaryCollectedAt?: Date;
-      }
-    >();
-
-    for (const fixture of existingFixtures) {
-      if (!fixture.eventId) {
-        continue;
-      }
-
-      const payload =
-        fixture.payload && typeof fixture.payload === 'object'
-          ? fixture.payload
-          : undefined;
-
-      if (!payload) {
-        continue;
-      }
-
-      existingSummaryMap.set(fixture.eventId, {
-        summary: payload.summary,
-        summaryCollectedAt:
-          payload.summaryCollectedAt instanceof Date
-            ? payload.summaryCollectedAt
-            : undefined,
-      });
-    }
-
     const fixtureIds: string[] = [];
 
-    const fixtureOperations: Parameters<
+    let fixtureOperations: Parameters<
       Model<EspnFixtureDocument>['bulkWrite']
     >[0] = [];
 
-    const teamOperations: Parameters<Model<EspnTeamDocument>['bulkWrite']>[0] =
+    let teamOperations: Parameters<Model<EspnTeamDocument>['bulkWrite']>[0] =
       [];
 
     const collectedAt = new Date();
@@ -507,22 +449,17 @@ export class SportsCollectionService {
 
       const eventPayload = event as Record<string, unknown>;
 
-      const existingSummary = existingSummaryMap.get(eventId);
-
+      /*
+       * The incoming ESPN fixture event is saved exactly as received.
+       *
+       * Existing payload fields (including an already collected Summary)
+       * are preserved by MongoDB during the update through $mergeObjects.
+       * Node therefore never loads the existing Summary payload just to
+       * merge it back into the fixture.
+       */
       const payload: Record<string, unknown> = {
         ...eventPayload,
       };
-
-      if (
-        existingSummary &&
-        Object.prototype.hasOwnProperty.call(existingSummary, 'summary')
-      ) {
-        payload.summary = existingSummary.summary;
-
-        if (existingSummary.summaryCollectedAt) {
-          payload.summaryCollectedAt = existingSummary.summaryCollectedAt;
-        }
-      }
 
       fixtureOperations.push({
         updateOne: {
@@ -530,59 +467,66 @@ export class SportsCollectionService {
             eventId,
           },
 
-          update: {
-            $set: {
-              eventId,
+          update: [
+            {
+              $set: {
+                eventId,
 
-              leagueId: normalizedLeagueId,
+                leagueId: normalizedLeagueId,
 
-              season,
+                season,
 
-              fixtureDate,
+                fixtureDate,
 
-              status,
+                status,
 
-              statusDetail: this.getNestedString(competition, [
-                'status',
-                'type',
-                'description',
-              ]),
+                statusDetail: this.getNestedString(competition, [
+                  'status',
+                  'type',
+                  'description',
+                ]),
 
-              statusShortDetail: this.getNestedString(competition, [
-                'status',
-                'type',
-                'shortDetail',
-              ]),
+                statusShortDetail: this.getNestedString(competition, [
+                  'status',
+                  'type',
+                  'shortDetail',
+                ]),
 
-              period: this.toNumber(competition?.status?.period),
+                period: this.toNumber(competition?.status?.period),
 
-              completed,
+                completed,
 
-              live: this.isLiveEvent(event),
+                live: this.isLiveEvent(event),
 
-              displayClock:
-                this.getNestedString(event, ['status', 'displayClock']) ??
-                this.getNestedString(competition, ['status', 'displayClock']),
+                displayClock:
+                  this.getNestedString(event, ['status', 'displayClock']) ??
+                  this.getNestedString(competition, ['status', 'displayClock']),
 
-              homeTeamId: this.getTeamId(home),
+                homeTeamId: this.getTeamId(home),
 
-              awayTeamId: this.getTeamId(away),
+                awayTeamId: this.getTeamId(away),
 
-              homeScore: this.toNumber(home?.score),
+                homeScore: this.toNumber(home?.score),
 
-              awayScore: this.toNumber(away?.score),
+                awayScore: this.toNumber(away?.score),
 
-              venueId: this.toStringValue(competition?.venue?.id),
+                venueId: this.toStringValue(competition?.venue?.id),
 
-              venueName:
-                this.getNestedString(competition, ['venue', 'fullName']) ??
-                this.getNestedString(competition, ['venue', 'name']),
+                venueName:
+                  this.getNestedString(competition, ['venue', 'fullName']) ??
+                  this.getNestedString(competition, ['venue', 'name']),
 
-              payload,
+                payload: {
+                  $mergeObjects: [
+                    { $ifNull: ['$payload', {}] },
+                    { $literal: payload },
+                  ],
+                },
 
-              collectedAt,
+                collectedAt,
+              },
             },
-          },
+          ],
 
           upsert: true,
         },
@@ -596,11 +540,29 @@ export class SportsCollectionService {
       );
 
       fixtureIds.push(eventId);
+
+      /*
+       * Flush completed Mongo batches immediately. We deliberately do not
+       * retain all operations for the entire month in Node memory.
+       */
+      if (fixtureOperations.length >= this.mongoBulkChunkSize) {
+        await this.bulkWriteFixtureChunks(fixtureOperations);
+        fixtureOperations = [];
+      }
+
+      if (teamOperations.length >= this.mongoBulkChunkSize) {
+        await this.bulkWriteTeamChunks(teamOperations);
+        teamOperations = [];
+      }
     }
 
-    await this.bulkWriteFixtureChunks(fixtureOperations);
+    if (fixtureOperations.length > 0) {
+      await this.bulkWriteFixtureChunks(fixtureOperations);
+    }
 
-    await this.bulkWriteTeamChunks(teamOperations);
+    if (teamOperations.length > 0) {
+      await this.bulkWriteTeamChunks(teamOperations);
+    }
 
     return {
       fixtureIds,

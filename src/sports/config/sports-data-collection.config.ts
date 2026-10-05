@@ -59,7 +59,7 @@ export const SPORTS_DATA_COLLECTION_CONFIG = {
       startupMonthLimit: 1000,
 
       /** Maximum simultaneous startup scoreboard requests. */
-      startupConcurrency: 20,
+      startupConcurrency: 5,
     },
 
     /**
@@ -78,7 +78,7 @@ export const SPORTS_DATA_COLLECTION_CONFIG = {
       startupAllFixtures: true,
 
       /** Maximum simultaneous ESPN Summary requests. */
-      startupConcurrency: 20,
+      startupConcurrency: 5,
 
       /** Number of event IDs processed from one league before round-robin continues. */
       startupBatchSize: 50,

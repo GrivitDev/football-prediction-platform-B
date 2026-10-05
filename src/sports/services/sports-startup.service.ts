@@ -46,8 +46,9 @@ export class SportsStartupService implements OnModuleInit {
     SPORTS_DATA_COLLECTION_CONFIG.ESPN.fixtures.forwardDays;
 
   /**
-   * Maximum number of concurrent Summary requests
-   * inside one league.
+   * Maximum number of concurrent Summary requests during the
+   * Summary phase. The Summary phase does not begin until the
+   * entire Fixture phase has completed.
    */
   private readonly startupSummaryConcurrency =
     SPORTS_DATA_COLLECTION_CONFIG.ESPN.summary.startupConcurrency;
