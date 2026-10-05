@@ -20,6 +20,7 @@ export enum SportsSyncStateStatus {
 }
 
 export enum SportsSyncUnitType {
+  MONTH = 'MONTH',
   DATE = 'DATE',
   STEP = 'STEP',
 }
@@ -47,6 +48,12 @@ export class SportsSyncUnit {
     enum: Object.values(SportsSyncUnitType),
   })
   type!: SportsSyncUnitType;
+
+  @Prop({
+    type: String,
+    trim: true,
+  })
+  monthKey?: string;
 
   @Prop({
     type: String,
@@ -207,6 +214,20 @@ export class SportsSyncState {
     enum: ['WINDOW', 'HISTORY'],
   })
   trackingMode!: 'WINDOW' | 'HISTORY';
+
+  /**
+   * Fixture synchronization granularity.
+   *
+   * MONTH is used for startup/history ingestion.
+   * DAY is used for normal rolling/final-result refreshes.
+   */
+  @Prop({
+    required: true,
+    type: String,
+    enum: ['DAY', 'MONTH'],
+    default: 'DAY',
+  })
+  fixtureGranularity!: 'DAY' | 'MONTH';
 
   @Prop({
     type: String,

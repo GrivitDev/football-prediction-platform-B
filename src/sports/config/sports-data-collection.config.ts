@@ -7,22 +7,15 @@ export const SPORTS_DATA_COLLECTION_CONFIG = {
     enabled: true,
 
     /**
-     * ESPN does not have an application-level daily quota
-     * in our collection architecture.
-     *
-     * Endpoint request spacing is enforced by the provider
-     * rate-limit service at two seconds.
-     *
-     * ESPN concurrency is controlled separately by that
-     * service:
-     *
-     *   1 reserved live request
-     *   4 normal requests
-     *
-     * for a maximum of five concurrent ESPN requests.
+     * ESPN exposes no published application quota. We therefore use
+     * a small process-local start interval and a bounded concurrency
+     * pool. The rate-limit service applies adaptive backoff when ESPN
+     * returns throttling or transient server errors.
      */
     rateLimit: {
-      minIntervalSeconds: 2,
+      minIntervalSeconds: 0.1,
+      normalConcurrency: 20,
+      liveConcurrency: 1,
     },
 
     /**
@@ -36,9 +29,6 @@ export const SPORTS_DATA_COLLECTION_CONFIG = {
 
     /**
      * Active competition matching.
-     *
-     * The stored ESPN catalogue is checked for competitions
-     * that currently have active fixtures.
      */
     activeCompetitions: {
       enabled: true,
@@ -48,79 +38,59 @@ export const SPORTS_DATA_COLLECTION_CONFIG = {
     /**
      * Fixture collection.
      *
-     * Active competitions are processed according to priority.
-     *
-     * Normal operations keep today's fixtures and the
-     * configured upcoming window synchronized.
-     *
-     * A league is also considered stale when its fixture
-     * collection has not been refreshed for 48 hours.
+     * Startup uses one scoreboard request per calendar month covering
+     * the active season. Normal operations continue to use a daily
+     * scoreboard refresh for today's/current window and just-finished
+     * matches.
      */
     fixtures: {
       enabled: true,
 
-      /**
-       * Number of days ahead included in normal fixture
-       * synchronization.
-       */
+      /** Number of days ahead included in normal fixture synchronization. */
       forwardDays: 8,
 
-      /**
-       * Minimum freshness guarantee for active competitions.
-       *
-       * If a league has not had a fixture refresh for this
-       * many hours, a refresh should be scheduled after
-       * confirming the competition is still active.
-       */
+      /** Minimum freshness guarantee for active competitions. */
       staleAfterHours: 48,
 
-      /**
-       * Queue spacing between normal fixture work slots.
-       */
+      /** Queue spacing between normal fixture work slots. */
       slotIntervalMinutes: 0.02,
+
+      /** Maximum scoreboard events requested from ESPN for one month. */
+      startupMonthLimit: 1000,
+
+      /** Maximum simultaneous startup scoreboard requests. */
+      startupConcurrency: 20,
     },
 
     /**
      * ESPN Summary collection.
-     *
-     * Summary is the canonical detailed match-data payload
-     * stored in:
-     *
-     *   sports_espn_fixtures.payload.summary
-     *
-     * Startup hydrates Summary for all persisted fixtures.
-     *
-     * Normal operations collect Summary for:
-     *
-     *   1. fixtures within the next four days
-     *   2. fixtures that have just completed
-     *
-     * A Summary job must never be created when the fixture
-     * already contains payload.summary.
      */
     summary: {
       enabled: true,
 
-      /**
-       * Upcoming Summary collection window.
-       */
+      /** Upcoming Summary collection window. */
       upcomingWindowDays: 4,
 
-      /**
-       * Finished fixtures receive Summary immediately after
-       * completion is detected.
-       */
+      /** Finished fixtures receive Summary immediately after completion is detected. */
       immediatelyAfterFinished: true,
 
-      /**
-       * Startup hydrates Summary for all persisted fixtures.
-       */
+      /** Startup hydrates Summary for all persisted fixtures. */
       startupAllFixtures: true,
+
+      /** Maximum simultaneous ESPN Summary requests. */
+      startupConcurrency: 20,
+
+      /** Number of event IDs processed from one league before round-robin continues. */
+      startupBatchSize: 50,
+
+      /** Maximum summaries persisted by one Mongo bulkWrite call. */
+      persistenceBatchSize: 25,
+
+      /** Maximum transient retry attempts inside the ESPN client. */
+      maxRetries: 3,
     },
 
-    /**
-     * Queue safety.
-     */
+    /** Queue safety. */
     queue: {
       enabled: true,
       maxAttempts: 3,
@@ -200,3 +170,4 @@ export const SPORTS_DATA_COLLECTION_CONFIG = {
 } as const;
 
 export type SportsDataCollectionConfig = typeof SPORTS_DATA_COLLECTION_CONFIG;
+

@@ -92,6 +92,12 @@ export class SportsCollectionService {
   private readonly logger = new Logger(SportsCollectionService.name);
 
   /**
+   * Keep Mongo write batches bounded when a monthly ESPN scoreboard
+   * response contains a large number of events.
+   */
+  private readonly mongoBulkChunkSize = 100;
+
+  /**
    * Full season/live-discovery collection window.
    *
    * season start
@@ -592,17 +598,9 @@ export class SportsCollectionService {
       fixtureIds.push(eventId);
     }
 
-    if (fixtureOperations.length > 0) {
-      await this.espnFixtureModel.bulkWrite(fixtureOperations, {
-        ordered: false,
-      });
-    }
+    await this.bulkWriteFixtureChunks(fixtureOperations);
 
-    if (teamOperations.length > 0) {
-      await this.espnTeamModel.bulkWrite(teamOperations, {
-        ordered: false,
-      });
-    }
+    await this.bulkWriteTeamChunks(teamOperations);
 
     return {
       fixtureIds,
@@ -2404,25 +2402,9 @@ export class SportsCollectionService {
     eventId: string;
     summary: unknown;
   }): Promise<void> {
-    const fixture = await this.espnFixtureModel
-      .findOne({
-        eventId: params.eventId,
-      })
-      .lean()
-      .exec();
+    const collectedAt = new Date();
 
-    if (!fixture) {
-      throw new Error(
-        `ESPN fixture ${params.eventId} not found while storing Summary`,
-      );
-    }
-
-    const existingPayload =
-      fixture.payload && typeof fixture.payload === 'object'
-        ? fixture.payload
-        : {};
-
-    await this.espnFixtureModel
+    const result = await this.espnFixtureModel
       .updateOne(
         {
           eventId: params.eventId,
@@ -2430,20 +2412,19 @@ export class SportsCollectionService {
         {
           $set: {
             leagueId: this.normalizeLeagueId(params.leagueId),
-
-            payload: {
-              ...existingPayload,
-
-              summary: params.summary,
-
-              summaryCollectedAt: new Date(),
-            },
-
-            collectedAt: new Date(),
+            'payload.summary': params.summary,
+            'payload.summaryCollectedAt': collectedAt,
+            collectedAt,
           },
         },
       )
       .exec();
+
+    if (result.matchedCount === 0) {
+      throw new Error(
+        `ESPN fixture ${params.eventId} not found while storing Summary`,
+      );
+    }
   }
 
   // ============================================================
@@ -2563,15 +2544,23 @@ export class SportsCollectionService {
      * complete successfully. The caller is responsible for moving
      * the corresponding synchronization units back to FAILED.
      */
-    const result = await this.espnFixtureModel.bulkWrite(operations, {
-      ordered: false,
-    });
+    let matched = 0;
+    let modified = 0;
 
-    const matched =
-      typeof result.matchedCount === 'number' ? result.matchedCount : 0;
+    for (const chunk of this.chunkOperations(
+      operations,
+      this.mongoBulkChunkSize,
+    )) {
+      const result = await this.espnFixtureModel.bulkWrite(chunk, {
+        ordered: false,
+      });
 
-    const modified =
-      typeof result.modifiedCount === 'number' ? result.modifiedCount : 0;
+      matched +=
+        typeof result.matchedCount === 'number' ? result.matchedCount : 0;
+
+      modified +=
+        typeof result.modifiedCount === 'number' ? result.modifiedCount : 0;
+    }
 
     /*
      * Because upsert=false is intentional, every requested summary
@@ -3477,6 +3466,42 @@ export class SportsCollectionService {
    *
    * YYYY-MM-DD
    */
+  private chunkOperations<T>(operations: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+
+    for (let index = 0; index < operations.length; index += size) {
+      chunks.push(operations.slice(index, index + size));
+    }
+
+    return chunks;
+  }
+
+  private async bulkWriteFixtureChunks(
+    operations: Parameters<Model<EspnFixtureDocument>['bulkWrite']>[0],
+  ): Promise<void> {
+    for (const chunk of this.chunkOperations(
+      operations,
+      this.mongoBulkChunkSize,
+    )) {
+      await this.espnFixtureModel.bulkWrite(chunk, {
+        ordered: false,
+      });
+    }
+  }
+
+  private async bulkWriteTeamChunks(
+    operations: Parameters<Model<EspnTeamDocument>['bulkWrite']>[0],
+  ): Promise<void> {
+    for (const chunk of this.chunkOperations(
+      operations,
+      this.mongoBulkChunkSize,
+    )) {
+      await this.espnTeamModel.bulkWrite(chunk, {
+        ordered: false,
+      });
+    }
+  }
+
   private toUtcDateOnly(value: Date): string {
     const date = new Date(value);
 

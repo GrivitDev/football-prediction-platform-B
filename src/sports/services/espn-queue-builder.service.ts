@@ -71,16 +71,6 @@ export class EspnQueueBuilderService {
         continue;
       }
 
-      if (!league.seasonStartDate) {
-        skipped += 1;
-
-        this.logger.warn(
-          `Skipping daily fixture refresh for ${league.leagueId}: missing season start date`,
-        );
-
-        continue;
-      }
-
       const leagueId = (league.slug || league.leagueId).trim().toLowerCase();
 
       if (!leagueId) {
@@ -106,8 +96,6 @@ export class EspnQueueBuilderService {
         season: league.season,
 
         priority,
-
-        seasonStartDate: league.seasonStartDate,
       });
 
       const job = await this.espnQueueService.addFixtureRefreshJob({
@@ -163,16 +151,6 @@ export class EspnQueueBuilderService {
         continue;
       }
 
-      if (!league.seasonStartDate) {
-        skipped += 1;
-
-        this.logger.warn(
-          `Skipping stale fixture refresh for ${league.leagueId}: missing season start date`,
-        );
-
-        continue;
-      }
-
       const leagueId = (league.slug || league.leagueId).trim().toLowerCase();
 
       if (!leagueId) {
@@ -221,8 +199,6 @@ export class EspnQueueBuilderService {
         season: league.season,
 
         priority,
-
-        seasonStartDate: league.seasonStartDate,
       });
 
       const job = await this.espnQueueService.addFixtureRefreshJob({
@@ -623,22 +599,44 @@ export class EspnQueueBuilderService {
 
     const priority = this.getQueuePriority(activeLeague.priority);
 
+    const fixture = await this.espnFixtureModel
+      .findOne({
+        eventId,
+      })
+      .select({
+        eventId: 1,
+        leagueId: 1,
+        season: 1,
+        fixtureDate: 1,
+        payload: 1,
+      })
+      .lean()
+      .exec();
+
     /*
-     * Finished-fixture follow-up still uses the same persistent
-     * FIXTURE_REFRESH state for the league/season.
-     *
-     * The operational queue job may be FINISHED:<eventId>, but
-     * that trigger does not create another sync-state document.
+     * A finished event only needs its own calendar day re-read. The
+     * persistent state remains league/season based, but the operational
+     * window is narrowed to this exact day.
      */
-    if (activeLeague.seasonStartDate) {
+    const finishedDate = fixture?.fixtureDate
+      ? new Date(fixture.fixtureDate)
+      : undefined;
+
+    if (finishedDate && !Number.isNaN(finishedDate.getTime())) {
+      const finishedDateOnly = this.toDateOnly(finishedDate);
+
       await this.ensureFixtureRefreshState({
         leagueId,
-
         season,
-
         priority,
-
-        seasonStartDate: activeLeague.seasonStartDate,
+        dateFrom: finishedDateOnly,
+        dateTo: finishedDateOnly,
+      });
+    } else {
+      await this.ensureFixtureRefreshState({
+        leagueId,
+        season,
+        priority,
       });
     }
 
@@ -651,19 +649,6 @@ export class EspnQueueBuilderService {
     });
 
     let summaryRefreshQueued = false;
-
-    const fixture = await this.espnFixtureModel
-      .findOne({
-        eventId,
-      })
-      .select({
-        eventId: 1,
-        leagueId: 1,
-        season: 1,
-        payload: 1,
-      })
-      .lean()
-      .exec();
 
     if (fixture && !this.hasSummary(fixture)) {
       const summaryJob = await this.espnQueueService.addSummaryRefreshJob({
@@ -691,37 +676,28 @@ export class EspnQueueBuilderService {
     leagueId: string;
     season: number;
     priority: number;
-    seasonStartDate: string | Date;
+    dateFrom?: string;
+    dateTo?: string;
   }): Promise<void> {
-    const seasonStartDate = new Date(params.seasonStartDate);
+    const dateFrom = params.dateFrom ?? this.toDateOnly(new Date());
 
-    if (Number.isNaN(seasonStartDate.getTime())) {
-      throw new Error(
-        `Invalid season start date for fixture refresh: ${params.leagueId}`,
+    const dateTo =
+      params.dateTo ??
+      this.toDateOnly(
+        this.addUtcDays(
+          this.startOfUtcDay(new Date()),
+          this.fixtureRefreshForwardDays,
+        ),
       );
-    }
-
-    const dateFrom = this.toDateOnly(seasonStartDate);
-
-    const dateTo = this.toDateOnly(
-      this.addUtcDays(
-        this.startOfUtcDay(new Date()),
-        this.fixtureRefreshForwardDays,
-      ),
-    );
 
     await this.sportsSyncStateService.ensureFixtureRefreshState({
       leagueId: params.leagueId,
-
       season: params.season,
-
       priority: params.priority,
-
       dateFrom,
-
       dateTo,
-
-      trackingMode: 'HISTORY',
+      trackingMode: 'WINDOW',
+      granularity: 'DAY',
     });
   }
 

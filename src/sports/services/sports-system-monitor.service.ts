@@ -70,6 +70,8 @@ import {
 
 import { SportsProviderRateLimitService } from './sports-provider-rate-limit.service';
 
+import { SPORTS_DATA_COLLECTION_CONFIG } from '../config/sports-data-collection.config';
+
 // ============================================================
 // YOUTUBE
 // ============================================================
@@ -188,6 +190,7 @@ interface SyncAggregate {
 
   unitProgress: {
     total: number;
+    monthUnits: number;
     success: number;
     processing: number;
     pending: number;
@@ -254,7 +257,8 @@ type ConfiguredSportsProvider = Parameters<
 
 const PROVIDER_CONFIG: Record<ConfiguredSportsProvider, ProviderConfig> = {
   espn: {
-    minIntervalSeconds: 2,
+    minIntervalSeconds:
+      SPORTS_DATA_COLLECTION_CONFIG.ESPN.rateLimit.minIntervalSeconds,
     dailyRequestLimit: null,
     monthlyRequestLimit: null,
   },
@@ -268,7 +272,7 @@ const PROVIDER_CONFIG: Record<ConfiguredSportsProvider, ProviderConfig> = {
   'odds-api': {
     minIntervalSeconds: 60,
     dailyRequestLimit: null,
-    monthlyRequestLimit: 500,
+    monthlyRequestLimit: 450,
   },
 
   youtube: {
@@ -1754,6 +1758,7 @@ export class SportsSystemMonitorService {
 
           unitProgress: {
             total: 0,
+            monthUnits: 0,
             success: 0,
             processing: 0,
             pending: 0,
@@ -2708,6 +2713,8 @@ export class SportsSystemMonitorService {
 
     let failed = 0;
 
+    let monthUnits = 0;
+
     let dateUnits = 0;
 
     let stepUnits = 0;
@@ -2718,6 +2725,10 @@ export class SportsSystemMonitorService {
 
     for (const unit of units) {
       const unitType = String(unit.type).toUpperCase();
+
+      if (unitType === 'MONTH') {
+        monthUnits += 1;
+      }
 
       if (unitType === 'DATE') {
         dateUnits += 1;
@@ -2827,12 +2838,16 @@ export class SportsSystemMonitorService {
 
       trackingMode: state.trackingMode,
 
+      fixtureGranularity: state.fixtureGranularity,
+
       dateFrom: state.dateFrom,
 
       dateTo: state.dateTo,
 
       unitProgress: {
         total,
+
+        monthUnits,
 
         dateUnits,
 

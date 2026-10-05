@@ -159,12 +159,16 @@ export interface MonitorSyncStateDetail {
 
   trackingMode?: string;
 
+  fixtureGranularity?: string;
+
   dateFrom?: string;
 
   dateTo?: string;
 
   unitProgress: {
     total: number;
+
+    monthUnits: number;
 
     dateUnits: number;
 

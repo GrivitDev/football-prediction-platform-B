@@ -37,6 +37,10 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
   private readonly staleFixtureQueueBuildIntervalMs = 15 * 60 * 1000;
 
+  private readonly normalJobConcurrency = 10;
+
+  private readonly fixtureDayConcurrency = 9;
+
   private polling = false;
 
   private timer?: NodeJS.Timeout;
@@ -158,7 +162,7 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
       await this.buildNormalQueueWorkIfDue();
 
-      await this.processNextJob();
+      await this.processNextJobs(this.normalJobConcurrency);
     } catch (error) {
       this.logger.error(
         `ESPN queue polling failed: ${
@@ -281,14 +285,39 @@ export class EspnQueueWorkerService implements OnModuleInit {
   // JOB EXECUTION
   // ============================================================
 
+  private async processNextJobs(
+    concurrency: number,
+    params?: {
+      jobTypes?: EspnQueueJobType[];
+      includeFailed?: boolean;
+    },
+  ): Promise<void> {
+    const workerCount = Math.max(
+      1,
+      Math.min(concurrency, this.normalJobConcurrency),
+    );
+
+    const runWorker = async (): Promise<void> => {
+      while (true) {
+        const processed = await this.processNextJob(params);
+
+        if (!processed) {
+          return;
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  }
+
   private async processNextJob(params?: {
     jobTypes?: EspnQueueJobType[];
     includeFailed?: boolean;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const job = await this.espnQueueService.getNextJob(params);
 
     if (!job) {
-      return;
+      return false;
     }
 
     const queueJob = job as unknown as Record<string, unknown>;
@@ -302,16 +331,9 @@ export class EspnQueueWorkerService implements OnModuleInit {
     try {
       await this.processJob(queueJob);
 
-      /*
-       * Only fixture and summary synchronization work is validated
-       * against SportsSyncState.
-       *
-       * YouTube is intentionally operational queue work only.
-       */
       switch (queueJob.type) {
         case EspnQueueJobType.FIXTURE_REFRESH: {
           const stateKey = this.getStateKeyFromJob(queueJob);
-
           const complete =
             await this.sportsSyncStateService.isComplete(stateKey);
 
@@ -367,6 +389,8 @@ export class EspnQueueWorkerService implements OnModuleInit {
 
       await this.espnQueueService.markFailed(job, message);
     }
+
+    return true;
   }
 
   private async processJob(job: Record<string, unknown>): Promise<void> {
@@ -404,7 +428,6 @@ export class EspnQueueWorkerService implements OnModuleInit {
     }
 
     const leagueId = this.stringifyJobId(job.leagueId);
-
     const season = job.season;
 
     const competition =
@@ -422,8 +445,7 @@ export class EspnQueueWorkerService implements OnModuleInit {
     ) {
       throw new Error(
         `ActiveCompetition season mismatch for ${leagueId}: ` +
-          `queue=${season}, ` +
-          `active=${competition.season ?? 'missing'}`,
+          `queue=${season}, active=${competition.season ?? 'missing'}`,
       );
     }
 
@@ -435,45 +457,93 @@ export class EspnQueueWorkerService implements OnModuleInit {
     const forwardDays =
       this.espnQueueBuilderService.getFixtureRefreshForwardDays();
 
-    const dateFrom = this.toDateOnly(new Date());
-
-    const dateTo = this.toDateOnly(
+    let dateFrom = this.toDateOnly(new Date());
+    let dateTo = this.toDateOnly(
       new Date(Date.now() + forwardDays * 24 * 60 * 60 * 1000),
     );
 
+    const triggerEventId = String(job.triggerEventId ?? '');
+
+    let forcedFinishedDate: string | undefined;
+
+    if (triggerEventId.startsWith('FINISHED:')) {
+      const eventId = triggerEventId.slice('FINISHED:'.length).trim();
+
+      if (eventId) {
+        const finishedFixture = await this.espnFixtureModel
+          .findOne({ eventId })
+          .select({ fixtureDate: 1, season: 1 })
+          .lean()
+          .exec();
+
+        if (
+          finishedFixture?.fixtureDate &&
+          (!finishedFixture.season || finishedFixture.season === season)
+        ) {
+          const finishedDate = new Date(finishedFixture.fixtureDate);
+
+          if (!Number.isNaN(finishedDate.getTime())) {
+            forcedFinishedDate = this.toDateOnly(finishedDate);
+            dateFrom = forcedFinishedDate;
+            dateTo = forcedFinishedDate;
+          }
+        }
+      }
+    }
+
     const state = await this.sportsSyncStateService.ensureFixtureRefreshState({
       leagueId,
-
       season,
-
       priority,
-
       dateFrom,
-
       dateTo,
-
-      trackingMode: 'HISTORY',
+      trackingMode: 'WINDOW',
+      granularity: 'DAY',
     });
 
     const canonicalStateKey = state.stateKey;
 
     await this.sportsSyncStateService.resetInterruptedUnits(canonicalStateKey);
 
+    if (forcedFinishedDate) {
+      await this.sportsSyncStateService.resetDateForRefresh(
+        canonicalStateKey,
+        forcedFinishedDate,
+      );
+    }
+
     const incompleteDates =
       await this.sportsSyncStateService.getIncompleteDates(canonicalStateKey);
 
     const failures: string[] = [];
 
-    for (const dateKey of incompleteDates) {
-      try {
-        await this.processFixtureDate(canonicalStateKey, leagueId, dateKey);
-      } catch (error) {
-        failures.push(
-          `${dateKey}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+    for (
+      let index = 0;
+      index < incompleteDates.length;
+      index += this.fixtureDayConcurrency
+    ) {
+      const batch = incompleteDates.slice(
+        index,
+        index + this.fixtureDayConcurrency,
+      );
+
+      const results = await Promise.allSettled(
+        batch.map((dateKey) =>
+          this.processFixtureDate(canonicalStateKey, leagueId, dateKey),
+        ),
+      );
+
+      results.forEach((result, resultIndex) => {
+        if (result.status === 'rejected') {
+          failures.push(
+            `${batch[resultIndex]}: ${
+              result.reason instanceof Error
+                ? result.reason.message
+                : String(result.reason)
+            }`,
+          );
+        }
+      });
     }
 
     if (failures.length > 0) {
@@ -533,9 +603,7 @@ export class EspnQueueWorkerService implements OnModuleInit {
     }
 
     const season = job.season;
-
     const leagueId = this.stringifyJobId(job.leagueId);
-
     const eventId = this.stringifyJobId(job.eventId);
 
     const priority =
@@ -543,14 +611,39 @@ export class EspnQueueWorkerService implements OnModuleInit {
         ? job.priority
         : 4;
 
-    const state = await this.sportsSyncStateService.ensureSummaryRefreshState({
+    /*
+     * Normal event-driven Summary refresh must NOT reconcile every fixture
+     * in the league/season. Startup performs that expensive reconciliation;
+     * normal operation tracks only the specific event being processed.
+     */
+    const currentFixture = await this.espnFixtureModel
+      .findOne({
+        eventId,
+        leagueId,
+        season,
+      })
+      .select({
+        eventId: 1,
+        'payload.summary': 1,
+      })
+      .lean()
+      .exec();
+
+    if (!currentFixture) {
+      throw new Error(
+        `Summary refresh fixture ${eventId} not found in sports_espn_fixtures`,
+      );
+    }
+
+    const hasSummary = this.hasSummary(currentFixture);
+
+    const state = await this.sportsSyncStateService.ensureSummaryEventState({
       leagueId,
-
       season,
-
+      eventId,
       priority,
-
-      trackingMode: 'HISTORY',
+      hasSummary,
+      trackingMode: 'WINDOW',
     });
 
     const stateKey = state.stateKey;
@@ -561,39 +654,16 @@ export class EspnQueueWorkerService implements OnModuleInit {
       this.sportsSyncStateService.getSummaryStepKey(eventId);
 
     await this.runTrackedStep(stateKey, summaryStepKey, async () => {
-      const currentFixture = await this.espnFixtureModel
-        .findOne({
-          eventId,
-
-          leagueId,
-
-          season,
-        })
-        .select({
-          eventId: 1,
-
-          'payload.summary': 1,
-        })
-        .lean()
-        .exec();
-
-      if (!currentFixture) {
-        throw new Error(
-          `Summary refresh fixture ${eventId} not found in sports_espn_fixtures`,
-        );
-      }
-
-      if (this.hasSummary(currentFixture)) {
-        return;
-      }
-
+      /*
+       * The sync-state reconciliation above already confirmed whether the
+       * Summary exists. Do not perform another content check after ESPN
+       * responds. Persist the response exactly as returned.
+       */
       const summary = await this.espnService.getMatchSummary(leagueId, eventId);
 
       await this.sportsCollectionService.collectEspnMatchSummary({
         leagueId,
-
         eventId,
-
         summary,
       });
     });

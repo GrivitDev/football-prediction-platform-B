@@ -1,8 +1,10 @@
 import {
   BadRequestException,
   Injectable,
+  BadGatewayException,
   InternalServerErrorException,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 
 import axios, { AxiosError, AxiosInstance } from 'axios';
@@ -21,6 +23,8 @@ import {
   SportsProviderRequestLane,
 } from '../services/sports-provider-rate-limit.service';
 
+import { SPORTS_DATA_COLLECTION_CONFIG } from '../config/sports-data-collection.config';
+
 @Injectable()
 export class EspnService {
   private readonly logger = new Logger(EspnService.name);
@@ -37,6 +41,12 @@ export class EspnService {
   private readonly newsBaseUrl = 'https://now.core.api.espn.com/v1/sports';
 
   private readonly http: AxiosInstance;
+
+  private readonly scoreboardMonthLimit =
+    SPORTS_DATA_COLLECTION_CONFIG.ESPN.fixtures.startupMonthLimit;
+
+  private readonly transientRetryCount =
+    SPORTS_DATA_COLLECTION_CONFIG.ESPN.summary.maxRetries;
 
   constructor(
     private readonly providerRateLimitService: SportsProviderRateLimitService,
@@ -116,10 +126,10 @@ export class EspnService {
   // ============================================================
 
   /**
-   * Performs exactly ONE ESPN scoreboard request.
+   * Performs exactly one ESPN scoreboard request for one calendar day.
    *
-   * The queue owns the date range and decides how many
-   * individual dates must be processed.
+   * Normal/runtime refreshes use this method because a small day-level
+   * window is more efficient than re-fetching an entire month.
    */
   async getFixturesForDate(
     league: string,
@@ -143,14 +153,70 @@ export class EspnService {
   }
 
   // ============================================================
-  // 4. LEAGUE SCOREBOARD
+  // 4. SCOREBOARD — SINGLE MONTH
   // ============================================================
 
   /**
-   * Legacy range-capable method.
+   * Performs exactly one ESPN scoreboard request for a calendar month.
    *
-   * Queue workflows should prefer getFixturesForDate()
-   * so each date is individually tracked.
+   * Current public ESPN scoreboard testing supports YYYYMM. The old
+   * YYYYMMDD-YYYYMMDD range form is intentionally not used.
+   */
+  async getFixturesForMonth(
+    league: string,
+    month: string,
+    limit = this.scoreboardMonthLimit,
+  ): Promise<EspnApiResponse> {
+    this.validateLeague(league);
+
+    if (!this.isValidMonth(month)) {
+      throw new BadRequestException(
+        'month must be a valid YYYYMM calendar month',
+      );
+    }
+
+    const maxLimit =
+      SPORTS_DATA_COLLECTION_CONFIG.ESPN.fixtures.startupMonthLimit;
+
+    if (!Number.isInteger(limit) || limit < 1 || limit > maxLimit) {
+      throw new BadRequestException(
+        `limit must be an integer between 1 and ${maxLimit}`,
+      );
+    }
+
+    const response = await this.request<EspnApiResponse>(
+      `${this.siteBaseUrl}/${encodeURIComponent(
+        league.trim().toLowerCase(),
+      )}/scoreboard`,
+      'scoreboard',
+      {
+        dates: month,
+        limit: String(limit),
+      },
+    );
+
+    if (this.extractEvents(response).length >= limit) {
+      this.logger.warn(
+        `ESPN monthly scoreboard reached limit=${limit} for ${league}/${month}; ` +
+          `falling back to day-level collection for completeness`,
+      );
+
+      return this.getFixturesForMonthByDay(league.trim().toLowerCase(), month);
+    }
+
+    return response;
+  }
+
+  // ============================================================
+  // 5. LEAGUE SCOREBOARD
+  // ============================================================
+
+  /**
+   * Returns the fixture events for the requested date window.
+   *
+   * Date ranges are fulfilled month-by-month rather than using ESPN's
+   * currently unreliable hyphenated date-range syntax. Events are then
+   * filtered back to the exact requested date window.
    */
   async getFixtures(
     league: string,
@@ -165,18 +231,23 @@ export class EspnService {
 
     if (dateFrom && dateTo) {
       const events: EspnEvent[] = [];
+      const months = this.buildMonthRange(dateFrom, dateTo);
 
-      let currentDate = dateFrom;
-
-      while (currentDate <= dateTo) {
-        const response = await this.getFixturesForDate(
+      for (const month of months) {
+        const response = await this.getFixturesForMonth(
           normalizedLeague,
-          currentDate,
+          month,
+          this.scoreboardMonthLimit,
         );
 
-        events.push(...this.extractEvents(response));
+        for (const event of this.extractEvents(response)) {
+          const eventDate =
+            typeof event.date === 'string' ? event.date.slice(0, 10) : '';
 
-        currentDate = this.addOneDay(currentDate);
+          if (eventDate >= dateFrom && eventDate <= dateTo) {
+            events.push(event);
+          }
+        }
       }
 
       return {
@@ -303,6 +374,29 @@ export class EspnService {
     });
   }
 
+  private async getFixturesForMonthByDay(
+    league: string,
+    month: string,
+  ): Promise<EspnApiResponse> {
+    const year = Number(month.slice(0, 4));
+    const monthNumber = Number(month.slice(4, 6));
+    const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+
+    const responses = await Promise.all(
+      Array.from({ length: daysInMonth }, (_, index) => {
+        const day = String(index + 1).padStart(2, '0');
+        const date = `${year.toString().padStart(4, '0')}-${month.slice(4, 6)}-${day}`;
+        return this.getFixturesForDate(league, date);
+      }),
+    );
+
+    return {
+      events: this.deduplicateEvents(
+        responses.flatMap((response) => this.extractEvents(response)),
+      ),
+    };
+  }
+
   // ============================================================
   // REQUEST
   // ============================================================
@@ -317,22 +411,69 @@ export class EspnService {
       'espn',
       rateLimitEndpoint,
       async () => {
-        try {
-          const response = await this.http.get<T>(endpoint, {
-            params,
-          });
+        let attempt = 0;
 
-          this.assertResponse(response.data, endpoint);
+        while (true) {
+          try {
+            const response = await this.http.get<T>(endpoint, {
+              params,
+            });
 
-          return response.data;
-        } catch (error) {
-          this.logApiError(error, endpoint);
+            this.assertResponse(response.data, endpoint);
 
-          if (error instanceof InternalServerErrorException) {
-            throw error;
+            return response.data;
+          } catch (error) {
+            attempt += 1;
+
+            const status = axios.isAxiosError(error)
+              ? error.response?.status
+              : undefined;
+
+            const retryable = this.isTransientError(error);
+
+            if (retryable && attempt <= this.transientRetryCount) {
+              const retryAfterMs = this.getRetryAfterMilliseconds(error);
+
+              this.providerRateLimitService.reportThrottle(
+                'espn',
+                rateLimitEndpoint,
+                status,
+                retryAfterMs,
+              );
+
+              const delay =
+                retryAfterMs ?? this.getTransientRetryDelay(attempt, status);
+
+              this.logger.warn(
+                `Retrying ESPN request ${rateLimitEndpoint}: ` +
+                  `attempt=${attempt}/${this.transientRetryCount} ` +
+                  `status=${status ?? 'network'} ` +
+                  `delay=${delay}ms`,
+              );
+
+              await this.sleep(delay);
+
+              continue;
+            }
+
+            this.logApiError(error, endpoint);
+
+            if (error instanceof InternalServerErrorException) {
+              throw error;
+            }
+
+            if (axios.isAxiosError(error) && error.response?.status) {
+              const responseStatus = error.response.status;
+
+              if (responseStatus >= 400 && responseStatus < 500) {
+                throw new BadGatewayException(
+                  `ESPN request failed with status ${responseStatus}`,
+                );
+              }
+            }
+
+            throw new ServiceUnavailableException('ESPN request failed');
           }
-
-          throw new InternalServerErrorException('ESPN request failed');
         }
       },
       {
@@ -514,12 +655,96 @@ export class EspnService {
     return value.replace(/-/g, '');
   }
 
-  private addOneDay(value: string): string {
-    const date = new Date(`${value}T00:00:00.000Z`);
+  private buildMonthRange(dateFrom: string, dateTo: string): string[] {
+    const start = new Date(`${dateFrom.slice(0, 7)}-01T00:00:00.000Z`);
+    const end = new Date(`${dateTo.slice(0, 7)}-01T00:00:00.000Z`);
 
-    date.setUTCDate(date.getUTCDate() + 1);
+    const months: string[] = [];
 
-    return date.toISOString().slice(0, 10);
+    while (start.getTime() <= end.getTime()) {
+      months.push(
+        `${start.getUTCFullYear()}${String(start.getUTCMonth() + 1).padStart(2, '0')}`,
+      );
+
+      start.setUTCMonth(start.getUTCMonth() + 1);
+    }
+
+    return months;
+  }
+
+  private isValidMonth(value: string): boolean {
+    if (!/^\d{6}$/.test(value)) {
+      return false;
+    }
+
+    const month = Number(value.slice(4, 6));
+
+    return month >= 1 && month <= 12;
+  }
+
+  private isTransientError(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) {
+      return error instanceof ServiceUnavailableException;
+    }
+
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      return true;
+    }
+
+    const status = error.response?.status;
+
+    return (
+      status === 429 ||
+      status === 500 ||
+      status === 502 ||
+      status === 503 ||
+      status === 504
+    );
+  }
+
+  private getRetryAfterMilliseconds(error: unknown): number | undefined {
+    if (!axios.isAxiosError(error)) {
+      return undefined;
+    }
+
+    const value = error.response?.headers?.['retry-after'];
+
+    if (value === undefined) {
+      return undefined;
+    }
+
+    const raw = Array.isArray(value) ? value[0] : value;
+    const numeric = Number(raw);
+
+    if (Number.isFinite(numeric) && numeric >= 0) {
+      return Math.min(60_000, numeric * 1000);
+    }
+
+    const date = new Date(String(raw));
+
+    if (!Number.isNaN(date.getTime())) {
+      return Math.min(60_000, Math.max(0, date.getTime() - Date.now()));
+    }
+
+    return undefined;
+  }
+
+  private getTransientRetryDelay(attempt: number, status?: number): number {
+    const base = status === 429 ? 5000 : 500;
+    const exponential = Math.min(10_000, base * Math.pow(2, attempt - 1));
+    const jitter = Math.floor(
+      Math.random() * Math.max(100, exponential * 0.25),
+    );
+
+    return exponential + jitter;
+  }
+
+  private async sleep(milliseconds: number): Promise<void> {
+    if (milliseconds <= 0) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
   }
 
   private toPositiveInteger(value: unknown): number | undefined {

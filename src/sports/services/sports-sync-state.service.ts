@@ -190,6 +190,7 @@ export class SportsSyncStateService {
     dateFrom: string;
     dateTo: string;
     trackingMode?: 'WINDOW' | 'HISTORY';
+    granularity?: 'DAY' | 'MONTH';
   }): Promise<SportsSyncStateDocument> {
     const leagueId = this.normalize(params.leagueId);
 
@@ -204,28 +205,29 @@ export class SportsSyncStateService {
     }
 
     const requestedDateFrom = this.normalizeDateOnly(params.dateFrom);
-
     const requestedDateTo = this.normalizeDateOnly(params.dateTo);
 
+    if (requestedDateFrom > requestedDateTo) {
+      throw new Error(
+        `Invalid fixture synchronization range for ${leagueId}: ` +
+          `${requestedDateFrom} -> ${requestedDateTo}`,
+      );
+    }
+
     const trackingMode = params.trackingMode ?? 'HISTORY';
+    const granularity = params.granularity ?? 'DAY';
 
     const stateKey = this.getQueueStateKey({
       jobType: EspnQueueJobType.FIXTURE_REFRESH,
-
       leagueId,
-
       season: params.season,
     });
 
     await this.ensureQueueState({
       jobType: EspnQueueJobType.FIXTURE_REFRESH,
-
       leagueId,
-
       season: params.season,
-
       priority: params.priority,
-
       trackingMode,
     });
 
@@ -239,85 +241,82 @@ export class SportsSyncStateService {
       ? this.maxDateOnly(state.dateTo, requestedDateTo)
       : requestedDateTo;
 
-    await this.ensureDateWindow({
-      stateKey,
+    state.fixtureGranularity = granularity;
 
-      dateFrom: effectiveDateFrom,
+    if (granularity === 'MONTH') {
+      await this.ensureMonthWindow({
+        stateKey,
+        dateFrom: effectiveDateFrom,
+        dateTo: effectiveDateTo,
+        trackingMode,
+      });
+    } else {
+      await this.ensureDateWindow({
+        stateKey,
+        dateFrom: effectiveDateFrom,
+        dateTo: effectiveDateTo,
+        trackingMode,
+      });
 
-      dateTo: effectiveDateTo,
+      state = await this.requireState(stateKey);
 
-      trackingMode,
-    });
+      /*
+       * A runtime date refresh can safely infer SUCCESS from an
+       * already-persisted fixture for the exact date. This optimization
+       * is intentionally NOT used for MONTH units because an empty ESPN
+       * month response is a valid successful synchronization.
+       */
+      const fixtureDateKeys = await this.getFixtureDateKeys({
+        leagueId,
+        season: params.season,
+        dateFrom: effectiveDateFrom,
+        dateTo: effectiveDateTo,
+      });
 
-    state = await this.requireState(stateKey);
+      let changed = false;
 
-    /*
-     * A date with at least one persisted fixture is already
-     * synchronized and therefore does not need another ESPN call.
-     */
-    const fixtureDateKeys = await this.getFixtureDateKeys({
-      leagueId,
+      for (const unit of state.units) {
+        if (
+          unit.type !== SportsSyncUnitType.DATE ||
+          !unit.dateKey ||
+          !fixtureDateKeys.has(unit.dateKey)
+        ) {
+          continue;
+        }
 
-      season: params.season,
+        if (unit.status === SportsSyncUnitStatus.SUCCESS) {
+          continue;
+        }
 
-      dateFrom: effectiveDateFrom,
-
-      dateTo: effectiveDateTo,
-    });
-
-    let changed = false;
-
-    for (const unit of state.units) {
-      if (
-        unit.type !== SportsSyncUnitType.DATE ||
-        !unit.dateKey ||
-        !fixtureDateKeys.has(unit.dateKey)
-      ) {
-        continue;
+        unit.status = SportsSyncUnitStatus.SUCCESS;
+        unit.completedAt = new Date();
+        unit.startedAt = undefined;
+        unit.nextAttemptAt = undefined;
+        unit.lastError = undefined;
+        changed = true;
       }
 
-      if (unit.status === SportsSyncUnitStatus.SUCCESS) {
-        continue;
+      const nextStatus = this.calculateOverallStatus(state);
+
+      if (state.status !== nextStatus) {
+        state.status = nextStatus;
+        changed = true;
       }
 
-      unit.status = SportsSyncUnitStatus.SUCCESS;
+      if (state.status === SportsSyncStateStatus.SUCCESS) {
+        state.lastSuccessfulAt = new Date();
+        state.lastCompletedAt = new Date();
+        state.lastError = undefined;
+        state.consecutiveFailures = 0;
+      }
 
-      unit.completedAt = new Date();
-
-      unit.startedAt = undefined;
-
-      unit.nextAttemptAt = undefined;
-
-      unit.lastError = undefined;
-
-      changed = true;
+      if (changed) {
+        state.markModified('units');
+        await state.save();
+      }
     }
 
-    const nextStatus = this.calculateOverallStatus(state);
-
-    if (state.status !== nextStatus) {
-      state.status = nextStatus;
-
-      changed = true;
-    }
-
-    if (state.status === SportsSyncStateStatus.SUCCESS) {
-      state.lastSuccessfulAt = new Date();
-
-      state.lastCompletedAt = new Date();
-
-      state.lastError = undefined;
-
-      state.consecutiveFailures = 0;
-    }
-
-    if (changed) {
-      state.markModified('units');
-
-      await state.save();
-    }
-
-    return state;
+    return this.requireState(stateKey);
   }
 
   // ============================================================
@@ -393,17 +392,41 @@ export class SportsSyncStateService {
      * exists in the canonical sports_espn_fixtures collection.
      */
     const fixtures = await this.espnFixtureModel
-      .find({
-        leagueId,
-
-        season: params.season,
-      })
-      .select({
-        eventId: 1,
-
-        payload: 1,
-      })
-      .lean()
+      .aggregate<{
+        eventId?: string;
+        hasSummary?: boolean;
+      }>([
+        {
+          $match: {
+            leagueId,
+            season: params.season,
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            eventId: 1,
+            hasSummary: {
+              $cond: [
+                { $eq: [{ $type: '$payload.summary' }, 'object'] },
+                {
+                  $gt: [
+                    {
+                      $size: {
+                        $objectToArray: {
+                          $ifNull: ['$payload.summary', {}],
+                        },
+                      },
+                    },
+                    0,
+                  ],
+                },
+                false,
+              ],
+            },
+          },
+        },
+      ])
       .exec();
 
     /*
@@ -433,7 +456,7 @@ export class SportsSyncStateService {
 
       const stepKey = this.getSummaryStepKey(eventId);
 
-      const hasSummary = this.hasSummaryPayload(fixture.payload);
+      const hasSummary = fixture.hasSummary === true;
 
       const existing = existingUnits.get(stepKey);
 
@@ -515,17 +538,30 @@ export class SportsSyncStateService {
       }
     }
 
-    const nextStatus = this.calculateOverallStatus(state);
+    const nextStatus =
+      state.units.filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.STEP &&
+          typeof unit.stepKey === 'string' &&
+          unit.stepKey.startsWith('SUMMARY:'),
+      ).length === 0
+        ? SportsSyncStateStatus.SUCCESS
+        : this.calculateOverallStatus(state);
 
     if (state.status !== nextStatus) {
       state.status = nextStatus;
-
       changed = true;
+    }
+
+    if (nextStatus === SportsSyncStateStatus.SUCCESS) {
+      state.lastSuccessfulAt = new Date();
+      state.lastCompletedAt = new Date();
+      state.lastError = undefined;
+      state.consecutiveFailures = 0;
     }
 
     if (changed) {
       state.markModified('units');
-
       await state.save();
     }
 
@@ -794,6 +830,63 @@ export class SportsSyncStateService {
   /**
    * Records one individual ESPN Summary fetch failure immediately.
    */
+  /**
+   * Marks a bounded group of successfully persisted Summary events as
+   * SUCCESS in one MongoDB update. The fixture payloads must already have
+   * been persisted before this method is called.
+   */
+  async markSummaryEventFetchSuccessBatch(
+    stateKey: string,
+    eventIds: string[],
+  ): Promise<void> {
+    const normalizedEventIds = [
+      ...new Set(
+        eventIds.map((eventId) => String(eventId).trim()).filter(Boolean),
+      ),
+    ];
+
+    if (normalizedEventIds.length === 0) {
+      return;
+    }
+
+    const stepKeys = normalizedEventIds.map((eventId) =>
+      this.getSummaryStepKey(eventId),
+    );
+
+    const now = new Date();
+
+    const result = await this.syncStateModel
+      .updateOne(
+        { stateKey },
+        {
+          $set: {
+            'units.$[unit].status': SportsSyncUnitStatus.SUCCESS,
+            'units.$[unit].completedAt': now,
+          },
+          $unset: {
+            'units.$[unit].startedAt': 1,
+            'units.$[unit].nextAttemptAt': 1,
+            'units.$[unit].lastError': 1,
+          },
+        },
+        {
+          arrayFilters: [
+            {
+              'unit.type': SportsSyncUnitType.STEP,
+              'unit.stepKey': { $in: stepKeys },
+            },
+          ],
+        },
+      )
+      .exec();
+
+    if (result.matchedCount === 0) {
+      throw new Error(
+        `Summary synchronization state ${stateKey} was not found`,
+      );
+    }
+  }
+
   async markSummaryEventFetchFailed(
     stateKey: string,
     eventId: string,
@@ -974,10 +1067,13 @@ export class SportsSyncStateService {
    * Returns incomplete Summary event IDs from a persistent
    * SUMMARY_REFRESH state.
    */
-  async getIncompleteSummaryEvents(stateKey: string): Promise<string[]> {
+  async getIncompleteSummaryEvents(
+    stateKey: string,
+    limit?: number,
+  ): Promise<string[]> {
     const state = await this.requireState(stateKey);
 
-    return state.units
+    const events = state.units
       .filter(
         (unit) =>
           unit.type === SportsSyncUnitType.STEP &&
@@ -989,14 +1085,19 @@ export class SportsSyncStateService {
       .map((unit) => String(unit.stepKey).slice('SUMMARY:'.length))
       .filter(Boolean)
       .sort();
+
+    return limit && limit > 0 ? events.slice(0, limit) : events;
   }
 
-  async getDueIncompleteSummaryEvents(stateKey: string): Promise<string[]> {
+  async getDueIncompleteSummaryEvents(
+    stateKey: string,
+    limit?: number,
+  ): Promise<string[]> {
     const state = await this.requireState(stateKey);
 
     const now = Date.now();
 
-    return state.units
+    const events = state.units
       .filter(
         (unit) =>
           unit.type === SportsSyncUnitType.STEP &&
@@ -1015,6 +1116,8 @@ export class SportsSyncStateService {
       .map((unit) => String(unit.stepKey).slice('SUMMARY:'.length))
       .filter(Boolean)
       .sort();
+
+    return limit && limit > 0 ? events.slice(0, limit) : events;
   }
 
   async getNextIncompleteSummaryRetryAt(
@@ -1024,42 +1127,69 @@ export class SportsSyncStateService {
 
     const now = Date.now();
 
-    const retryTimes = state.units
-      .filter(
-        (unit) =>
-          unit.type === SportsSyncUnitType.STEP &&
-          typeof unit.stepKey === 'string' &&
-          unit.stepKey.startsWith('SUMMARY:') &&
-          (unit.status === SportsSyncUnitStatus.PENDING ||
-            unit.status === SportsSyncUnitStatus.FAILED) &&
-          unit.nextAttemptAt,
-      )
-      .map((unit) => new Date(unit.nextAttemptAt as Date).getTime())
-      .filter((time) => time > now)
-      .sort((a, b) => a - b);
+    let earliest: number | null = null;
 
-    if (retryTimes.length === 0) {
-      return null;
+    for (const unit of state.units) {
+      if (
+        unit.type !== SportsSyncUnitType.STEP ||
+        typeof unit.stepKey !== 'string' ||
+        !unit.stepKey.startsWith('SUMMARY:') ||
+        (unit.status !== SportsSyncUnitStatus.PENDING &&
+          unit.status !== SportsSyncUnitStatus.FAILED) ||
+        !unit.nextAttemptAt
+      ) {
+        continue;
+      }
+
+      const retryAt = new Date(unit.nextAttemptAt).getTime();
+
+      if (retryAt <= now) {
+        continue;
+      }
+
+      if (earliest === null || retryAt < earliest) {
+        earliest = retryAt;
+      }
     }
 
-    return new Date(retryTimes[0]);
+    return earliest === null ? null : new Date(earliest);
+  }
+
+  async isSummaryComplete(stateKey: string): Promise<boolean> {
+    const state = await this.requireState(stateKey);
+
+    const summaryUnits = state.units.filter(
+      (unit) =>
+        unit.type === SportsSyncUnitType.STEP &&
+        typeof unit.stepKey === 'string' &&
+        unit.stepKey.startsWith('SUMMARY:'),
+    );
+
+    return summaryUnits.every(
+      (unit) => unit.status === SportsSyncUnitStatus.SUCCESS,
+    );
   }
 
   async isSummaryEventSuccessful(
     stateKey: string,
     eventId: string,
   ): Promise<boolean> {
-    const state = await this.requireState(stateKey);
-
     const stepKey = this.getSummaryStepKey(eventId);
 
-    const unit = state.units.find(
-      (candidate) =>
-        candidate.type === SportsSyncUnitType.STEP &&
-        candidate.key === `STEP:${stepKey}`,
-    );
+    const state = await this.syncStateModel
+      .findOne(
+        {
+          stateKey,
+          'units.key': `STEP:${stepKey}`,
+        },
+        {
+          'units.$': 1,
+        },
+      )
+      .lean()
+      .exec();
 
-    return unit?.status === SportsSyncUnitStatus.SUCCESS;
+    return state?.units?.[0]?.status === SportsSyncUnitStatus.SUCCESS;
   }
 
   // ============================================================
@@ -1123,8 +1253,13 @@ export class SportsSyncStateService {
     const state = await this.requireState(params.stateKey);
 
     const desiredDateFrom = this.normalizeDateOnly(params.dateFrom);
-
     const desiredDateTo = this.normalizeDateOnly(params.dateTo);
+
+    if (desiredDateFrom > desiredDateTo) {
+      throw new Error(
+        `Invalid date window: ${desiredDateFrom} -> ${desiredDateTo}`,
+      );
+    }
 
     const existingDateUnits = new Map(
       state.units
@@ -1132,21 +1267,23 @@ export class SportsSyncStateService {
         .map((unit) => [unit.dateKey ?? unit.key, unit]),
     );
 
+    const existingMonthUnits = state.units.filter(
+      (unit) => unit.type === SportsSyncUnitType.MONTH,
+    );
+
     const existingStepUnits = state.units.filter(
       (unit) => unit.type === SportsSyncUnitType.STEP,
     );
 
-    let effectiveDateFrom = desiredDateFrom;
+    const effectiveDateFrom =
+      params.trackingMode === 'HISTORY' && state.dateFrom
+        ? this.minDateOnly(state.dateFrom, desiredDateFrom)
+        : desiredDateFrom;
 
-    let effectiveDateTo = desiredDateTo;
-
-    if (state.dateFrom) {
-      effectiveDateFrom = this.minDateOnly(state.dateFrom, desiredDateFrom);
-    }
-
-    if (state.dateTo) {
-      effectiveDateTo = this.maxDateOnly(state.dateTo, desiredDateTo);
-    }
+    const effectiveDateTo =
+      params.trackingMode === 'HISTORY' && state.dateTo
+        ? this.maxDateOnly(state.dateTo, desiredDateTo)
+        : desiredDateTo;
 
     const effectiveDates = this.buildDateRange(
       effectiveDateFrom,
@@ -1162,27 +1299,21 @@ export class SportsSyncStateService {
 
       return {
         key: `DATE:${dateKey}`,
-
         type: SportsSyncUnitType.DATE,
-
         dateKey,
-
         status: SportsSyncUnitStatus.PENDING,
-
         attempts: 0,
       };
     });
 
     state.dateFrom = effectiveDateFrom;
-
     state.dateTo = effectiveDateTo;
-
     state.trackingMode = params.trackingMode;
+    state.fixtureGranularity = 'DAY';
 
     if (params.trackingMode === 'HISTORY') {
       const desiredDateSet = new Set(effectiveDates);
-
-      const historicalUnits = state.units.filter(
+      const historicalDateUnits = state.units.filter(
         (unit) =>
           unit.type === SportsSyncUnitType.DATE &&
           unit.dateKey &&
@@ -1190,16 +1321,99 @@ export class SportsSyncStateService {
       );
 
       state.units = [
-        ...historicalUnits,
+        ...historicalDateUnits,
         ...effectiveDateUnits,
+        ...existingMonthUnits,
         ...existingStepUnits,
       ];
     } else {
-      state.units = [...effectiveDateUnits, ...existingStepUnits];
+      state.units = [
+        ...effectiveDateUnits,
+        ...existingMonthUnits,
+        ...existingStepUnits,
+      ];
     }
 
     state.status = this.calculateOverallStatus(state);
+    state.markModified('units');
 
+    await state.save();
+
+    return state;
+  }
+
+  // ============================================================
+  // MONTH WINDOW
+  // ============================================================
+
+  async ensureMonthWindow(params: {
+    stateKey: string;
+    dateFrom: string;
+    dateTo: string;
+    trackingMode: 'WINDOW' | 'HISTORY';
+  }): Promise<SportsSyncStateDocument> {
+    const state = await this.requireState(params.stateKey);
+
+    const desiredDateFrom = this.normalizeDateOnly(params.dateFrom);
+    const desiredDateTo = this.normalizeDateOnly(params.dateTo);
+
+    if (desiredDateFrom > desiredDateTo) {
+      throw new Error(
+        `Invalid month synchronization window: ${desiredDateFrom} -> ${desiredDateTo}`,
+      );
+    }
+
+    const effectiveDateFrom =
+      params.trackingMode === 'HISTORY' && state.dateFrom
+        ? this.minDateOnly(state.dateFrom, desiredDateFrom)
+        : desiredDateFrom;
+
+    const effectiveDateTo =
+      params.trackingMode === 'HISTORY' && state.dateTo
+        ? this.maxDateOnly(state.dateTo, desiredDateTo)
+        : desiredDateTo;
+
+    const monthKeys = this.buildMonthRange(effectiveDateFrom, effectiveDateTo);
+
+    const existingMonthUnits = new Map(
+      state.units
+        .filter((unit) => unit.type === SportsSyncUnitType.MONTH)
+        .map((unit) => [unit.monthKey ?? unit.key, unit]),
+    );
+
+    const effectiveMonthUnits = monthKeys.map((monthKey) => {
+      const existing = existingMonthUnits.get(monthKey);
+
+      if (existing) {
+        return existing;
+      }
+
+      return {
+        key: `MONTH:${monthKey}`,
+        type: SportsSyncUnitType.MONTH,
+        monthKey,
+        status: SportsSyncUnitStatus.PENDING,
+        attempts: 0,
+      };
+    });
+
+    const existingStepUnits = state.units.filter(
+      (unit) => unit.type === SportsSyncUnitType.STEP,
+    );
+
+    /*
+     * MONTH startup state deliberately drops legacy historical DATE units.
+     * This is an intentional migration from the previous daily startup
+     * ledger and prevents old season-sized DATE arrays from surviving the
+     * new deployment.
+     */
+    state.units = [...effectiveMonthUnits, ...existingStepUnits];
+
+    state.dateFrom = effectiveDateFrom;
+    state.dateTo = effectiveDateTo;
+    state.trackingMode = params.trackingMode;
+    state.fixtureGranularity = 'MONTH';
+    state.status = this.calculateOverallStatus(state);
     state.markModified('units');
 
     await state.save();
@@ -1245,7 +1459,11 @@ export class SportsSyncStateService {
       (unit) => unit.type === SportsSyncUnitType.DATE,
     );
 
-    state.units = [...dateUnits, ...existingSteps.values()];
+    const monthUnits = state.units.filter(
+      (unit) => unit.type === SportsSyncUnitType.MONTH,
+    );
+
+    state.units = [...monthUnits, ...dateUnits, ...existingSteps.values()];
 
     state.status = this.calculateOverallStatus(state);
 
@@ -1288,6 +1506,98 @@ export class SportsSyncStateService {
     state.markModified('units');
 
     await state.save();
+  }
+
+  // ============================================================
+  // MONTH STATE
+  // ============================================================
+
+  async getIncompleteMonths(stateKey: string): Promise<string[]> {
+    const state = await this.requireState(stateKey);
+
+    return state.units
+      .filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.MONTH &&
+          (unit.status === SportsSyncUnitStatus.PENDING ||
+            unit.status === SportsSyncUnitStatus.FAILED),
+      )
+      .map((unit) => unit.monthKey)
+      .filter((month): month is string => Boolean(month))
+      .sort();
+  }
+
+  async getDueIncompleteMonths(
+    stateKey: string,
+    limit?: number,
+  ): Promise<string[]> {
+    const state = await this.requireState(stateKey);
+    const now = Date.now();
+
+    const months = state.units
+      .filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.MONTH &&
+          (unit.status === SportsSyncUnitStatus.PENDING ||
+            unit.status === SportsSyncUnitStatus.FAILED),
+      )
+      .filter((unit) => {
+        if (!unit.nextAttemptAt) {
+          return true;
+        }
+
+        return new Date(unit.nextAttemptAt).getTime() <= now;
+      })
+      .map((unit) => unit.monthKey)
+      .filter((month): month is string => Boolean(month))
+      .sort();
+
+    return limit && limit > 0 ? months.slice(0, limit) : months;
+  }
+
+  async getNextIncompleteMonthRetryAt(stateKey: string): Promise<Date | null> {
+    const state = await this.requireState(stateKey);
+    const now = Date.now();
+    let earliest: number | null = null;
+
+    for (const unit of state.units) {
+      if (
+        unit.type !== SportsSyncUnitType.MONTH ||
+        (unit.status !== SportsSyncUnitStatus.PENDING &&
+          unit.status !== SportsSyncUnitStatus.FAILED) ||
+        !unit.nextAttemptAt
+      ) {
+        continue;
+      }
+
+      const retryAt = new Date(unit.nextAttemptAt).getTime();
+
+      if (retryAt <= now) {
+        continue;
+      }
+
+      if (earliest === null || retryAt < earliest) {
+        earliest = retryAt;
+      }
+    }
+
+    return earliest === null ? null : new Date(earliest);
+  }
+
+  async markMonthProcessing(stateKey: string, monthKey: string): Promise<void> {
+    await this.markUnitProcessing(stateKey, `MONTH:${monthKey}`);
+  }
+
+  async markMonthSuccess(stateKey: string, monthKey: string): Promise<void> {
+    await this.markUnitSuccess(stateKey, `MONTH:${monthKey}`);
+  }
+
+  async markMonthFailed(
+    stateKey: string,
+    monthKey: string,
+    error: unknown,
+  ): Promise<void> {
+    await this.markUnitFailed(stateKey, `MONTH:${monthKey}`, error);
   }
 
   // ============================================================
@@ -1357,6 +1667,51 @@ export class SportsSyncStateService {
     return new Date(retryTimes[0]);
   }
 
+  /**
+   * Forces a previously successful day back into the refresh queue.
+   * Used when an event has just finished and the day-level scoreboard
+   * must be re-read for the final score/status update.
+   */
+  async resetDateForRefresh(stateKey: string, dateKey: string): Promise<void> {
+    const normalizedDate = this.normalizeDateOnly(dateKey);
+
+    const result = await this.syncStateModel
+      .updateOne(
+        {
+          stateKey,
+          'units.type': SportsSyncUnitType.DATE,
+          'units.dateKey': normalizedDate,
+        },
+        {
+          $set: {
+            status: SportsSyncStateStatus.PENDING,
+            'units.$[unit].status': SportsSyncUnitStatus.PENDING,
+          },
+          $unset: {
+            'units.$[unit].startedAt': 1,
+            'units.$[unit].completedAt': 1,
+            'units.$[unit].nextAttemptAt': 1,
+            'units.$[unit].lastError': 1,
+          },
+        },
+        {
+          arrayFilters: [
+            {
+              'unit.type': SportsSyncUnitType.DATE,
+              'unit.dateKey': normalizedDate,
+            },
+          ],
+        },
+      )
+      .exec();
+
+    if (result.matchedCount === 0) {
+      throw new Error(
+        `Fixture synchronization unit DATE:${normalizedDate} does not exist in ${stateKey}`,
+      );
+    }
+  }
+
   async markDateProcessing(stateKey: string, dateKey: string): Promise<void> {
     await this.markUnitProcessing(stateKey, `DATE:${dateKey}`);
   }
@@ -1392,11 +1747,20 @@ export class SportsSyncStateService {
   }
 
   async isUnitSuccessful(stateKey: string, unitKey: string): Promise<boolean> {
-    const state = await this.requireState(stateKey);
+    const state = await this.syncStateModel
+      .findOne(
+        {
+          stateKey,
+          'units.key': unitKey,
+        },
+        {
+          'units.$': 1,
+        },
+      )
+      .lean()
+      .exec();
 
-    const unit = state.units.find((candidate) => candidate.key === unitKey);
-
-    return unit?.status === SportsSyncUnitStatus.SUCCESS;
+    return state?.units?.[0]?.status === SportsSyncUnitStatus.SUCCESS;
   }
 
   async markStepProcessing(stateKey: string, stepKey: string): Promise<void> {
@@ -1423,72 +1787,71 @@ export class SportsSyncStateService {
     stateKey: string,
     unitKey: string,
   ): Promise<void> {
-    const state = await this.requireState(stateKey);
+    const now = new Date();
 
-    const unit = state.units.find((candidate) => candidate.key === unitKey);
+    const result = await this.syncStateModel
+      .updateOne(
+        {
+          stateKey,
+          'units.key': unitKey,
+        },
+        {
+          $set: {
+            status: SportsSyncStateStatus.PROCESSING,
+            'units.$.status': SportsSyncUnitStatus.PROCESSING,
+            'units.$.startedAt': now,
+          },
+          $unset: {
+            'units.$.completedAt': 1,
+            'units.$.nextAttemptAt': 1,
+            'units.$.lastError': 1,
+          },
+          $inc: {
+            'units.$.attempts': 1,
+          },
+        },
+      )
+      .exec();
 
-    if (!unit) {
+    if (result.matchedCount === 0) {
       throw new Error(
         `Synchronization unit ${unitKey} does not exist in ${stateKey}`,
       );
     }
-
-    unit.status = SportsSyncUnitStatus.PROCESSING;
-
-    unit.attempts += 1;
-
-    unit.startedAt = new Date();
-
-    unit.completedAt = undefined;
-
-    unit.nextAttemptAt = undefined;
-
-    unit.lastError = undefined;
-
-    state.status = SportsSyncStateStatus.PROCESSING;
-
-    state.markModified('units');
-
-    await state.save();
   }
 
   private async markUnitSuccess(
     stateKey: string,
     unitKey: string,
   ): Promise<void> {
-    const state = await this.requireState(stateKey);
+    const now = new Date();
 
-    const unit = state.units.find((candidate) => candidate.key === unitKey);
+    const result = await this.syncStateModel
+      .updateOne(
+        {
+          stateKey,
+          'units.key': unitKey,
+        },
+        {
+          $set: {
+            'units.$.status': SportsSyncUnitStatus.SUCCESS,
+            'units.$.completedAt': now,
+            lastCompletedAt: now,
+          },
+          $unset: {
+            'units.$.startedAt': 1,
+            'units.$.nextAttemptAt': 1,
+            'units.$.lastError': 1,
+          },
+        },
+      )
+      .exec();
 
-    if (!unit) {
+    if (result.matchedCount === 0) {
       throw new Error(
         `Synchronization unit ${unitKey} does not exist in ${stateKey}`,
       );
     }
-
-    unit.status = SportsSyncUnitStatus.SUCCESS;
-
-    unit.completedAt = new Date();
-
-    unit.nextAttemptAt = undefined;
-
-    unit.lastError = undefined;
-
-    state.lastCompletedAt = new Date();
-
-    state.status = this.calculateOverallStatus(state);
-
-    if (state.status === SportsSyncStateStatus.SUCCESS) {
-      state.lastSuccessfulAt = new Date();
-
-      state.lastError = undefined;
-
-      state.consecutiveFailures = 0;
-    }
-
-    state.markModified('units');
-
-    await state.save();
   }
 
   private async markUnitFailed(
@@ -1591,6 +1954,78 @@ export class SportsSyncStateService {
         `Fixture synchronization state ${stateKey} is not complete`,
       );
     }
+  }
+
+  async assertFixtureStartupComplete(
+    leagueId: string,
+    season: number,
+  ): Promise<void> {
+    const stateKey = this.getQueueStateKey({
+      jobType: EspnQueueJobType.FIXTURE_REFRESH,
+      leagueId,
+      season,
+    });
+
+    const state = await this.requireState(stateKey);
+    const monthUnits = state.units.filter(
+      (unit) => unit.type === SportsSyncUnitType.MONTH,
+    );
+
+    const complete =
+      state.fixtureGranularity === 'MONTH' &&
+      monthUnits.length > 0 &&
+      monthUnits.every((unit) => unit.status === SportsSyncUnitStatus.SUCCESS);
+
+    if (!complete) {
+      throw new Error(
+        `Fixture startup synchronization state ${stateKey} is not complete`,
+      );
+    }
+  }
+
+  async getFixtureStartupProgress(stateKey: string): Promise<{
+    totalMonths: number;
+    successMonths: number;
+    processingMonths: number;
+    pendingMonths: number;
+    failedMonths: number;
+    completionPercent: number;
+    complete: boolean;
+  }> {
+    const state = await this.requireState(stateKey);
+
+    const monthUnits = state.units.filter(
+      (unit) => unit.type === SportsSyncUnitType.MONTH,
+    );
+
+    const successMonths = monthUnits.filter(
+      (unit) => unit.status === SportsSyncUnitStatus.SUCCESS,
+    ).length;
+
+    const processingMonths = monthUnits.filter(
+      (unit) => unit.status === SportsSyncUnitStatus.PROCESSING,
+    ).length;
+
+    const pendingMonths = monthUnits.filter(
+      (unit) => unit.status === SportsSyncUnitStatus.PENDING,
+    ).length;
+
+    const failedMonths = monthUnits.filter(
+      (unit) => unit.status === SportsSyncUnitStatus.FAILED,
+    ).length;
+
+    const totalMonths = monthUnits.length;
+
+    return {
+      totalMonths,
+      successMonths,
+      processingMonths,
+      pendingMonths,
+      failedMonths,
+      completionPercent:
+        totalMonths > 0 ? (successMonths / totalMonths) * 100 : 0,
+      complete: totalMonths > 0 && successMonths === totalMonths,
+    };
   }
 
   // ============================================================
@@ -1729,35 +2164,21 @@ export class SportsSyncStateService {
     dateTo: string;
   }): Promise<Set<string>> {
     const from = this.parseDateOnly(params.dateFrom);
-
     const toExclusive = this.addUtcDays(this.parseDateOnly(params.dateTo), 1);
 
-    const fixtures = await this.espnFixtureModel
-      .find({
-        leagueId: this.normalize(params.leagueId),
-
-        season: params.season,
-
-        fixtureDate: {
-          $gte: from,
-
-          $lt: toExclusive,
-        },
-      })
-      .select({
-        fixtureDate: 1,
-      })
-      .lean()
-      .exec();
+    const fixtureDates = await this.espnFixtureModel.distinct('fixtureDate', {
+      leagueId: this.normalize(params.leagueId),
+      season: params.season,
+      fixtureDate: {
+        $gte: from,
+        $lt: toExclusive,
+      },
+    });
 
     const dates = new Set<string>();
 
-    for (const fixture of fixtures) {
-      if (!fixture.fixtureDate) {
-        continue;
-      }
-
-      const fixtureDate = new Date(fixture.fixtureDate);
+    for (const value of fixtureDates) {
+      const fixtureDate = new Date(value);
 
       if (Number.isNaN(fixtureDate.getTime())) {
         continue;
@@ -1794,6 +2215,33 @@ export class SportsSyncStateService {
       state.units.length > 0 &&
       state.units.every((unit) => unit.status === SportsSyncUnitStatus.SUCCESS)
     );
+  }
+
+  private buildMonthRange(dateFrom: string, dateTo: string): string[] {
+    const start = this.parseDateOnly(dateFrom);
+    const end = this.parseDateOnly(dateTo);
+
+    const months: string[] = [];
+    let cursor = new Date(
+      Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1),
+    );
+    const endMonth = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1);
+
+    while (cursor.getTime() <= endMonth) {
+      months.push(
+        `${cursor.getUTCFullYear().toString().padStart(4, '0')}${(
+          cursor.getUTCMonth() + 1
+        )
+          .toString()
+          .padStart(2, '0')}`,
+      );
+
+      cursor = new Date(
+        Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 1),
+      );
+    }
+
+    return months;
   }
 
   private buildDateRange(dateFrom: string, dateTo: string): string[] {
