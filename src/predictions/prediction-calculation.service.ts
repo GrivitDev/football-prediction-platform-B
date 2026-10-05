@@ -162,7 +162,6 @@ interface SummaryPayload {
   [key: string]: unknown;
 }
 
-
 type ScoreProbability = {
   home: number;
   away: number;
@@ -173,9 +172,7 @@ const PREDICTION_MODEL_VERSION = 'prediction-engine-2.0';
 
 @Injectable()
 export class PredictionCalculationService {
-  constructor(
-    private readonly sportsDataReadService: SportsDataReadService,
-  ) {}
+  constructor(private readonly sportsDataReadService: SportsDataReadService) {}
 
   // ============================================================
   // PUBLIC CALCULATION
@@ -484,8 +481,10 @@ export class PredictionCalculationService {
       return value.summary as SummaryPayload;
     }
 
-    if (value.payload?.summary && typeof value.payload.summary === 'object') {
-      return value.payload.summary as SummaryPayload;
+    const payload = this.asRecord(value.payload);
+
+    if (payload?.summary && typeof payload.summary === 'object') {
+      return payload.summary as SummaryPayload;
     }
 
     return response as SummaryPayload;
@@ -2086,7 +2085,9 @@ export class PredictionCalculationService {
     return Number(Math.max(1, 100 / probability).toFixed(2));
   }
 
-  private getSummaryOddsRecords(summary: SummaryPayload): Record<string, unknown>[] {
+  private getSummaryOddsRecords(
+    summary: SummaryPayload,
+  ): Record<string, unknown>[] {
     if (!Array.isArray(summary.odds)) {
       return [];
     }
@@ -2116,11 +2117,11 @@ export class PredictionCalculationService {
 
       const raw =
         prediction === 'HOME'
-          ? moneyline?.home ??
-            this.asRecord(record.homeTeamOdds)?.moneyLine
+          ? (moneyline?.home ?? this.asRecord(record.homeTeamOdds)?.moneyLine)
           : prediction === 'DRAW'
             ? moneyline?.draw
-            : moneyline?.away ?? this.asRecord(record.awayTeamOdds)?.moneyLine;
+            : (moneyline?.away ??
+              this.asRecord(record.awayTeamOdds)?.moneyLine);
 
       const odds = this.toDecimalOdds(raw);
 
