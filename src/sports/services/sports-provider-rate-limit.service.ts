@@ -178,13 +178,15 @@ export class SportsProviderRateLimitService {
        * bottleneck for every ESPN HTTP call.
        */
       if (provider === 'espn') {
-        void this.recordUsageAsync(provider, normalizedEndpoint).catch((error) => {
-          this.logger.warn(
-            `ESPN request telemetry write failed for ${normalizedEndpoint}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        });
+        void this.recordUsageAsync(provider, normalizedEndpoint).catch(
+          (error) => {
+            this.logger.warn(
+              `ESPN request telemetry write failed for ${normalizedEndpoint}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          },
+        );
       }
 
       if (limiter) {
@@ -300,11 +302,10 @@ export class SportsProviderRateLimitService {
     try {
       while (true) {
         const now = Date.now();
-        const state =
-          this.endpointGates.get(key) ?? {
-            lastStartedAt: 0,
-            cooldownUntil: 0,
-          };
+        const state = this.endpointGates.get(key) ?? {
+          lastStartedAt: 0,
+          cooldownUntil: 0,
+        };
 
         const intervalUntil =
           state.lastStartedAt + config.minIntervalSeconds * 1000;
@@ -321,10 +322,14 @@ export class SportsProviderRateLimitService {
 
         if (provider !== 'espn') {
           const hasQuota =
-            config.dailyLimit !== undefined || config.monthlyLimit !== undefined;
+            config.dailyLimit !== undefined ||
+            config.monthlyLimit !== undefined;
 
           if (hasQuota) {
-            const reserved = await this.reserveProviderQuota(provider, new Date());
+            const reserved = await this.reserveProviderQuota(
+              provider,
+              new Date(),
+            );
 
             if (!reserved) {
               throw await this.createQuotaExceededError(provider);
@@ -393,6 +398,13 @@ export class SportsProviderRateLimitService {
     const dailyPeriod = this.getDailyPeriod(now);
     const monthlyPeriod = this.getMonthlyPeriod(now);
 
+    /*
+     * The quota record has exactly one Mongo document per provider +
+     * endpoint. Periods are mutable fields on that document; they are NOT
+     * part of the document identity. Ensure the current period is in place
+     * before applying the quota predicate so an exhausted record can never
+     * be accidentally upserted as a second provider + endpoint document.
+     */
     await this.ensurePeriodState(provider, now);
 
     const filter: Record<string, unknown> = {
@@ -461,26 +473,46 @@ export class SportsProviderRateLimitService {
     const dailyPeriod = this.getDailyPeriod(now);
     const monthlyPeriod = this.getMonthlyPeriod(now);
 
+    /*
+     * IMPORTANT: provider + endpoint is the unique identity of the record.
+     * The old implementation included dailyPeriod/monthlyPeriod in the
+     * upsert filter. When the date changed, MongoDB saw no matching record
+     * and attempted to insert another document with the same provider +
+     * endpoint, which correctly violated provider_1_endpoint_1.
+     *
+     * This pipeline keeps one record and atomically resets/increments the
+     * counters when the period rolls over. It is safe for concurrent writes.
+     */
     await this.rateLimitModel
       .findOneAndUpdate(
         {
           provider,
           endpoint: this.PROVIDER_QUOTA_ENDPOINT,
-          dailyPeriod,
-          monthlyPeriod,
         },
-        {
-          $inc: {
-            dailyRequests: 1,
-            monthlyRequests: 1,
+        [
+          {
+            $set: {
+              provider,
+              endpoint: this.PROVIDER_QUOTA_ENDPOINT,
+              dailyPeriod,
+              monthlyPeriod,
+              dailyRequests: {
+                $cond: [
+                  { $ne: ['$dailyPeriod', dailyPeriod] },
+                  1,
+                  { $add: [{ $ifNull: ['$dailyRequests', 0] }, 1] },
+                ],
+              },
+              monthlyRequests: {
+                $cond: [
+                  { $ne: ['$monthlyPeriod', monthlyPeriod] },
+                  1,
+                  { $add: [{ $ifNull: ['$monthlyRequests', 0] }, 1] },
+                ],
+              },
+            },
           },
-          $set: {
-            provider,
-            endpoint: this.PROVIDER_QUOTA_ENDPOINT,
-            dailyPeriod,
-            monthlyPeriod,
-          },
-        },
+        ],
         {
           returnDocument: 'after',
           upsert: true,
@@ -497,27 +529,43 @@ export class SportsProviderRateLimitService {
     const dailyPeriod = this.getDailyPeriod(now);
     const monthlyPeriod = this.getMonthlyPeriod(now);
 
+    /*
+     * Keep one document per provider + endpoint. Period rollover is handled
+     * atomically inside the update pipeline so concurrent requests cannot
+     * create duplicate period-specific documents or lose the first request
+     * after midnight.
+     */
     await this.rateLimitModel
       .findOneAndUpdate(
         {
           provider,
           endpoint,
-          dailyPeriod,
-          monthlyPeriod,
         },
-        {
-          $inc: {
-            dailyRequests: 1,
-            monthlyRequests: 1,
+        [
+          {
+            $set: {
+              provider,
+              endpoint,
+              dailyPeriod,
+              monthlyPeriod,
+              dailyRequests: {
+                $cond: [
+                  { $ne: ['$dailyPeriod', dailyPeriod] },
+                  1,
+                  { $add: [{ $ifNull: ['$dailyRequests', 0] }, 1] },
+                ],
+              },
+              monthlyRequests: {
+                $cond: [
+                  { $ne: ['$monthlyPeriod', monthlyPeriod] },
+                  1,
+                  { $add: [{ $ifNull: ['$monthlyRequests', 0] }, 1] },
+                ],
+              },
+              lastRequestAt: now,
+            },
           },
-          $set: {
-            provider,
-            endpoint,
-            dailyPeriod,
-            monthlyPeriod,
-            lastRequestAt: now,
-          },
-        },
+        ],
         {
           returnDocument: 'after',
           upsert: true,
@@ -597,7 +645,7 @@ export class SportsProviderRateLimitService {
       .exec();
 
     return state?.dailyPeriod === this.getDailyPeriod(now)
-      ? state.dailyRequests ?? 0
+      ? (state.dailyRequests ?? 0)
       : 0;
   }
 
@@ -618,7 +666,7 @@ export class SportsProviderRateLimitService {
       .exec();
 
     return state?.monthlyPeriod === this.getMonthlyPeriod(now)
-      ? state.monthlyRequests ?? 0
+      ? (state.monthlyRequests ?? 0)
       : 0;
   }
 
@@ -644,7 +692,7 @@ export class SportsProviderRateLimitService {
       .exec();
 
     return state?.dailyPeriod === this.getDailyPeriod(now)
-      ? state.dailyRequests ?? 0
+      ? (state.dailyRequests ?? 0)
       : 0;
   }
 
@@ -670,7 +718,7 @@ export class SportsProviderRateLimitService {
       .exec();
 
     return state?.monthlyPeriod === this.getMonthlyPeriod(now)
-      ? state.monthlyRequests ?? 0
+      ? (state.monthlyRequests ?? 0)
       : 0;
   }
 
@@ -795,46 +843,41 @@ export class SportsProviderRateLimitService {
     const dailyPeriod = this.getDailyPeriod(now);
     const monthlyPeriod = this.getMonthlyPeriod(now);
 
-    const existing = await this.rateLimitModel
-      .findOne({
-        provider,
-        endpoint: this.PROVIDER_QUOTA_ENDPOINT,
-      })
-      .lean()
-      .exec();
-
-    if (
-      existing &&
-      existing.dailyPeriod === dailyPeriod &&
-      existing.monthlyPeriod === monthlyPeriod
-    ) {
-      return;
-    }
-
+    /*
+     * The unique key remains { provider, endpoint }. Never include period
+     * fields in the upsert filter. Period changes are represented by
+     * updating this same document. The pipeline makes the reset atomic.
+     */
     await this.rateLimitModel
       .findOneAndUpdate(
         {
           provider,
           endpoint: this.PROVIDER_QUOTA_ENDPOINT,
         },
-        {
-          $set: {
-            provider,
-            endpoint: this.PROVIDER_QUOTA_ENDPOINT,
-            dailyPeriod,
-            monthlyPeriod,
-            ...(existing && existing.dailyPeriod !== dailyPeriod
-              ? { dailyRequests: 0 }
-              : {}),
-            ...(existing && existing.monthlyPeriod !== monthlyPeriod
-              ? { monthlyRequests: 0 }
-              : {}),
+        [
+          {
+            $set: {
+              provider,
+              endpoint: this.PROVIDER_QUOTA_ENDPOINT,
+              dailyPeriod,
+              monthlyPeriod,
+              dailyRequests: {
+                $cond: [
+                  { $eq: ['$dailyPeriod', dailyPeriod] },
+                  { $ifNull: ['$dailyRequests', 0] },
+                  0,
+                ],
+              },
+              monthlyRequests: {
+                $cond: [
+                  { $eq: ['$monthlyPeriod', monthlyPeriod] },
+                  { $ifNull: ['$monthlyRequests', 0] },
+                  0,
+                ],
+              },
+            },
           },
-          $setOnInsert: {
-            dailyRequests: 0,
-            monthlyRequests: 0,
-          },
-        },
+        ],
         {
           upsert: true,
           returnDocument: 'after',
@@ -851,46 +894,36 @@ export class SportsProviderRateLimitService {
     const dailyPeriod = this.getDailyPeriod(now);
     const monthlyPeriod = this.getMonthlyPeriod(now);
 
-    const existing = await this.rateLimitModel
-      .findOne({
-        provider,
-        endpoint,
-      })
-      .lean()
-      .exec();
-
-    if (
-      existing &&
-      existing.dailyPeriod === dailyPeriod &&
-      existing.monthlyPeriod === monthlyPeriod
-    ) {
-      return;
-    }
-
     await this.rateLimitModel
       .findOneAndUpdate(
         {
           provider,
           endpoint,
         },
-        {
-          $set: {
-            provider,
-            endpoint,
-            dailyPeriod,
-            monthlyPeriod,
-            ...(existing && existing.dailyPeriod !== dailyPeriod
-              ? { dailyRequests: 0 }
-              : {}),
-            ...(existing && existing.monthlyPeriod !== monthlyPeriod
-              ? { monthlyRequests: 0 }
-              : {}),
+        [
+          {
+            $set: {
+              provider,
+              endpoint,
+              dailyPeriod,
+              monthlyPeriod,
+              dailyRequests: {
+                $cond: [
+                  { $eq: ['$dailyPeriod', dailyPeriod] },
+                  { $ifNull: ['$dailyRequests', 0] },
+                  0,
+                ],
+              },
+              monthlyRequests: {
+                $cond: [
+                  { $eq: ['$monthlyPeriod', monthlyPeriod] },
+                  { $ifNull: ['$monthlyRequests', 0] },
+                  0,
+                ],
+              },
+            },
           },
-          $setOnInsert: {
-            dailyRequests: 0,
-            monthlyRequests: 0,
-          },
-        },
+        ],
         {
           upsert: true,
           returnDocument: 'after',
@@ -941,12 +974,19 @@ export class SportsProviderRateLimitService {
     return this.limits[provider];
   }
 
-  private getEndpointGateKey(provider: SportsProvider, endpoint: string): string {
+  private getEndpointGateKey(
+    provider: SportsProvider,
+    endpoint: string,
+  ): string {
     return `${provider}:${this.normalizeEndpoint(endpoint)}`;
   }
 
   private normalizeEndpoint(endpoint: string): string {
-    return String(endpoint ?? '').trim().toLowerCase() || 'unknown';
+    return (
+      String(endpoint ?? '')
+        .trim()
+        .toLowerCase() || 'unknown'
+    );
   }
 
   private getDailyPeriod(date: Date): string {
