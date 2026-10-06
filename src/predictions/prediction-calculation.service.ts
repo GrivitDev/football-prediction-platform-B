@@ -319,6 +319,9 @@ export class PredictionCalculationService {
           country:
             this.extractLeagueCountry(predictionData.competition.espnPayload) ??
             '',
+          emblem: this.extractLeagueEmblem(
+            predictionData.competition.espnPayload,
+          ),
         }
       : undefined;
 
@@ -337,21 +340,9 @@ export class PredictionCalculationService {
     }
 
     const calculatedAt = new Date();
-    const matchDate = this.toString(this.asRecord(fixture.payload)?.date);
-    const kickoffTimestamp = matchDate
-      ? new Date(matchDate).getTime()
-      : Number.NaN;
-
-    if (!Number.isFinite(kickoffTimestamp)) {
-      throw new BadRequestException('Fixture kickoff timestamp is invalid');
-    }
 
     return {
       matchId: fixture.eventId,
-
-      matchDate: matchDate!,
-
-      kickoffTimestamp,
 
       leagueCode: fixture.leagueId,
 
@@ -364,6 +355,10 @@ export class PredictionCalculationService {
       homeTeamBadge,
 
       awayTeamBadge,
+
+      matchDate: fixture.fixtureDate.toISOString(),
+
+      kickoffTimestamp: fixture.fixtureDate.getTime(),
 
       prediction,
 
@@ -3061,6 +3056,57 @@ export class PredictionCalculationService {
     }
 
     return normalized;
+  }
+
+  private extractLeagueEmblem(
+    payload: Record<string, unknown> | undefined,
+  ): string | undefined {
+    if (!payload) {
+      return undefined;
+    }
+
+    const direct = [payload.logo, payload.emblem, payload.icon, payload.image];
+
+    for (const value of direct) {
+      const stringValue = this.toString(value);
+      if (stringValue) {
+        return stringValue;
+      }
+    }
+
+    const logos = payload.logos;
+
+    if (Array.isArray(logos)) {
+      for (const item of logos) {
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+
+        const record = item as Record<string, unknown>;
+        const value =
+          this.toString(record.href) ??
+          this.toString(record.url) ??
+          this.toString(record.src);
+
+        if (value) {
+          return value;
+        }
+      }
+    }
+
+    if (logos && typeof logos === 'object' && !Array.isArray(logos)) {
+      const record = logos as Record<string, unknown>;
+
+      for (const key of ['href', 'url', 'src', 'default']) {
+        const value = this.toString(record[key]);
+
+        if (value) {
+          return value;
+        }
+      }
+    }
+
+    return undefined;
   }
 
   private extractLeagueCountry(
