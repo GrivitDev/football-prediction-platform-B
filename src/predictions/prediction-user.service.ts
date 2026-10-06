@@ -1,7 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/mongoose';
-
 import { Model } from 'mongoose';
 
 import { Prediction, PredictionDocument } from './schemas/prediction.schema';
@@ -66,25 +65,20 @@ export class PredictionUserService {
       matchId: prediction.matchId,
 
       homeTeam: prediction.homeTeam,
-
       awayTeam: prediction.awayTeam,
 
       homeTeamBadge: prediction.homeTeamBadge,
-
       awayTeamBadge: prediction.awayTeamBadge,
 
       leagueCode: prediction.leagueCode,
-
       league: prediction.league,
 
       matchDate: prediction.matchDate,
-
       kickoffTimestamp: prediction.kickoffTimestamp,
 
       status: prediction.status,
 
       accessType: prediction.accessType,
-
       price: prediction.price,
 
       confidence: prediction.confidence,
@@ -96,23 +90,17 @@ export class PredictionUserService {
 
         access: {
           allowed: true,
-
           state: access.state,
-
           purchased: access.purchased,
-
           plan: userPlan,
-
           message: null,
         },
 
         data: {
           prediction: prediction.prediction,
-
           predictionProbability: prediction.predictionProbability,
-
-          probabilities: prediction.probabilities,
-
+          probabilitySource: prediction.probabilitySource,
+          confidence: prediction.confidence,
           markets: prediction.markets,
         },
       };
@@ -123,13 +111,9 @@ export class PredictionUserService {
 
       access: {
         allowed: false,
-
         state: access.state,
-
         purchased: access.purchased,
-
         plan: userPlan,
-
         message: access.message,
       },
 
@@ -157,7 +141,6 @@ export class PredictionUserService {
     }
 
     const userLevel = PlanLevels[userPlan];
-
     const predictionLevel = PlanLevels[prediction.accessType];
 
     if (userLevel < predictionLevel) {

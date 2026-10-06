@@ -8,14 +8,34 @@ export type PredictionDocument = HydratedDocument<Prediction>;
 
 export type PredictionAccessType = 'free' | 'regular' | 'vip' | 'premium';
 
-export type PredictionResult = 'HOME' | 'DRAW' | 'AWAY';
-
 export type PredictionStatus = 'pending' | 'won' | 'lost' | 'void';
 
 export type PredictionMarketStatus =
   'pending' | 'won' | 'lost' | 'void' | 'push';
 
-export type PredictionOddsSource = 'ESPN' | 'FAIR';
+export type PredictionProbabilitySource =
+  'ESPN_PROBABILITY' | 'IMPLIED_ESPN_ODDS' | 'IMPLIED_ODDS_API' | 'COMBINATION';
+
+export type PredictionOddsSource = 'ESPN' | 'ODDS_API';
+
+@Schema({ _id: false })
+export class PredictionSelection {
+  @Prop({
+    required: true,
+    trim: true,
+    enum: Object.values(PredictionMarkets),
+  })
+  market!: PredictionMarket;
+
+  @Prop({
+    required: true,
+    trim: true,
+  })
+  selection!: string;
+}
+
+export const PredictionSelectionSchema =
+  SchemaFactory.createForClass(PredictionSelection);
 
 @Schema({ _id: false })
 export class PredictionMarketEntry {
@@ -33,7 +53,7 @@ export class PredictionMarketEntry {
   selection!: string;
 
   /**
-   * Probability calculated from Sports data.
+   * Sports-data probability supporting this exact selection.
    * Stored as a percentage from 0 to 100.
    */
   @Prop({
@@ -43,12 +63,19 @@ export class PredictionMarketEntry {
   })
   probability!: number;
 
+  @Prop({
+    required: true,
+    enum: [
+      'ESPN_PROBABILITY',
+      'IMPLIED_ESPN_ODDS',
+      'IMPLIED_ODDS_API',
+      'COMBINATION',
+    ],
+  })
+  probabilitySource!: PredictionProbabilitySource;
+
   /**
-   * Decimal odds used by the prediction.
-   *
-   * ESPN odds are preferred when the Summary exposes a directly
-   * identifiable price for this exact selection. Otherwise this
-   * contains the model fair price derived from the calculated probability.
+   * Direct provider price when Sports data exposes one.
    */
   @Prop({
     min: 1,
@@ -56,21 +83,19 @@ export class PredictionMarketEntry {
   odds?: number;
 
   /**
-   * Decimal fair odds implied by the prediction model probability.
+   * Fair odds implied only by the stored Sports-data probability.
    */
   @Prop({
+    required: true,
     min: 1,
   })
-  fairOdds?: number;
+  fairOdds!: number;
 
   @Prop({
-    enum: ['ESPN', 'FAIR'],
+    enum: ['ESPN', 'ODDS_API'],
   })
   oddsSource?: PredictionOddsSource;
 
-  /**
-   * Settlement status for this individual market.
-   */
   @Prop({
     enum: ['pending', 'won', 'lost', 'void', 'push'],
     default: 'pending',
@@ -135,54 +160,18 @@ export class Prediction {
   awayTeamBadge?: string;
 
   /**
-   * Final HOME/DRAW/AWAY result derived from the markets selected by the
-   * administrator and then quantified using Sports data.
+   * Exact prediction selected by the administrator.
+   * The engine never chooses or replaces this selection.
    */
   @Prop({
-    required: true,
-    enum: ['HOME', 'DRAW', 'AWAY'],
-  })
-  prediction!: PredictionResult;
-
-  /**
-   * Sports-model 1X2 probability snapshot.
-   *
-   * This is retained for transparency/diagnostics and is not used to
-   * independently choose the final prediction.
-   */
-  @Prop({
-    type: {
-      home: {
-        type: Number,
-        required: true,
-        min: 0,
-        max: 100,
-      },
-      draw: {
-        type: Number,
-        required: true,
-        min: 0,
-        max: 100,
-      },
-      away: {
-        type: Number,
-        required: true,
-        min: 0,
-        max: 100,
-      },
-    },
+    type: PredictionSelectionSchema,
     required: true,
     _id: false,
   })
-  probabilities!: {
-    home: number;
-    draw: number;
-    away: number;
-  };
+  prediction!: PredictionSelection;
 
   /**
-   * Probability of the final HOME/DRAW/AWAY result selected from the
-   * administrator's requested markets.
+   * Probability supporting the exact administrator selection.
    */
   @Prop({
     required: true,
@@ -191,12 +180,46 @@ export class Prediction {
   })
   predictionProbability!: number;
 
+  @Prop({
+    required: true,
+    enum: [
+      'ESPN_PROBABILITY',
+      'IMPLIED_ESPN_ODDS',
+      'IMPLIED_ODDS_API',
+      'COMBINATION',
+    ],
+  })
+  probabilitySource!: PredictionProbabilitySource;
+
   /**
-   * Markets selected by the admin.
+   * Support confidence only.
    *
-   * Each market contains its own probability and
-   * individual settlement status.
+   * This is not an accuracy probability and must never be interpreted as
+   * "chance the prediction will win".
    */
+  @Prop({
+    required: true,
+    min: 60,
+    max: 98,
+  })
+  confidence!: number;
+
+  @Prop({
+    min: 1,
+  })
+  predictionOdds?: number;
+
+  @Prop({
+    required: true,
+    min: 1,
+  })
+  predictionFairOdds!: number;
+
+  @Prop({
+    enum: ['ESPN', 'ODDS_API'],
+  })
+  predictionOddsSource?: PredictionOddsSource;
+
   @Prop({
     type: [PredictionMarketEntrySchema],
     required: true,
@@ -204,40 +227,6 @@ export class Prediction {
   })
   markets!: PredictionMarketEntry[];
 
-  /**
-   * One confidence value for the complete prediction.
-   */
-  @Prop({
-    required: true,
-    min: 1,
-    max: 98,
-  })
-  confidence!: number;
-
-  /**
-   * Decimal odds for the system-selected HOME/DRAW/AWAY prediction.
-   */
-  @Prop({
-    min: 1,
-  })
-  predictionOdds?: number;
-
-  /**
-   * Decimal fair odds implied by the system probability for the selected result.
-   */
-  @Prop({
-    min: 1,
-  })
-  predictionFairOdds?: number;
-
-  @Prop({
-    enum: ['ESPN', 'FAIR'],
-  })
-  predictionOddsSource?: PredictionOddsSource;
-
-  /**
-   * Snapshot timestamps from the Sports module used to calculate this prediction.
-   */
   @Prop({
     type: {
       fixtureCollectedAt: { type: Date, required: true },

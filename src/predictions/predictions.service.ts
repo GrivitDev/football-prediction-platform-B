@@ -53,47 +53,35 @@ export class PredictionsService {
 
     return this.predictionModel.create({
       matchId: calculated.matchId,
-
       leagueCode: calculated.leagueCode,
-
       league: calculated.league,
 
       homeTeam: calculated.homeTeam,
-
       awayTeam: calculated.awayTeam,
 
       homeTeamBadge: calculated.homeTeamBadge,
-
       awayTeamBadge: calculated.awayTeamBadge,
 
       prediction: calculated.prediction,
 
       predictionProbability: calculated.predictionProbability,
-
-      probabilities: calculated.probabilities,
-
-      markets: calculated.markets,
-
+      probabilitySource: calculated.probabilitySource,
       confidence: calculated.confidence,
 
       predictionOdds: calculated.predictionOdds,
-
       predictionFairOdds: calculated.predictionFairOdds,
-
       predictionOddsSource: calculated.predictionOddsSource,
 
+      markets: calculated.markets,
+
       sportsDataSnapshot: calculated.sportsDataSnapshot,
-
       modelVersion: calculated.modelVersion,
-
       calculatedAt: calculated.calculatedAt,
 
       accessType: dto.accessType,
-
       price: dto.price ?? 0,
 
       matchDate: calculated.matchDate,
-
       kickoffTimestamp: calculated.kickoffTimestamp,
     });
   }
@@ -148,41 +136,31 @@ export class PredictionsService {
 
     if (calculated) {
       updateData.leagueCode = calculated.leagueCode;
-
       updateData.league = calculated.league;
 
       updateData.homeTeam = calculated.homeTeam;
-
       updateData.awayTeam = calculated.awayTeam;
 
       updateData.homeTeamBadge = calculated.homeTeamBadge;
-
       updateData.awayTeamBadge = calculated.awayTeamBadge;
 
       updateData.matchDate = calculated.matchDate;
-
       updateData.kickoffTimestamp = calculated.kickoffTimestamp;
 
       updateData.prediction = calculated.prediction;
 
       updateData.predictionProbability = calculated.predictionProbability;
-
-      updateData.probabilities = calculated.probabilities;
-
-      updateData.markets = calculated.markets;
-
+      updateData.probabilitySource = calculated.probabilitySource;
       updateData.confidence = calculated.confidence;
 
       updateData.predictionOdds = calculated.predictionOdds;
-
       updateData.predictionFairOdds = calculated.predictionFairOdds;
-
       updateData.predictionOddsSource = calculated.predictionOddsSource;
 
+      updateData.markets = calculated.markets;
+
       updateData.sportsDataSnapshot = calculated.sportsDataSnapshot;
-
       updateData.modelVersion = calculated.modelVersion;
-
       updateData.calculatedAt = calculated.calculatedAt;
     }
 
@@ -256,27 +234,20 @@ export class PredictionsService {
 
       data: {
         prediction: prediction.prediction,
-
         predictionProbability: prediction.predictionProbability,
-
-        probabilities: prediction.probabilities,
-
+        probabilitySource: prediction.probabilitySource,
+        confidence: prediction.confidence,
         markets: prediction.markets ?? [],
       },
 
       accessType: prediction.accessType,
-
       price: prediction.price,
 
       access: {
         allowed: true,
-
         state: 'settled',
-
         purchased: false,
-
         plan: prediction.accessType,
-
         message: null,
       },
     }));
