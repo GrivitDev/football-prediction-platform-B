@@ -516,6 +516,7 @@ export class SportsProviderRateLimitService {
         {
           returnDocument: 'after',
           upsert: true,
+          updatePipeline: true,
         },
       )
       .exec();
@@ -569,6 +570,7 @@ export class SportsProviderRateLimitService {
         {
           returnDocument: 'after',
           upsert: true,
+          updatePipeline: true,
         },
       )
       .exec();
@@ -881,6 +883,7 @@ export class SportsProviderRateLimitService {
         {
           upsert: true,
           returnDocument: 'after',
+          updatePipeline: true,
         },
       )
       .exec();
@@ -927,6 +930,7 @@ export class SportsProviderRateLimitService {
         {
           upsert: true,
           returnDocument: 'after',
+          updatePipeline: true,
         },
       )
       .exec();
