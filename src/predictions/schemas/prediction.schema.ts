@@ -135,7 +135,8 @@ export class Prediction {
   awayTeamBadge?: string;
 
   /**
-   * System-generated overall match result.
+   * Final HOME/DRAW/AWAY result derived from the markets selected by the
+   * administrator and then quantified using Sports data.
    */
   @Prop({
     required: true,
@@ -144,8 +145,10 @@ export class Prediction {
   prediction!: PredictionResult;
 
   /**
-   * System-generated overall 1X2 probabilities.
-   * Stored as percentages.
+   * Sports-model 1X2 probability snapshot.
+   *
+   * This is retained for transparency/diagnostics and is not used to
+   * independently choose the final prediction.
    */
   @Prop({
     type: {
@@ -176,6 +179,17 @@ export class Prediction {
     draw: number;
     away: number;
   };
+
+  /**
+   * Probability of the final HOME/DRAW/AWAY result selected from the
+   * administrator's requested markets.
+   */
+  @Prop({
+    required: true,
+    min: 0,
+    max: 100,
+  })
+  predictionProbability!: number;
 
   /**
    * Markets selected by the admin.

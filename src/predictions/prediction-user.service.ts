@@ -109,6 +109,8 @@ export class PredictionUserService {
         data: {
           prediction: prediction.prediction,
 
+          predictionProbability: prediction.predictionProbability,
+
           probabilities: prediction.probabilities,
 
           markets: prediction.markets,

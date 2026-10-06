@@ -68,6 +68,8 @@ export class PredictionsService {
 
       prediction: calculated.prediction,
 
+      predictionProbability: calculated.predictionProbability,
+
       probabilities: calculated.probabilities,
 
       markets: calculated.markets,
@@ -163,6 +165,8 @@ export class PredictionsService {
 
       updateData.prediction = calculated.prediction;
 
+      updateData.predictionProbability = calculated.predictionProbability;
+
       updateData.probabilities = calculated.probabilities;
 
       updateData.markets = calculated.markets;
@@ -252,6 +256,8 @@ export class PredictionsService {
 
       data: {
         prediction: prediction.prediction,
+
+        predictionProbability: prediction.predictionProbability,
 
         probabilities: prediction.probabilities,
 

@@ -27,6 +27,14 @@ interface MarketCalculation extends MarketProbabilityCalculation {
   oddsSource: PredictionOddsSource;
 }
 
+interface WinnerPointResult {
+  home: number;
+  draw: number;
+  away: number;
+}
+
+type PredictionResult = 'HOME' | 'DRAW' | 'AWAY';
+
 export interface CalculatedPrediction {
   matchId: string;
 
@@ -48,8 +56,17 @@ export interface CalculatedPrediction {
   matchDate: string;
   kickoffTimestamp: number;
 
-  prediction: 'HOME' | 'DRAW' | 'AWAY';
+  prediction: PredictionResult;
 
+  /** Probability of the final result selected from the requested markets. */
+  predictionProbability: number;
+
+  /**
+   * Sports-model 1X2 probability snapshot.
+   *
+   * This is retained for transparency and diagnostics. It does not select
+   * the final prediction.
+   */
   probabilities: {
     home: number;
     draw: number;
@@ -168,7 +185,7 @@ type ScoreProbability = {
   probability: number;
 };
 
-const PREDICTION_MODEL_VERSION = 'prediction-engine-2.0';
+const PREDICTION_MODEL_VERSION = 'prediction-engine-2.1';
 
 @Injectable()
 export class PredictionCalculationService {
@@ -197,9 +214,19 @@ export class PredictionCalculationService {
     }
 
     /*
-     * SportsDataReadService owns the complete Sports readiness contract.
-     * Prediction calculation never calls ESPN or reconstructs sync state.
+     * The selected markets determine the target result first.
+     *
+     * Sports data is then used to quantify that target:
+     * - probability of the selected result
+     * - fair/available odds for that result
+     * - probability for every selected market
+     * - one overall confidence score
+     *
+     * The sports model never independently replaces the market-derived
+     * prediction with another HOME/DRAW/AWAY result.
      */
+    const prediction = this.resolvePredictionFromMarkets(markets);
+
     const predictionData =
       await this.sportsDataReadService.getPredictionData(normalizedMatchId);
 
@@ -228,26 +255,28 @@ export class PredictionCalculationService {
 
     const model = this.buildMatchModel(fixture, summary);
 
-    const probabilities = this.calculateOverallProbabilities(model);
+    /*
+     * Calculate the sports-model result probabilities only so the engine
+     * can quantify the already-selected target result.
+     */
+    const resultProbabilities = this.calculateOverallProbabilities(model);
+
+    const predictionProbability = this.getPredictionProbability(
+      resultProbabilities,
+      prediction,
+    );
 
     const calculatedMarkets = markets.map((market) =>
       this.calculateMarket(model, market),
     );
 
-    const prediction = this.getPrediction(probabilities);
-
     const confidence = this.calculateConfidence(
       model,
-      probabilities,
+      prediction,
+      predictionProbability,
       calculatedMarkets,
+      this.getPredictionPointClarity(markets, prediction),
     );
-
-    const predictionProbability =
-      prediction === 'HOME'
-        ? probabilities.home
-        : prediction === 'DRAW'
-          ? probabilities.draw
-          : probabilities.away;
 
     const predictionFairOdds = this.calculateFairOdds(predictionProbability);
 
@@ -308,9 +337,21 @@ export class PredictionCalculationService {
     }
 
     const calculatedAt = new Date();
+    const matchDate = this.toString(this.asRecord(fixture.payload)?.date);
+    const kickoffTimestamp = matchDate
+      ? new Date(matchDate).getTime()
+      : Number.NaN;
+
+    if (!Number.isFinite(kickoffTimestamp)) {
+      throw new BadRequestException('Fixture kickoff timestamp is invalid');
+    }
 
     return {
       matchId: fixture.eventId,
+
+      matchDate: matchDate!,
+
+      kickoffTimestamp,
 
       leagueCode: fixture.leagueId,
 
@@ -324,13 +365,11 @@ export class PredictionCalculationService {
 
       awayTeamBadge,
 
-      matchDate: fixture.fixtureDate.toISOString(),
-
-      kickoffTimestamp: fixture.fixtureDate.getTime(),
-
       prediction,
 
-      probabilities,
+      predictionProbability,
+
+      probabilities: resultProbabilities,
 
       confidence,
 
@@ -351,6 +390,389 @@ export class PredictionCalculationService {
 
       markets: marketsWithOdds,
     };
+  }
+
+  // ============================================================
+  // MARKET -> RESULT INTENT
+  // ============================================================
+
+  /**
+   * Determines the final HOME/DRAW/AWAY target strictly from the
+   * selections chosen by the admin.
+   *
+   * Markets that do not say anything about the match winner are ignored
+   * for winner-direction purposes. They still receive their own probability
+   * and odds and contribute to the final confidence score.
+   */
+  private resolvePredictionFromMarkets(
+    markets: RequestedMarket[],
+  ): PredictionResult {
+    const points = this.calculateWinnerPoints(markets);
+
+    const entries: Array<[PredictionResult, number]> = [
+      ['HOME', points.home],
+      ['DRAW', points.draw],
+      ['AWAY', points.away],
+    ];
+
+    entries.sort((a, b) => b[1] - a[1]);
+
+    const [winner, winnerPoints] = entries[0];
+    const [, secondPoints] = entries[1];
+
+    if (winnerPoints <= 0) {
+      throw new BadRequestException(
+        'The selected markets do not determine a match result. Select at least one result-oriented market.',
+      );
+    }
+
+    if (Math.abs(winnerPoints - secondPoints) < 0.000001) {
+      throw new BadRequestException(
+        'The selected markets do not resolve to a single HOME, DRAW, or AWAY target.',
+      );
+    }
+
+    return winner;
+  }
+
+  /**
+   * Converts the selected market choices into directional winner points.
+   *
+   * Higher weights are reserved for markets that directly describe the
+   * match result. Goal/statistical markets are only directional when their
+   * selection names a specific team.
+   */
+  private calculateWinnerPoints(markets: RequestedMarket[]): WinnerPointResult {
+    const points: WinnerPointResult = {
+      home: 0,
+      draw: 0,
+      away: 0,
+    };
+
+    for (const market of markets) {
+      const selection = this.normalizeSelection(market.selection);
+
+      switch (market.market) {
+        case PredictionMarkets.DOUBLE_CHANCE:
+          this.addDoubleChanceWinnerPoints(points, selection);
+          break;
+
+        case PredictionMarkets.DRAW_NO_BET:
+          this.addExactResultPoint(points, selection, 2);
+          break;
+
+        case PredictionMarkets.HALF_TIME_RESULT:
+        case PredictionMarkets.SECOND_HALF_RESULT:
+          this.addExactResultPoint(points, selection, 0.75);
+          break;
+
+        case PredictionMarkets.HALF_TIME_FULL_TIME:
+          this.addHalfTimeFullTimeWinnerPoints(points, selection);
+          break;
+
+        case PredictionMarkets.WIN_TO_NIL:
+          this.addExactTeamPoint(points, selection, 2);
+          break;
+
+        case PredictionMarkets.CORRECT_SCORE:
+          this.addCorrectScoreWinnerPoints(points, selection);
+          break;
+
+        case PredictionMarkets.FIRST_GOAL:
+        case PredictionMarkets.LAST_GOAL:
+          this.addExactTeamPoint(points, selection, 0.35);
+          break;
+
+        case PredictionMarkets.CLEAN_SHEET:
+          this.addExactTeamPoint(points, selection, 0.5);
+          break;
+
+        case PredictionMarkets.TEAM_TOTAL_GOALS:
+          this.addTeamTotalGoalWinnerPoints(points, selection);
+          break;
+
+        case PredictionMarkets.ASIAN_HANDICAP:
+          this.addHandicapWinnerPoints(points, selection, 0.75);
+          break;
+
+        case PredictionMarkets.EUROPEAN_HANDICAP:
+          this.addEuropeanHandicapWinnerPoints(points, selection, 1);
+          break;
+
+        case PredictionMarkets.POSSESSION_WINNER:
+        case PredictionMarkets.MOST_SHOTS:
+        case PredictionMarkets.MOST_SHOTS_ON_TARGET:
+          this.addExactTeamPoint(points, selection, 0.25);
+          break;
+
+        default:
+          /*
+           * OVER/UNDER, BTTS, GOAL RANGE, TOTAL CORNERS/CARDS/etc.
+           * describe match conditions rather than choosing a winner.
+           */
+          break;
+      }
+    }
+
+    return points;
+  }
+
+  private addDoubleChanceWinnerPoints(
+    points: WinnerPointResult,
+    selection: string,
+  ): void {
+    switch (selection) {
+      case 'HOME_OR_DRAW':
+      case 'HOME_DRAW':
+      case '1X':
+        points.home += 1;
+        points.draw += 0.5;
+        break;
+
+      case 'AWAY_OR_DRAW':
+      case 'AWAY_DRAW':
+      case 'X2':
+        points.away += 1;
+        points.draw += 0.5;
+        break;
+
+      case 'HOME_OR_AWAY':
+      case 'HOME_AWAY':
+      case '12':
+        points.home += 0.5;
+        points.away += 0.5;
+        break;
+
+      default:
+        throw new BadRequestException(
+          `Invalid DOUBLE_CHANCE selection: ${selection}`,
+        );
+    }
+  }
+
+  private addExactResultPoint(
+    points: WinnerPointResult,
+    selection: string,
+    weight: number,
+  ): void {
+    if (selection === 'HOME') {
+      points.home += weight;
+      return;
+    }
+
+    if (selection === 'DRAW') {
+      points.draw += weight;
+      return;
+    }
+
+    if (selection === 'AWAY') {
+      points.away += weight;
+      return;
+    }
+
+    throw new BadRequestException(`Invalid result selection: ${selection}`);
+  }
+
+  private addExactTeamPoint(
+    points: WinnerPointResult,
+    selection: string,
+    weight: number,
+  ): void {
+    if (selection === 'HOME') {
+      points.home += weight;
+      return;
+    }
+
+    if (selection === 'AWAY') {
+      points.away += weight;
+      return;
+    }
+
+    if (selection === 'DRAW') {
+      points.draw += weight;
+      return;
+    }
+  }
+
+  private addHalfTimeFullTimeWinnerPoints(
+    points: WinnerPointResult,
+    selection: string,
+  ): void {
+    const parts = selection.split('_');
+
+    if (parts.length !== 2) {
+      throw new BadRequestException(
+        `Invalid HALF_TIME_FULL_TIME selection: ${selection}`,
+      );
+    }
+
+    /*
+     * The final/full-time component is the relevant component for the
+     * match-winner target. The first-half component still gets a lighter
+     * supporting point because it contributes directional evidence.
+     */
+    const halfTime = parts[0];
+    const fullTime = parts[1];
+
+    this.addExactResultPoint(points, fullTime, 1.5);
+
+    if (halfTime === 'HOME' || halfTime === 'DRAW' || halfTime === 'AWAY') {
+      this.addExactResultPoint(points, halfTime, 0.35);
+    }
+  }
+
+  private addCorrectScoreWinnerPoints(
+    points: WinnerPointResult,
+    selection: string,
+  ): void {
+    const parsed = selection.match(/^(\d+)-(\d+)$/);
+
+    if (!parsed) {
+      throw new BadRequestException(
+        `Invalid CORRECT_SCORE selection: ${selection}`,
+      );
+    }
+
+    const homeGoals = Number(parsed[1]);
+    const awayGoals = Number(parsed[2]);
+
+    if (homeGoals > awayGoals) {
+      points.home += 2;
+    } else if (awayGoals > homeGoals) {
+      points.away += 2;
+    } else {
+      points.draw += 2;
+    }
+  }
+
+  private addTeamTotalGoalWinnerPoints(
+    points: WinnerPointResult,
+    selection: string,
+  ): void {
+    const parsed = selection.match(
+      /^(HOME|AWAY)_(OVER|UNDER)_(0\.5|1\.5|2\.5|3\.5)$/,
+    );
+
+    if (!parsed) {
+      throw new BadRequestException(
+        `Invalid TEAM_TOTAL_GOALS selection: ${selection}`,
+      );
+    }
+
+    /*
+     * A team-total selection is directional evidence, not a guarantee of
+     * the final winner. Therefore it receives a lighter weight.
+     */
+    if (parsed[1] === 'HOME' && parsed[2] === 'OVER') {
+      points.home += 0.4;
+    }
+
+    if (parsed[1] === 'AWAY' && parsed[2] === 'OVER') {
+      points.away += 0.4;
+    }
+  }
+
+  private addHandicapWinnerPoints(
+    points: WinnerPointResult,
+    selection: string,
+    weight: number,
+  ): void {
+    const parsed = selection.match(
+      /^(HOME|AWAY)_(-?\d+(?:\.\d+)?)_(WIN|PUSH|LOSE)$/,
+    );
+
+    if (!parsed) {
+      throw new BadRequestException(
+        `Invalid ASIAN_HANDICAP selection: ${selection}`,
+      );
+    }
+
+    if (parsed[3] !== 'WIN') {
+      return;
+    }
+
+    if (parsed[1] === 'HOME') {
+      points.home += weight;
+    } else {
+      points.away += weight;
+    }
+  }
+
+  private addEuropeanHandicapWinnerPoints(
+    points: WinnerPointResult,
+    selection: string,
+    weight: number,
+  ): void {
+    const winMatch = selection.match(/^(HOME|AWAY)_(-?\d+)_WIN$/);
+
+    if (winMatch) {
+      if (winMatch[1] === 'HOME') {
+        points.home += weight;
+      } else {
+        points.away += weight;
+      }
+
+      return;
+    }
+
+    const drawMatch = selection.match(/^DRAW_(-?\d+)$/);
+
+    if (drawMatch) {
+      points.draw += weight;
+      return;
+    }
+
+    throw new BadRequestException(
+      `Invalid EUROPEAN_HANDICAP selection: ${selection}`,
+    );
+  }
+
+  private getPredictionPointClarity(
+    markets: RequestedMarket[],
+    prediction: PredictionResult,
+  ): number {
+    const points = this.calculateWinnerPoints(markets);
+    const ordered = [points.home, points.draw, points.away].sort(
+      (a, b) => b - a,
+    );
+
+    const total = ordered.reduce((sum, value) => sum + value, 0);
+
+    if (total <= 0) {
+      return 0;
+    }
+
+    const margin = Math.max(0, ordered[0] - ordered[1]);
+
+    /*
+     * 50 is neutral clarity; larger margins between the selected-market
+     * winner direction and the next-best direction increase clarity.
+     */
+    const clarity = 50 + (margin / total) * 50;
+
+    const predictedPoints =
+      prediction === 'HOME'
+        ? points.home
+        : prediction === 'DRAW'
+          ? points.draw
+          : points.away;
+
+    return this.clamp(clarity + (predictedPoints / total) * 10, 0, 100);
+  }
+
+  private getPredictionProbability(
+    probabilities: {
+      home: number;
+      draw: number;
+      away: number;
+    },
+    prediction: PredictionResult,
+  ): number {
+    return prediction === 'HOME'
+      ? probabilities.home
+      : prediction === 'DRAW'
+        ? probabilities.draw
+        : probabilities.away;
   }
 
   // ============================================================
@@ -2298,35 +2720,36 @@ export class PredictionCalculationService {
 
   private calculateConfidence(
     model: MatchModel,
-    probabilities: {
-      home: number;
-      draw: number;
-      away: number;
-    },
+    prediction: PredictionResult,
+    predictionProbability: number,
     markets: Array<Pick<MarketCalculation, 'probability'>>,
+    marketIntentClarity: number,
   ): number {
-    const ordered = [
-      probabilities.home,
-      probabilities.draw,
-      probabilities.away,
-    ].sort((a, b) => b - a);
-
-    const predictionMargin = Math.max(0, ordered[0] - ordered[1]);
-
-    const predictionClarity = this.clamp(45 + predictionMargin * 1.35, 0, 100);
+    /*
+     * Confidence belongs to the complete prediction, not to individual
+     * markets.
+     *
+     * The main question is:
+     * "How confident are we that the sports data supports the result
+     * selected from the markets?"
+     */
+    const targetProbability = this.clamp(predictionProbability, 0, 100);
 
     const marketSupport = markets.length
-      ? this.average(
-          markets.map((market) =>
-            Math.max(market.probability, 100 - market.probability),
-          ),
-        )
+      ? this.average(markets.map((market) => market.probability))
       : 50;
 
     const confidence =
-      model.qualityScore * 0.45 +
-      predictionClarity * 0.3 +
-      marketSupport * 0.25;
+      model.qualityScore * 0.35 +
+      targetProbability * 0.45 +
+      marketSupport * 0.1 +
+      marketIntentClarity * 0.1;
+
+    /*
+     * `prediction` is intentionally referenced so future changes cannot
+     * accidentally calculate confidence from an unrelated 1X2 winner.
+     */
+    void prediction;
 
     return Math.max(1, Math.min(98, Math.round(confidence)));
   }
@@ -2793,20 +3216,6 @@ export class PredictionCalculationService {
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '');
-  }
-
-  private getPrediction(probabilities: {
-    home: number;
-    draw: number;
-    away: number;
-  }): 'HOME' | 'DRAW' | 'AWAY' {
-    const entries: Array<['HOME' | 'DRAW' | 'AWAY', number]> = [
-      ['HOME', probabilities.home],
-      ['DRAW', probabilities.draw],
-      ['AWAY', probabilities.away],
-    ];
-
-    return entries.sort((a, b) => b[1] - a[1])[0][0];
   }
 
   private getResultCode(home: number, away: number): 'HOME' | 'DRAW' | 'AWAY' {
