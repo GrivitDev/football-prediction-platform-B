@@ -108,9 +108,15 @@ export class SportsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    const parsedPage = page !== undefined ? Number(page) : 1;
+    const parsedPage =
+      page !== undefined
+        ? Number(page)
+        : 1;
 
-    const parsedLimit = limit !== undefined ? Number(limit) : 30;
+    const parsedLimit =
+      limit !== undefined
+        ? Number(limit)
+        : 30;
 
     if (!Number.isFinite(parsedPage) || parsedPage < 1) {
       throw new BadRequestException('Invalid page.');
@@ -865,7 +871,9 @@ export class SportsController {
     teamId?: string;
   }): SportsDataFilter {
     if (input.date && (input.from || input.to)) {
-      throw new BadRequestException('Use either date or from/to, not both.');
+      throw new BadRequestException(
+        'Use either date or from/to, not both.',
+      );
     }
 
     const date = this.parseDate(input.date, 'date');
@@ -905,4 +913,6 @@ export class SportsController {
 
     return parsed;
   }
+
 }
+

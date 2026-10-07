@@ -2,7 +2,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, PipelineStage } from 'mongoose';
+import { Model } from 'mongoose';
 
 // ============================================================
 // ACTIVE COMPETITION
@@ -280,7 +280,10 @@ export class SportsDataReadService {
     return this.getLeagueTable(competitionId, teamId);
   }
 
-  async getTeams(competitionId: string, teamId?: string): Promise<unknown[]> {
+  async getTeams(
+    competitionId: string,
+    teamId?: string,
+  ): Promise<unknown[]> {
     const normalizedCompetitionId = this.normalizeCompetitionId(competitionId);
 
     if (!normalizedCompetitionId) {
@@ -420,7 +423,9 @@ export class SportsDataReadService {
       .exec();
   }
 
-  async getLiveFixtures(filters: SportsDataFilter = {}): Promise<unknown[]> {
+  async getLiveFixtures(
+    filters: SportsDataFilter = {},
+  ): Promise<unknown[]> {
     const mongoFilter: Record<string, unknown> = {
       live: true,
     };
@@ -502,23 +507,22 @@ export class SportsDataReadService {
     limit = 30,
   ): Promise<PaginatedResult<FootballNewsFeedItem>> {
     const safePage = Math.max(Math.floor(page || 1), 1);
-    const safeLimit = Math.min(Math.max(Math.floor(limit || 30), 1), 100);
-    const skip = (safePage - 1) * safeLimit;
-
-    // Keep competition/team filtering at fixture level, but do NOT
-    // apply fixtureDate here. Content publication date is what should
-    // control the news/video feed.
-    const fixtureFilter: Record<string, unknown> = {};
+    const safeLimit = Math.min(
+      Math.max(Math.floor(limit || 30), 1),
+      100,
+    );
 
     const normalizedCompetitionId = this.normalizeCompetitionId(
       filters.competitionId,
     );
 
+    const normalizedTeamId = this.normalizeTeamId(filters.teamId);
+
+    const fixtureFilter: Record<string, unknown> = {};
+
     if (normalizedCompetitionId) {
       fixtureFilter.leagueId = normalizedCompetitionId;
     }
-
-    const normalizedTeamId = this.normalizeTeamId(filters.teamId);
 
     if (normalizedTeamId) {
       fixtureFilter.$or = [
@@ -533,11 +537,53 @@ export class SportsDataReadService {
 
     const requestedRange = this.resolveSportsDateRange(filters);
 
-    const now = new Date();
-    const fortyEightHoursAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+    // Only read fixtures that actually contain content relevant to the feed.
+    // When a news date range exists, use the indexed article publication fields
+    // to narrow the candidate set before loading the summary arrays. Videos are
+    // narrowed by their 48-hour publication window.
+    const candidateContentFilters: Record<string, unknown>[] = [];
 
-    // Videos are intentionally ALWAYS constrained to the latest 48 hours.
-    // The page's wider news date range must never cause old videos to appear.
+    if (requestedRange) {
+      const newsDateFilter: Record<string, Date> = {};
+
+      if (requestedRange.$gte) {
+        newsDateFilter.$gte = requestedRange.$gte;
+      }
+
+      if (requestedRange.$lt) {
+        newsDateFilter.$lt = requestedRange.$lt;
+      }
+
+      if (Object.keys(newsDateFilter).length > 0) {
+        candidateContentFilters.push(
+          {
+            'payload.summary.news.articles.published': newsDateFilter,
+          },
+          {
+            'payload.summary.news.news.articles.published': newsDateFilter,
+          },
+        );
+      }
+    } else {
+      candidateContentFilters.push(
+        {
+          'payload.summary.news.articles.0': {
+            $exists: true,
+          },
+        },
+        {
+          'payload.summary.news.news.articles.0': {
+            $exists: true,
+          },
+        },
+      );
+    }
+
+    const now = new Date();
+    const fortyEightHoursAgo = new Date(
+      now.getTime() - 48 * 60 * 60 * 1000,
+    );
+
     const videoFrom =
       requestedRange?.$gte &&
       requestedRange.$gte.getTime() > fortyEightHoursAgo.getTime()
@@ -545,272 +591,321 @@ export class SportsDataReadService {
         : fortyEightHoursAgo;
 
     const videoTo =
-      requestedRange?.$lt && requestedRange.$lt.getTime() < now.getTime()
+      requestedRange?.$lt &&
+      requestedRange.$lt.getTime() < now.getTime()
         ? requestedRange.$lt
         : now;
 
-    const newsDateMatch: Record<string, Date> = {};
-
-    if (requestedRange?.$gte) {
-      newsDateMatch.$gte = requestedRange.$gte;
-    }
-
-    if (requestedRange?.$lt) {
-      newsDateMatch.$lt = requestedRange.$lt;
-    }
-
-    const videoDateMatch: Record<string, Date> = {
+    const videoDateFilter: Record<string, Date> = {
       $gte: videoFrom,
       $lt: videoTo,
     };
 
-    const newsBranch = {
-      'content.kind': 'NEWS',
-      ...(Object.keys(newsDateMatch).length > 0
-        ? {
-            'content.publishedAtDate': newsDateMatch,
-          }
-        : {}),
-    };
+    if (videoFrom < videoTo) {
+      candidateContentFilters.push(
+        {
+          'payload.summary.videos.originalPublishDate': videoDateFilter,
+        },
+        {
+          'payload.summary.videos.lastModified': videoDateFilter,
+        },
+      );
+    }
 
-    const videoBranch = {
-      'content.kind': 'VIDEO',
-      'content.publishedAtDate': videoDateMatch,
-    };
-
-    const pipeline: PipelineStage[] = [
+    fixtureFilter.$and = [
       {
-        $match: fixtureFilter,
-      },
-      {
-        $project: {
-          _id: 0,
-          eventId: 1,
-          leagueId: 1,
-          fixtureDate: 1,
-          newsArticles: {
-            $cond: [
-              {
-                $isArray: '$payload.summary.news.articles',
-              },
-              {
-                $cond: [
-                  {
-                    $gt: [
-                      {
-                        $size: '$payload.summary.news.articles',
-                      },
-                      0,
-                    ],
-                  },
-                  '$payload.summary.news.articles',
-                  {
-                    $cond: [
-                      {
-                        $isArray: '$payload.summary.news.news.articles',
-                      },
-                      '$payload.summary.news.news.articles',
-                      [],
-                    ],
-                  },
-                ],
-              },
-              {
-                $cond: [
-                  {
-                    $isArray: '$payload.summary.news.news.articles',
-                  },
-                  '$payload.summary.news.news.articles',
-                  [],
-                ],
-              },
-            ],
-          },
-          videos: {
-            $cond: [
-              {
-                $isArray: '$payload.summary.videos',
-              },
-              '$payload.summary.videos',
-              [],
-            ],
-          },
-        },
-      },
-      {
-        $project: {
-          eventId: 1,
-          leagueId: 1,
-          fixtureDate: 1,
-          content: {
-            $concatArrays: [
-              {
-                $map: {
-                  input: '$newsArticles',
-                  as: 'article',
-                  in: {
-                    kind: 'NEWS',
-                    title: {
-                      $ifNull: ['$$article.headline', '$$article.description'],
-                    },
-                    publishedAt: {
-                      $ifNull: [
-                        '$$article.published',
-                        {
-                          $dateToString: {
-                            date: '$fixtureDate',
-                            format: '%Y-%m-%dT%H:%M:%S.%LZ',
-                            timezone: 'UTC',
-                          },
-                        },
-                      ],
-                    },
-                    payload: '$$article',
-                  },
-                },
-              },
-              {
-                $map: {
-                  input: '$videos',
-                  as: 'video',
-                  in: {
-                    kind: 'VIDEO',
-                    title: {
-                      $ifNull: ['$$video.headline', '$$video.description'],
-                    },
-                    publishedAt: {
-                      $ifNull: [
-                        '$$video.originalPublishDate',
-                        {
-                          $ifNull: [
-                            '$$video.lastModified',
-                            {
-                              $dateToString: {
-                                date: '$fixtureDate',
-                                format: '%Y-%m-%dT%H:%M:%S.%LZ',
-                                timezone: 'UTC',
-                              },
-                            },
-                          ],
-                        },
-                      ],
-                    },
-                    payload: '$$video',
-                  },
-                },
-              },
-            ],
-          },
-        },
-      },
-      {
-        $unwind: '$content',
-      },
-      {
-        $set: {
-          'content.publishedAtDate': {
-            $convert: {
-              input: '$content.publishedAt',
-              to: 'date',
-              onError: '$fixtureDate',
-              onNull: '$fixtureDate',
-            },
-          },
-        },
-      },
-      {
-        $match: {
-          $and: [
-            {
-              'content.title': {
-                $type: 'string',
-                $ne: '',
-              },
-            },
-            {
-              $or: [newsBranch, videoBranch],
-            },
-          ],
-        },
-      },
-      // Newest content wins when the exact same title appears in
-      // multiple fixtures. Grouping happens BEFORE pagination so
-      // duplicates cannot leak onto later pages.
-      {
-        $sort: {
-          'content.publishedAtDate': -1,
-        },
-      },
-      {
-        $group: {
-          _id: {
-            $trim: {
-              input: '$content.title',
-            },
-          },
-          item: {
-            $first: {
-              kind: '$content.kind',
-              eventId: '$eventId',
-              leagueId: '$leagueId',
-              fixtureDate: {
-                $dateToString: {
-                  date: '$fixtureDate',
-                  format: '%Y-%m-%dT%H:%M:%S.%LZ',
-                  timezone: 'UTC',
-                },
-              },
-              publishedAt: '$content.publishedAt',
-              payload: '$content.payload',
-            },
-          },
-        },
-      },
-      {
-        $sort: {
-          'item.publishedAt': -1,
-        },
-      },
-      {
-        $facet: {
-          data: [
-            {
-              $skip: skip,
-            },
-            {
-              $limit: safeLimit,
-            },
-            {
-              $replaceWith: '$item',
-            },
-          ],
-          metadata: [
-            {
-              $count: 'total',
-            },
-          ],
-        },
+        $or: candidateContentFilters,
       },
     ];
 
-    const [result] = await this.espnFixtureModel
-      .aggregate(pipeline)
-      .allowDiskUse(true)
-      .exec();
+    const toDate = (
+      value: unknown,
+      fallback: Date,
+    ): Date => {
+      if (value instanceof Date) {
+        return Number.isNaN(value.getTime())
+          ? fallback
+          : value;
+      }
 
-    const total =
-      Array.isArray(result?.metadata) && result.metadata[0]?.total
-        ? Number(result.metadata[0].total)
-        : 0;
+      if (typeof value === 'string') {
+        const parsed = new Date(value);
+
+        return Number.isNaN(parsed.getTime())
+          ? fallback
+          : parsed;
+      }
+
+      return fallback;
+    };
+
+    const inRange = (
+      value: Date,
+      range?: { $gte?: Date; $lt?: Date },
+    ): boolean => {
+      if (range?.$gte && value < range.$gte) {
+        return false;
+      }
+
+      if (range?.$lt && value >= range.$lt) {
+        return false;
+      }
+
+      return true;
+    };
+
+    const normalizedFallbackDate = (
+      fixtureDate: Date,
+    ): string => fixtureDate.toISOString();
+
+    interface NewsFeedCandidate {
+      item: FootballNewsFeedItem;
+      publishedDate: Date;
+    }
+
+    const latestByTitle = new Map<
+      string,
+      NewsFeedCandidate
+    >();
+
+    const cursor = this.espnFixtureModel
+      .find(fixtureFilter)
+      .select({
+        _id: 0,
+        eventId: 1,
+        leagueId: 1,
+        fixtureDate: 1,
+        'payload.summary.news.articles': 1,
+        'payload.summary.news.news.articles': 1,
+        'payload.summary.videos': 1,
+      })
+      .lean()
+      .cursor({
+        batchSize: 50,
+      });
+
+    for await (const fixture of cursor) {
+      const rawFixture = fixture as {
+        eventId?: unknown;
+        leagueId?: unknown;
+        fixtureDate?: unknown;
+        payload?: {
+          summary?: {
+            news?: {
+              articles?: unknown;
+              news?: {
+                articles?: unknown;
+              };
+            };
+            videos?: unknown;
+          };
+        };
+      };
+
+      const fixtureDate = toDate(
+        rawFixture.fixtureDate,
+        new Date(0),
+      );
+
+      const eventId =
+        typeof rawFixture.eventId === 'string'
+          ? rawFixture.eventId
+          : '';
+
+      const leagueId =
+        typeof rawFixture.leagueId === 'string'
+          ? rawFixture.leagueId
+          : '';
+
+      if (!eventId || !leagueId) {
+        continue;
+      }
+
+      const summary = rawFixture.payload?.summary;
+      const newsContainer = summary?.news;
+
+      let rawArticles = Array.isArray(
+        newsContainer?.articles,
+      )
+        ? newsContainer.articles
+        : [];
+
+      if (
+        rawArticles.length === 0 &&
+        Array.isArray(newsContainer?.news?.articles)
+      ) {
+        rawArticles =
+          newsContainer.news.articles;
+      }
+
+      for (const rawArticle of rawArticles) {
+        if (
+          !rawArticle ||
+          typeof rawArticle !== 'object' ||
+          Array.isArray(rawArticle)
+        ) {
+          continue;
+        }
+
+        const article = rawArticle as Record<
+          string,
+          unknown
+        >;
+
+        const title =
+          typeof article.headline === 'string' &&
+          article.headline.trim()
+            ? article.headline.trim()
+            : typeof article.description === 'string' &&
+                article.description.trim()
+              ? article.description.trim()
+              : '';
+
+        if (!title) {
+          continue;
+        }
+
+        const publishedDate = toDate(
+          article.published ?? article.lastModified,
+          fixtureDate,
+        );
+
+        if (!inRange(publishedDate, requestedRange)) {
+          continue;
+        }
+
+        const item: FootballNewsFeedItem = {
+          kind: 'NEWS',
+          eventId,
+          leagueId,
+          fixtureDate: normalizedFallbackDate(
+            fixtureDate,
+          ),
+          publishedAt:
+            typeof article.published === 'string'
+              ? article.published
+              : publishedDate.toISOString(),
+          payload: article,
+        };
+
+        const current = latestByTitle.get(title);
+
+        if (
+          !current ||
+          publishedDate.getTime() >
+            current.publishedDate.getTime()
+        ) {
+          latestByTitle.set(title, {
+            item,
+            publishedDate,
+          });
+        }
+      }
+
+      const rawVideos = Array.isArray(
+        summary?.videos,
+      )
+        ? summary.videos
+        : [];
+
+      for (const rawVideo of rawVideos) {
+        if (
+          !rawVideo ||
+          typeof rawVideo !== 'object' ||
+          Array.isArray(rawVideo)
+        ) {
+          continue;
+        }
+
+        const video = rawVideo as Record<
+          string,
+          unknown
+        >;
+
+        const title =
+          typeof video.headline === 'string' &&
+          video.headline.trim()
+            ? video.headline.trim()
+            : typeof video.description === 'string' &&
+                video.description.trim()
+              ? video.description.trim()
+              : '';
+
+        if (!title) {
+          continue;
+        }
+
+        const publishedDate = toDate(
+          video.originalPublishDate ??
+            video.lastModified,
+          fixtureDate,
+        );
+
+        if (
+          publishedDate < videoFrom ||
+          publishedDate >= videoTo
+        ) {
+          continue;
+        }
+
+        const item: FootballNewsFeedItem = {
+          kind: 'VIDEO',
+          eventId,
+          leagueId,
+          fixtureDate: normalizedFallbackDate(
+            fixtureDate,
+          ),
+          publishedAt:
+            typeof video.originalPublishDate === 'string'
+              ? video.originalPublishDate
+              : publishedDate.toISOString(),
+          payload: video,
+        };
+
+        const current = latestByTitle.get(title);
+
+        if (
+          !current ||
+          publishedDate.getTime() >
+            current.publishedDate.getTime()
+        ) {
+          latestByTitle.set(title, {
+            item,
+            publishedDate,
+          });
+        }
+      }
+    }
+
+    const sorted = Array.from(
+      latestByTitle.values(),
+    )
+      .sort(
+        (a, b) =>
+          b.publishedDate.getTime() -
+          a.publishedDate.getTime(),
+      )
+      .map(
+        (entry) => entry.item,
+      );
+
+    const total = sorted.length;
+    const skip = (safePage - 1) * safeLimit;
 
     return {
-      data: Array.isArray(result?.data)
-        ? (result.data as FootballNewsFeedItem[])
-        : [],
+      data: sorted.slice(
+        skip,
+        skip + safeLimit,
+      ),
       page: safePage,
       limit: safeLimit,
       total,
-      totalPages: total > 0 ? Math.ceil(total / safeLimit) : 0,
+      totalPages:
+        total > 0
+          ? Math.ceil(
+              total / safeLimit,
+            )
+          : 0,
     };
   }
 
@@ -1379,7 +1474,11 @@ export class SportsDataReadService {
 
   private startOfUtcDay(value: Date): Date {
     return new Date(
-      Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()),
+      Date.UTC(
+        value.getUTCFullYear(),
+        value.getUTCMonth(),
+        value.getUTCDate(),
+      ),
     );
   }
 
@@ -2471,10 +2570,9 @@ export class SportsDataReadService {
     const competitionAvailable = Boolean(competition);
     const competitionOperational = Boolean(
       competition &&
-      [
-        ActiveCompetitionStatus.ACTIVE,
-        ActiveCompetitionStatus.UPCOMING,
-      ].includes(competition.status),
+        [ActiveCompetitionStatus.ACTIVE, ActiveCompetitionStatus.UPCOMING].includes(
+          competition.status,
+        ),
     );
     const seasonMatches = Boolean(
       !competition?.season || competition.season === fixture.season,
@@ -2535,15 +2633,16 @@ export class SportsDataReadService {
       collectedAt: fixture.collectedAt,
     };
 
-    const competitionSnapshot: SportsPredictionData['competition'] = competition
-      ? {
-          competitionId: competition.competitionId,
-          name: competition.name,
-          status: competition.status,
-          season: competition.season,
-          espnPayload: competition.espnPayload,
-        }
-      : null;
+    const competitionSnapshot: SportsPredictionData['competition'] =
+      competition
+        ? {
+            competitionId: competition.competitionId,
+            name: competition.name,
+            status: competition.status,
+            season: competition.season,
+            espnPayload: competition.espnPayload,
+          }
+        : null;
 
     return {
       ready: notReadyReasons.length === 0,
@@ -2686,3 +2785,4 @@ export class SportsDataReadService {
       .exec();
   }
 }
+

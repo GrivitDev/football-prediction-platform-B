@@ -186,3 +186,22 @@ EspnFixtureSchema.index({
 EspnFixtureSchema.index({
   collectedAt: -1,
 });
+
+
+// Content-date indexes used by the Football News feed.
+// These allow MongoDB to narrow candidate fixtures before summary extraction.
+EspnFixtureSchema.index({
+  'payload.summary.news.articles.published': 1,
+});
+
+EspnFixtureSchema.index({
+  'payload.summary.news.news.articles.published': 1,
+});
+
+EspnFixtureSchema.index({
+  'payload.summary.videos.originalPublishDate': -1,
+});
+
+EspnFixtureSchema.index({
+  'payload.summary.videos.lastModified': -1,
+});
