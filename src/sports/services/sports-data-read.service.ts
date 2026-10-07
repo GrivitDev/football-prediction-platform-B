@@ -158,11 +158,13 @@ export interface PaginatedResult<T> {
   totalPages: number;
 }
 
+export type FootballNewsFeedKind = 'NEWS' | 'VIDEO';
+
 export interface FootballNewsFeedItem {
-  kind: 'NEWS' | 'VIDEO';
+  kind: FootballNewsFeedKind;
   eventId: string;
   leagueId: string;
-  fixtureDate: Date;
+  fixtureDate: string;
   publishedAt?: string;
   payload: Record<string, unknown>;
 }
@@ -455,149 +457,6 @@ export class SportsDataReadService {
       .exec();
   }
 
-  // ============================================================
-  // FOOTBALL NEWS FEED
-  //
-  // Reads the stored ESPN Summary fragments directly from the
-  // canonical sports_espn_fixtures documents.
-  //
-  // News source:
-  //   payload.summary.news.articles
-  //
-  // Video source:
-  //   payload.summary.videos
-  //
-  // The two sources are deliberately merged into one feed.
-  // ============================================================
-
-  async getFootballNews(
-    filters: SportsDataFilter = {},
-    page = 1,
-    limit = 30,
-  ): Promise<PaginatedResult<FootballNewsFeedItem>> {
-    const mongoFilter: Record<string, unknown> = {
-      completed: true,
-    };
-
-    this.applyFixtureFilters(mongoFilter, filters);
-
-    const normalizedPage = Number.isFinite(page)
-      ? Math.max(Math.floor(page), 1)
-      : 1;
-
-    const normalizedLimit = Number.isFinite(limit)
-      ? Math.min(Math.max(Math.floor(limit), 1), 100)
-      : 30;
-
-    const skip = (normalizedPage - 1) * normalizedLimit;
-
-    const pipeline: PipelineStage[] = [
-      {
-        $match: mongoFilter,
-      },
-      {
-        $project: {
-          eventId: 1,
-          leagueId: 1,
-          fixtureDate: 1,
-          feedItems: {
-            $concatArrays: [
-              {
-                $map: {
-                  input: {
-                    $ifNull: ['$payload.summary.news.articles', []],
-                  },
-                  as: 'article',
-                  in: {
-                    kind: 'NEWS',
-                    payload: '$$article',
-                    publishedAt: '$$article.published',
-                  },
-                },
-              },
-              {
-                $map: {
-                  input: {
-                    $ifNull: ['$payload.summary.videos', []],
-                  },
-                  as: 'video',
-                  in: {
-                    kind: 'VIDEO',
-                    payload: '$$video',
-                    publishedAt: '$$video.originalPublishDate',
-                  },
-                },
-              },
-            ],
-          },
-        },
-      },
-      {
-        $unwind: '$feedItems',
-      },
-      {
-        $project: {
-          _id: 0,
-          kind: '$feedItems.kind',
-          eventId: 1,
-          leagueId: 1,
-          fixtureDate: 1,
-          publishedAt: '$feedItems.publishedAt',
-          payload: '$feedItems.payload',
-          sortAt: {
-            $convert: {
-              input: '$feedItems.publishedAt',
-              to: 'date',
-              onError: '$fixtureDate',
-              onNull: '$fixtureDate',
-            },
-          },
-        },
-      },
-      {
-        $sort: {
-          sortAt: -1,
-          fixtureDate: -1,
-          eventId: 1,
-        },
-      },
-      {
-        $facet: {
-          data: [
-            {
-              $skip: skip,
-            },
-            {
-              $limit: normalizedLimit,
-            },
-          ],
-          meta: [
-            {
-              $count: 'total',
-            },
-          ],
-        },
-      },
-    ];
-
-    const [result] = await this.espnFixtureModel
-      .aggregate(pipeline)
-      .allowDiskUse(true)
-      .exec();
-
-    const total = result?.meta?.[0]?.total ?? 0;
-
-    const data = Array.isArray(result?.data) ? result.data : [];
-
-    return {
-      data,
-      page: normalizedPage,
-      limit: normalizedLimit,
-      total,
-      totalPages: total > 0 ? Math.ceil(total / normalizedLimit) : 0,
-    };
-  }
-
   async getFinishedFixtures(
     filters: SportsDataFilter = {},
   ): Promise<unknown[]> {
@@ -635,6 +494,324 @@ export class SportsDataReadService {
       })
       .lean()
       .exec();
+  }
+
+  async getFootballNews(
+    filters: SportsDataFilter = {},
+    page = 1,
+    limit = 30,
+  ): Promise<PaginatedResult<FootballNewsFeedItem>> {
+    const safePage = Math.max(Math.floor(page || 1), 1);
+    const safeLimit = Math.min(Math.max(Math.floor(limit || 30), 1), 100);
+    const skip = (safePage - 1) * safeLimit;
+
+    // Keep competition/team filtering at fixture level, but do NOT
+    // apply fixtureDate here. Content publication date is what should
+    // control the news/video feed.
+    const fixtureFilter: Record<string, unknown> = {};
+
+    const normalizedCompetitionId = this.normalizeCompetitionId(
+      filters.competitionId,
+    );
+
+    if (normalizedCompetitionId) {
+      fixtureFilter.leagueId = normalizedCompetitionId;
+    }
+
+    const normalizedTeamId = this.normalizeTeamId(filters.teamId);
+
+    if (normalizedTeamId) {
+      fixtureFilter.$or = [
+        {
+          homeTeamId: normalizedTeamId,
+        },
+        {
+          awayTeamId: normalizedTeamId,
+        },
+      ];
+    }
+
+    const requestedRange = this.resolveSportsDateRange(filters);
+
+    const now = new Date();
+    const fortyEightHoursAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+
+    // Videos are intentionally ALWAYS constrained to the latest 48 hours.
+    // The page's wider news date range must never cause old videos to appear.
+    const videoFrom =
+      requestedRange?.$gte &&
+      requestedRange.$gte.getTime() > fortyEightHoursAgo.getTime()
+        ? requestedRange.$gte
+        : fortyEightHoursAgo;
+
+    const videoTo =
+      requestedRange?.$lt && requestedRange.$lt.getTime() < now.getTime()
+        ? requestedRange.$lt
+        : now;
+
+    const newsDateMatch: Record<string, Date> = {};
+
+    if (requestedRange?.$gte) {
+      newsDateMatch.$gte = requestedRange.$gte;
+    }
+
+    if (requestedRange?.$lt) {
+      newsDateMatch.$lt = requestedRange.$lt;
+    }
+
+    const videoDateMatch: Record<string, Date> = {
+      $gte: videoFrom,
+      $lt: videoTo,
+    };
+
+    const newsBranch = {
+      'content.kind': 'NEWS',
+      ...(Object.keys(newsDateMatch).length > 0
+        ? {
+            'content.publishedAtDate': newsDateMatch,
+          }
+        : {}),
+    };
+
+    const videoBranch = {
+      'content.kind': 'VIDEO',
+      'content.publishedAtDate': videoDateMatch,
+    };
+
+    const pipeline: PipelineStage[] = [
+      {
+        $match: fixtureFilter,
+      },
+      {
+        $project: {
+          _id: 0,
+          eventId: 1,
+          leagueId: 1,
+          fixtureDate: 1,
+          newsArticles: {
+            $cond: [
+              {
+                $isArray: '$payload.summary.news.articles',
+              },
+              {
+                $cond: [
+                  {
+                    $gt: [
+                      {
+                        $size: '$payload.summary.news.articles',
+                      },
+                      0,
+                    ],
+                  },
+                  '$payload.summary.news.articles',
+                  {
+                    $cond: [
+                      {
+                        $isArray: '$payload.summary.news.news.articles',
+                      },
+                      '$payload.summary.news.news.articles',
+                      [],
+                    ],
+                  },
+                ],
+              },
+              {
+                $cond: [
+                  {
+                    $isArray: '$payload.summary.news.news.articles',
+                  },
+                  '$payload.summary.news.news.articles',
+                  [],
+                ],
+              },
+            ],
+          },
+          videos: {
+            $cond: [
+              {
+                $isArray: '$payload.summary.videos',
+              },
+              '$payload.summary.videos',
+              [],
+            ],
+          },
+        },
+      },
+      {
+        $project: {
+          eventId: 1,
+          leagueId: 1,
+          fixtureDate: 1,
+          content: {
+            $concatArrays: [
+              {
+                $map: {
+                  input: '$newsArticles',
+                  as: 'article',
+                  in: {
+                    kind: 'NEWS',
+                    title: {
+                      $ifNull: ['$$article.headline', '$$article.description'],
+                    },
+                    publishedAt: {
+                      $ifNull: [
+                        '$$article.published',
+                        {
+                          $dateToString: {
+                            date: '$fixtureDate',
+                            format: '%Y-%m-%dT%H:%M:%S.%LZ',
+                            timezone: 'UTC',
+                          },
+                        },
+                      ],
+                    },
+                    payload: '$$article',
+                  },
+                },
+              },
+              {
+                $map: {
+                  input: '$videos',
+                  as: 'video',
+                  in: {
+                    kind: 'VIDEO',
+                    title: {
+                      $ifNull: ['$$video.headline', '$$video.description'],
+                    },
+                    publishedAt: {
+                      $ifNull: [
+                        '$$video.originalPublishDate',
+                        {
+                          $ifNull: [
+                            '$$video.lastModified',
+                            {
+                              $dateToString: {
+                                date: '$fixtureDate',
+                                format: '%Y-%m-%dT%H:%M:%S.%LZ',
+                                timezone: 'UTC',
+                              },
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                    payload: '$$video',
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+      {
+        $unwind: '$content',
+      },
+      {
+        $set: {
+          'content.publishedAtDate': {
+            $convert: {
+              input: '$content.publishedAt',
+              to: 'date',
+              onError: '$fixtureDate',
+              onNull: '$fixtureDate',
+            },
+          },
+        },
+      },
+      {
+        $match: {
+          $and: [
+            {
+              'content.title': {
+                $type: 'string',
+                $ne: '',
+              },
+            },
+            {
+              $or: [newsBranch, videoBranch],
+            },
+          ],
+        },
+      },
+      // Newest content wins when the exact same title appears in
+      // multiple fixtures. Grouping happens BEFORE pagination so
+      // duplicates cannot leak onto later pages.
+      {
+        $sort: {
+          'content.publishedAtDate': -1,
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $trim: {
+              input: '$content.title',
+            },
+          },
+          item: {
+            $first: {
+              kind: '$content.kind',
+              eventId: '$eventId',
+              leagueId: '$leagueId',
+              fixtureDate: {
+                $dateToString: {
+                  date: '$fixtureDate',
+                  format: '%Y-%m-%dT%H:%M:%S.%LZ',
+                  timezone: 'UTC',
+                },
+              },
+              publishedAt: '$content.publishedAt',
+              payload: '$content.payload',
+            },
+          },
+        },
+      },
+      {
+        $sort: {
+          'item.publishedAt': -1,
+        },
+      },
+      {
+        $facet: {
+          data: [
+            {
+              $skip: skip,
+            },
+            {
+              $limit: safeLimit,
+            },
+            {
+              $replaceWith: '$item',
+            },
+          ],
+          metadata: [
+            {
+              $count: 'total',
+            },
+          ],
+        },
+      },
+    ];
+
+    const [result] = await this.espnFixtureModel
+      .aggregate(pipeline)
+      .allowDiskUse(true)
+      .exec();
+
+    const total =
+      Array.isArray(result?.metadata) && result.metadata[0]?.total
+        ? Number(result.metadata[0].total)
+        : 0;
+
+    return {
+      data: Array.isArray(result?.data)
+        ? (result.data as FootballNewsFeedItem[])
+        : [],
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: total > 0 ? Math.ceil(total / safeLimit) : 0,
+    };
   }
 
   // ============================================================
