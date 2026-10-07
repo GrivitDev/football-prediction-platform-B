@@ -26,6 +26,12 @@ export class YoutubeService implements OnModuleInit {
 
   private readonly baseUrl = YOUTUBE_CONFIG.apiBaseUrl;
 
+  /**
+   * A YouTube highlight is only relevant from the match kickoff
+   * until 24 hours after the match.
+   */
+  private readonly highlightWindowHours = 24;
+
   private http!: AxiosInstance;
 
   private apiKey!: string;
@@ -119,15 +125,26 @@ export class YoutubeService implements OnModuleInit {
   // ============================================================
 
   /**
-   * Performs one YouTube search and selects the
-   * best candidate.
+   * Searches YouTube specifically for the finished fixture.
+   *
+   * Rules:
+   *
+   * 1. Search using both team names + "highlights".
+   * 2. Search only from match kickoff.
+   * 3. Search no later than 24 hours after kickoff.
+   * 4. Use YouTube date ordering.
+   * 5. Independently validate every returned video's publication date.
+   * 6. Reject videos outside the match window.
+   * 7. Reject candidates that do not reasonably identify both teams
+   *    and a highlight.
+   * 8. Select the newest valid candidate.
    *
    * No videos.list request is made.
    */
   async findHighlight(
     homeTeam: string,
     awayTeam: string,
-    publishedAfter?: Date,
+    matchDate: Date,
   ): Promise<YouTubeVideoResult | null> {
     const normalizedHome = homeTeam?.trim();
 
@@ -137,6 +154,57 @@ export class YoutubeService implements OnModuleInit {
       throw new BadRequestException('Both homeTeam and awayTeam are required');
     }
 
+    if (!(matchDate instanceof Date) || Number.isNaN(matchDate.getTime())) {
+      throw new BadRequestException('A valid match date is required');
+    }
+
+    const now = new Date();
+
+    /*
+     * A FINISHED_MATCH worker should execute immediately after
+     * the match finishes.
+     *
+     * If the match itself is somehow in the future, do not search.
+     */
+    if (matchDate.getTime() > now.getTime()) {
+      this.logger.warn(
+        `Skipping YouTube highlight search because match date is in the future: ${matchDate.toISOString()}`,
+      );
+
+      return null;
+    }
+
+    /*
+     * Hard 24-hour window:
+     *
+     * matchDate
+     *      ↓
+     *      +24 hours
+     *
+     * No video older than this window can ever be accepted.
+     */
+    const windowEnd = new Date(
+      matchDate.getTime() + this.highlightWindowHours * 60 * 60 * 1000,
+    );
+
+    /*
+     * If the worker somehow reaches this fixture more than 24 hours
+     * after kickoff, there is no reason to consume YouTube quota.
+     */
+    if (now.getTime() > windowEnd.getTime()) {
+      this.logger.debug(
+        `Skipping YouTube highlight search because the 24-hour window has expired for ${normalizedHome} vs ${normalizedAway}`,
+      );
+
+      return null;
+    }
+
+    /*
+     * Search up to the current moment, but never beyond the
+     * 24-hour match window.
+     */
+    const searchEnd = windowEnd.getTime() < now.getTime() ? windowEnd : now;
+
     const query = `${normalizedHome} ${normalizedAway} highlights`;
 
     const searchResponse = await this.searchVideos({
@@ -144,11 +212,20 @@ export class YoutubeService implements OnModuleInit {
 
       maxResults: 5,
 
-      order: 'relevance',
+      /*
+       * Freshest videos first.
+       */
+      order: 'date',
 
-      publishedAfter: publishedAfter?.toISOString(),
+      /*
+       * Lower boundary = match kickoff.
+       */
+      publishedAfter: matchDate.toISOString(),
 
-      publishedBefore: new Date().toISOString(),
+      /*
+       * Upper boundary = min(now, match + 24h).
+       */
+      publishedBefore: searchEnd.toISOString(),
     });
 
     const candidates: YouTubeVideoResult[] = (searchResponse.items ?? [])
@@ -180,13 +257,94 @@ export class YoutubeService implements OnModuleInit {
 
           videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
         };
-      });
+      })
+      .filter((video) =>
+        this.isValidHighlightCandidate(
+          video,
+          normalizedHome,
+          normalizedAway,
+          matchDate,
+          windowEnd,
+        ),
+      );
 
     if (!candidates.length) {
       return null;
     }
 
     return this.selectBestHighlight(candidates, normalizedHome, normalizedAway);
+  }
+
+  // ============================================================
+  // HIGHLIGHT VALIDATION
+  // ============================================================
+
+  private isValidHighlightCandidate(
+    video: YouTubeVideoResult,
+    homeTeam: string,
+    awayTeam: string,
+    matchDate: Date,
+    windowEnd: Date,
+  ): boolean {
+    if (!video.publishedAt) {
+      return false;
+    }
+
+    const publishedAt = new Date(video.publishedAt);
+
+    if (Number.isNaN(publishedAt.getTime())) {
+      return false;
+    }
+
+    /*
+     * Absolute publication window.
+     *
+     * The result must have been published:
+     *
+     *     >= match kickoff
+     *     <= match kickoff + 24h
+     */
+    if (
+      publishedAt.getTime() < matchDate.getTime() ||
+      publishedAt.getTime() > windowEnd.getTime() ||
+      publishedAt.getTime() > Date.now()
+    ) {
+      return false;
+    }
+
+    const searchText = this.normalize(
+      `${video.title} ${video.description ?? ''}`,
+    );
+
+    if (!searchText) {
+      return false;
+    }
+
+    /*
+     * A legitimate highlight should identify the two teams.
+     *
+     * The check supports:
+     * - full team names
+     * - common shortened forms
+     * - abbreviated wording such as Utd
+     */
+    if (!this.teamAppearsInText(searchText, homeTeam)) {
+      return false;
+    }
+
+    if (!this.teamAppearsInText(searchText, awayTeam)) {
+      return false;
+    }
+
+    /*
+     * Do not accept generic match/news videos unless they are
+     * actually described as a highlight.
+     */
+    if (!/\bhighlights?\b/.test(searchText)) {
+      return false;
+    }
+
+    return true;
   }
 
   // ============================================================
@@ -202,38 +360,138 @@ export class YoutubeService implements OnModuleInit {
       return null;
     }
 
-    const home = this.normalize(homeTeam);
-
-    const away = this.normalize(awayTeam);
-
     const scored = videos.map((video) => {
       const title = this.normalize(video.title);
 
+      const searchText = this.normalize(
+        `${video.title} ${video.description ?? ''}`,
+      );
+
       let score = 0;
 
-      if (title.includes(home)) {
+      /*
+       * Full team-name presence gets stronger weighting than
+       * partial token matches.
+       */
+      if (title.includes(this.normalize(homeTeam))) {
+        score += 5;
+      } else if (this.teamAppearsInText(searchText, homeTeam)) {
         score += 3;
       }
 
-      if (title.includes(away)) {
+      if (title.includes(this.normalize(awayTeam))) {
+        score += 5;
+      } else if (this.teamAppearsInText(searchText, awayTeam)) {
         score += 3;
       }
 
       if (title.includes('highlights')) {
-        score += 2;
+        score += 3;
       } else if (title.includes('highlight')) {
         score += 2;
       }
 
+      const publishedTime = video.publishedAt
+        ? new Date(video.publishedAt).getTime()
+        : 0;
+
       return {
         video,
         score,
+        publishedTime,
       };
     });
 
-    scored.sort((a, b) => b.score - a.score);
+    /*
+     * Freshness is the most important tie-breaker.
+     *
+     * Because all candidates have already passed the strict
+     * 24-hour window, the newest valid highlight wins.
+     */
+    scored.sort((a, b) => {
+      if (b.publishedTime !== a.publishedTime) {
+        return b.publishedTime - a.publishedTime;
+      }
+
+      return b.score - a.score;
+    });
 
     return scored[0]?.video ?? null;
+  }
+
+  // ============================================================
+  // TEAM MATCHING
+  // ============================================================
+
+  private teamAppearsInText(text: string, teamName: string): boolean {
+    const normalizedTeam = this.normalize(teamName);
+
+    if (!normalizedTeam) {
+      return false;
+    }
+
+    /*
+     * Strongest match: full normalized team name.
+     */
+    if (text.includes(normalizedTeam)) {
+      return true;
+    }
+
+    /*
+     * Support common abbreviations such as:
+     *
+     * Utd → United
+     * Utd. → United
+     */
+    const normalizedText = text.replace(/\butd\b/g, 'united');
+
+    if (normalizedText.includes(normalizedTeam)) {
+      return true;
+    }
+
+    /*
+     * For multi-word teams, accept meaningful matching tokens.
+     *
+     * This gives some tolerance to titles such as:
+     *
+     * "Man United vs ..."
+     *
+     * while still requiring a real team token.
+     */
+    const teamTokens = normalizedTeam
+      .split(' ')
+      .map((token) => token.trim())
+      .filter(
+        (token) =>
+          token.length >= 3 &&
+          !['fc', 'afc', 'cf', 'sc', 'ac', 'fk'].includes(token),
+      );
+
+    if (!teamTokens.length) {
+      return false;
+    }
+
+    const textTokens = new Set(
+      normalizedText
+        .split(' ')
+        .map((token) => token.trim())
+        .filter(Boolean),
+    );
+
+    const matchedTokens = teamTokens.filter((token) => textTokens.has(token));
+
+    /*
+     * One-word teams need exact token presence.
+     *
+     * Multi-word teams need at least half of their meaningful
+     * tokens, rounded up.
+     */
+    const requiredMatches =
+      teamTokens.length === 1
+        ? 1
+        : Math.max(1, Math.ceil(teamTokens.length / 2));
+
+    return matchedTokens.length >= requiredMatches;
   }
 
   // ============================================================
@@ -273,6 +531,7 @@ export class YoutubeService implements OnModuleInit {
   private normalize(value: string): string {
     return value
       .toLowerCase()
+      .replace(/\butd\.?\b/g, 'united')
       .replace(/[^a-z0-9\s]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();

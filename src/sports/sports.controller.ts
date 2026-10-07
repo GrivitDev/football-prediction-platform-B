@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 
@@ -16,6 +17,8 @@ import { Roles } from '../common/decorators/roles.decorator';
 
 import { SportsSystemMonitorResponse } from './interfaces/sports-system-monitor.interface';
 import { SportsDataFilter } from './interfaces/sports-data-filter.interface';
+
+import type { Response } from 'express';
 
 @Controller('sports')
 export class SportsController {
@@ -98,6 +101,80 @@ export class SportsController {
     );
   }
 
+  @Get('news-feed/stream')
+  async streamFootballNews(
+    @Query('date') date: string | undefined,
+    @Query('from') from: string | undefined,
+    @Query('to') to: string | undefined,
+    @Query('competitionId') competitionId: string | undefined,
+    @Query('teamId') teamId: string | undefined,
+    @Query('limit') limit: string | undefined,
+    @Res() response: Response,
+  ): Promise<void> {
+    const parsedLimit = limit !== undefined ? Number(limit) : 30;
+
+    if (!Number.isFinite(parsedLimit) || parsedLimit < 1) {
+      throw new BadRequestException('Invalid limit.');
+    }
+
+    response.status(200);
+    response.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    response.setHeader('Cache-Control', 'no-cache, no-transform');
+    response.setHeader('Connection', 'keep-alive');
+    response.setHeader('X-Accel-Buffering', 'no');
+
+    response.flushHeaders?.();
+
+    try {
+      for await (const item of this.sportsDataReadService.streamFootballNews(
+        this.buildSportsDataFilter({
+          date,
+          from,
+          to,
+          competitionId,
+          teamId,
+        }),
+        parsedLimit,
+      )) {
+        if (response.writableEnded || response.destroyed) {
+          break;
+        }
+
+        response.write(
+          `${JSON.stringify({ type: 'item', item })}\
+`,
+        );
+
+        const flushableResponse = response as Response & {
+          flush?: () => void;
+        };
+
+        flushableResponse.flush?.();
+      }
+
+      if (!response.writableEnded) {
+        response.write(
+          `${JSON.stringify({ type: 'complete' })}\
+`,
+        );
+        response.end();
+      }
+    } catch (error) {
+      if (!response.writableEnded && !response.destroyed) {
+        response.write(
+          `${JSON.stringify({
+            type: 'error',
+            message: 'Football news stream failed.',
+          })}\
+`,
+        );
+        response.end();
+      }
+
+      throw error;
+    }
+  }
+
   @Get('news-feed')
   async getFootballNews(
     @Query('date') date?: string,
@@ -108,15 +185,9 @@ export class SportsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    const parsedPage =
-      page !== undefined
-        ? Number(page)
-        : 1;
+    const parsedPage = page !== undefined ? Number(page) : 1;
 
-    const parsedLimit =
-      limit !== undefined
-        ? Number(limit)
-        : 30;
+    const parsedLimit = limit !== undefined ? Number(limit) : 30;
 
     if (!Number.isFinite(parsedPage) || parsedPage < 1) {
       throw new BadRequestException('Invalid page.');
@@ -871,9 +942,7 @@ export class SportsController {
     teamId?: string;
   }): SportsDataFilter {
     if (input.date && (input.from || input.to)) {
-      throw new BadRequestException(
-        'Use either date or from/to, not both.',
-      );
+      throw new BadRequestException('Use either date or from/to, not both.');
     }
 
     const date = this.parseDate(input.date, 'date');
@@ -913,6 +982,4 @@ export class SportsController {
 
     return parsed;
   }
-
 }
-

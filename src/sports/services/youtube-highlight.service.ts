@@ -64,7 +64,13 @@ export class YoutubeHighlightService {
    *      ↓
    * check priority competition
    *      ↓
-   * YouTube search
+   * block SELECTIVE competitions
+   *      ↓
+   * check existing FOUND highlight
+   *      ↓
+   * check YouTube quota
+   *      ↓
+   * YouTube search restricted to match + 24h
    *      ↓
    * save/update highlight
    *
@@ -153,6 +159,12 @@ export class YoutubeHighlightService {
 
     /*
      * One YouTube search request.
+     *
+     * The YouTube provider itself enforces:
+     *
+     *     match date → match date + 24 hours
+     *
+     * so historical videos cannot be selected.
      */
     const result = await this.youtubeService.findHighlight(
       match.homeTeam,
@@ -216,6 +228,7 @@ export class YoutubeHighlightService {
         },
         {
           upsert: true,
+
           returnDocument: 'after',
         },
       )
@@ -225,6 +238,7 @@ export class YoutubeHighlightService {
       `YouTube highlight collected for ESPN fixture ${normalizedFixtureId}`,
     );
   }
+
   // ============================================================
   // REMAINING DAILY QUOTA
   // ============================================================
