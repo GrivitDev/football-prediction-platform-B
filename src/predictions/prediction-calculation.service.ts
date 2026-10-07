@@ -1,7 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 
 import { SportsDataReadService } from '../sports/services/sports-data-read.service';
-import type { SportsPredictionData } from '../sports/interfaces/prediction-data.interface';
+import type {
+  SportsPredictionData,
+  SportsPredictionSummary,
+} from '../sports/interfaces/prediction-data.interface';
 
 import type {
   PredictionProbabilitySource,
@@ -29,9 +32,7 @@ interface MarketCalculation {
   status: 'pending';
 }
 
-interface SummaryPayload {
-  [key: string]: unknown;
-}
+type SummaryPayload = SportsPredictionSummary;
 
 interface ThreeWayProbability {
   home: number;
@@ -95,7 +96,7 @@ export interface CalculatedPrediction {
   markets: MarketCalculation[];
 }
 
-const PREDICTION_SUPPORT_ENGINE_VERSION = 'prediction-support-engine-1.0';
+const PREDICTION_SUPPORT_ENGINE_VERSION = 'prediction-support-engine-1.1';
 
 @Injectable()
 export class PredictionCalculationService {
@@ -159,6 +160,20 @@ export class PredictionCalculationService {
      */
     const primary = markets[0];
 
+    /*
+     * Several requested markets can fall back to stored Odds API data.
+     * Share one read across those markets instead of issuing the same
+     * Mongo query once per market.
+     */
+    let storedOddsPromise: Promise<unknown[]> | undefined;
+
+    const loadStoredOdds = (): Promise<unknown[]> => {
+      storedOddsPromise ??= this.sportsDataReadService.getOddsForEvent(
+        fixture.eventId,
+      );
+      return storedOddsPromise;
+    };
+
     const calculatedMarkets = await Promise.all(
       markets.map((market) =>
         this.calculateMarketSupport(
@@ -166,7 +181,7 @@ export class PredictionCalculationService {
           summary,
           fixture.homeTeamId,
           fixture.awayTeamId,
-          fixture.eventId,
+          loadStoredOdds,
         ),
       ),
     );
@@ -182,22 +197,16 @@ export class PredictionCalculationService {
     const homeTeamName =
       this.toString(predictionData.homeTeam?.displayName) ??
       this.toString(predictionData.homeTeam?.name) ??
-      this.extractFixtureTeamName(fixture, 'home') ??
       'Home';
 
     const awayTeamName =
       this.toString(predictionData.awayTeam?.displayName) ??
       this.toString(predictionData.awayTeam?.name) ??
-      this.extractFixtureTeamName(fixture, 'away') ??
       'Away';
 
-    const homeTeamBadge =
-      this.toString(predictionData.homeTeam?.logo) ??
-      this.extractFixtureTeamLogo(fixture, 'home');
+    const homeTeamBadge = this.toString(predictionData.homeTeam?.logo);
 
-    const awayTeamBadge =
-      this.toString(predictionData.awayTeam?.logo) ??
-      this.extractFixtureTeamLogo(fixture, 'away');
+    const awayTeamBadge = this.toString(predictionData.awayTeam?.logo);
 
     const league = predictionData.competition
       ? {
@@ -267,7 +276,7 @@ export class PredictionCalculationService {
     summary: SummaryPayload,
     homeTeamId: string,
     awayTeamId: string,
-    eventId: string,
+    loadStoredOdds: () => Promise<unknown[]>,
   ): Promise<MarketCalculation> {
     const market = this.normalizeMarket(requested.market);
     const selection = this.normalizeSelection(requested.selection);
@@ -283,7 +292,11 @@ export class PredictionCalculationService {
     if (directProbability !== undefined) {
       const oddsMatch =
         this.resolveSummaryMarketOdds(summary, market, selection) ??
-        (await this.resolveStoredOdds(eventId, market, selection));
+        (await this.resolveStoredOdds(
+          await loadStoredOdds(),
+          market,
+          selection,
+        ));
 
       return {
         market,
@@ -299,7 +312,7 @@ export class PredictionCalculationService {
 
     const oddsMatch =
       this.resolveSummaryMarketOdds(summary, market, selection) ??
-      (await this.resolveStoredOdds(eventId, market, selection));
+      (await this.resolveStoredOdds(await loadStoredOdds(), market, selection));
 
     if (!oddsMatch) {
       throw new BadRequestException(
@@ -397,11 +410,31 @@ export class PredictionCalculationService {
     }
 
     /*
-     * ESPN can expose market-specific probability objects in additional
-     * Summary fields. Search those fields generically for an exact
-     * selection probability before falling back to odds.
+     * ESPN can expose market-specific probability objects in the dedicated
+     * probability/forecast sections. Search only those sections so bookmaker
+     * odds records are never misclassified as model probabilities.
      */
-    return this.findSelectionProbability(summary, market, selection, new Set());
+    const probabilitySources = [
+      summary.predictor,
+      summary.winprobability,
+      summary.winProbability,
+      summary.pickcenter,
+    ].filter(Boolean);
+
+    for (const source of probabilitySources) {
+      const found = this.findSelectionProbability(
+        source,
+        market,
+        selection,
+        new Set(),
+      );
+
+      if (found !== undefined) {
+        return found;
+      }
+    }
+
+    return undefined;
   }
 
   private resolveMatchResult(
@@ -693,8 +726,6 @@ export class PredictionCalculationService {
     const record = value as Record<string, unknown>;
     const context = this.normalizeContext(
       [
-        market,
-        selection,
         record.market,
         record.marketName,
         record.name,
@@ -718,11 +749,36 @@ export class PredictionCalculationService {
       'likelihood',
     ];
 
-    const hasSelectionContext =
-      context.includes(this.normalizeContext(selection)) ||
-      context.includes(this.normalizeContext(this.prettySelection(selection)));
+    const normalizedSelection = this.normalizeContext(selection);
+    const normalizedPrettySelection = this.normalizeContext(
+      this.prettySelection(selection),
+    );
+    const normalizedMarket = this.normalizeContext(market);
+    const normalizedPrettyMarket = this.normalizeContext(
+      this.prettySelection(market),
+    );
 
-    if (hasSelectionContext) {
+    const hasSelectionContext =
+      context.includes(normalizedSelection) ||
+      context.includes(normalizedPrettySelection);
+
+    const hasMarketContext =
+      context.includes(normalizedMarket) ||
+      context.includes(normalizedPrettyMarket);
+
+    const hasExplicitOutcomeContext = [
+      record.selection,
+      record.outcome,
+      record.name,
+      record.label,
+      record.description,
+      record.details,
+    ].some((item) => this.toString(item) !== undefined);
+
+    if (
+      hasSelectionContext ||
+      (hasMarketContext && hasExplicitOutcomeContext)
+    ) {
       for (const key of probabilityKeys) {
         const candidate = this.getProbabilityValue(record[key]);
 
@@ -888,13 +944,11 @@ export class PredictionCalculationService {
     return this.findOddsByContext(record, tokens, line, '', 0);
   }
 
-  private async resolveStoredOdds(
-    eventId: string,
+  private resolveStoredOdds(
+    snapshots: unknown[],
     market: PredictionMarket,
     selection: string,
-  ): Promise<OddsMatch | undefined> {
-    const snapshots = await this.sportsDataReadService.getOddsForEvent(eventId);
-
+  ): OddsMatch | undefined {
     if (!Array.isArray(snapshots)) {
       return undefined;
     }
@@ -958,9 +1012,7 @@ export class PredictionCalculationService {
     const record = value as Record<string, unknown>;
 
     const nextContext = this.normalizeContext(
-      `${context} ${Object.keys(record).join(' ')} ${tokens.join(
-        ' ',
-      )} ${Object.values(record)
+      `${context} ${Object.keys(record).join(' ')} ${Object.values(record)
         .filter((item) => typeof item === 'string')
         .join(' ')}`,
     );
@@ -1270,89 +1322,6 @@ export class PredictionCalculationService {
         const href = this.toString(record?.href);
         if (href) {
           return href;
-        }
-      }
-    }
-
-    return undefined;
-  }
-
-  private extractFixtureTeamName(
-    fixture: SportsPredictionData['fixture'],
-    side: 'home' | 'away',
-  ): string | undefined {
-    const payload =
-      fixture.payload && typeof fixture.payload === 'object'
-        ? (fixture.payload as Record<string, unknown>)
-        : {};
-
-    const competitions = Array.isArray(payload.competitions)
-      ? payload.competitions
-      : [];
-
-    const competition = this.asRecord(competitions[0]);
-
-    const competitors = Array.isArray(competition?.competitors)
-      ? competition.competitors
-      : [];
-
-    for (const competitor of competitors) {
-      const record = this.asRecord(competitor);
-
-      if (this.toString(record?.homeAway) !== side) {
-        continue;
-      }
-
-      const team = this.asRecord(record?.team);
-
-      return this.toString(team?.displayName) ?? this.toString(team?.name);
-    }
-
-    return undefined;
-  }
-
-  private extractFixtureTeamLogo(
-    fixture: SportsPredictionData['fixture'],
-    side: 'home' | 'away',
-  ): string | undefined {
-    const payload =
-      fixture.payload && typeof fixture.payload === 'object'
-        ? (fixture.payload as Record<string, unknown>)
-        : {};
-
-    const competitions = Array.isArray(payload.competitions)
-      ? payload.competitions
-      : [];
-
-    const competition = this.asRecord(competitions[0]);
-
-    const competitors = Array.isArray(competition?.competitors)
-      ? competition.competitors
-      : [];
-
-    for (const competitor of competitors) {
-      const record = this.asRecord(competitor);
-
-      if (this.toString(record?.homeAway) !== side) {
-        continue;
-      }
-
-      const team = this.asRecord(record?.team);
-
-      const direct = this.toString(team?.logo) ?? this.toString(record?.logo);
-
-      if (direct) {
-        return direct;
-      }
-
-      const logos = team?.logos;
-      if (Array.isArray(logos)) {
-        for (const logo of logos) {
-          const href = this.toString(this.asRecord(logo)?.href);
-
-          if (href) {
-            return href;
-          }
         }
       }
     }

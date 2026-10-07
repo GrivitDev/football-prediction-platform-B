@@ -20,6 +20,8 @@ import {
 
 import { EspnQueueJobType } from '../interfaces/espn-queue.interface';
 
+import { SPORTS_DATA_COLLECTION_CONFIG } from '../config/sports-data-collection.config';
+
 @Injectable()
 export class SportsSyncStateService {
   /**
@@ -28,6 +30,10 @@ export class SportsSyncStateService {
    * never projected into the application process.
    */
   private readonly summaryFixtureCursorBatchSize = 500;
+
+  /** Initial startup attempt plus configured background retries. */
+  private readonly summaryTotalAttempts =
+    SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts + 1;
 
   constructor(
     @InjectModel(SportsSyncState.name)
@@ -922,45 +928,45 @@ export class SportsSyncStateService {
     /*
      * markSummaryEventsProcessing() increments attempts before
      * the ESPN request starts.
-     *
-     * Therefore this represents the actual attempt number.
      */
     const attemptNumber = Math.max(1, unit.attempts);
 
-    const nextAttemptAt = new Date(
-      Date.now() + this.getRetryDelay(attemptNumber),
-    );
+    const terminal = attemptNumber >= this.summaryTotalAttempts;
+
+    const nextAttemptAt = terminal
+      ? undefined
+      : new Date(Date.now() + this.getRetryDelay(attemptNumber));
+
+    const update: Record<string, unknown> = {
+      $set: {
+        'units.$.status': SportsSyncUnitStatus.FAILED,
+        'units.$.lastError': message,
+        status: SportsSyncStateStatus.PARTIAL,
+        lastError: message,
+      },
+      $unset: {
+        'units.$.startedAt': 1,
+        'units.$.completedAt': 1,
+      },
+      $inc: {
+        consecutiveFailures: 1,
+      },
+    };
+
+    if (nextAttemptAt) {
+      (update.$set as Record<string, unknown>)['units.$.nextAttemptAt'] =
+        nextAttemptAt;
+    } else {
+      (update.$unset as Record<string, unknown>)['units.$.nextAttemptAt'] = 1;
+    }
 
     const result = await this.syncStateModel
       .updateOne(
         {
           stateKey,
-
           'units.key': `STEP:${stepKey}`,
         },
-        {
-          $set: {
-            'units.$.status': SportsSyncUnitStatus.FAILED,
-
-            'units.$.nextAttemptAt': nextAttemptAt,
-
-            'units.$.lastError': message,
-
-            status: SportsSyncStateStatus.PARTIAL,
-
-            lastError: message,
-          },
-
-          $unset: {
-            'units.$.startedAt': 1,
-
-            'units.$.completedAt': 1,
-          },
-
-          $inc: {
-            consecutiveFailures: 1,
-          },
-        },
+        update,
       )
       .exec();
 
@@ -1001,12 +1007,7 @@ export class SportsSyncStateService {
 
     const message = error instanceof Error ? error.message : String(error);
 
-    const now = new Date();
-
-    const nextAttemptAt = new Date(now.getTime() + this.getRetryDelay(1));
-
     let changed = false;
-
     let failuresAdded = 0;
 
     for (const eventId of eventIds) {
@@ -1017,25 +1018,28 @@ export class SportsSyncStateService {
       }
 
       const stepKey = this.getSummaryStepKey(normalizedEventId);
-
       const unit = unitsByStepKey.get(stepKey);
 
       if (!unit) {
         continue;
       }
 
+      const terminal = unit.attempts >= this.summaryTotalAttempts;
+
       unit.status = SportsSyncUnitStatus.FAILED;
-
       unit.startedAt = undefined;
-
       unit.completedAt = undefined;
-
-      unit.nextAttemptAt = nextAttemptAt;
-
       unit.lastError = message;
 
-      failuresAdded += 1;
+      if (terminal) {
+        unit.nextAttemptAt = undefined;
+      } else {
+        unit.nextAttemptAt = new Date(
+          Date.now() + this.getRetryDelay(Math.max(1, unit.attempts)),
+        );
+      }
 
+      failuresAdded += 1;
       changed = true;
     }
 
@@ -1044,9 +1048,7 @@ export class SportsSyncStateService {
     }
 
     state.status = SportsSyncStateStatus.PARTIAL;
-
     state.lastError = message;
-
     state.consecutiveFailures += failuresAdded;
 
     state.markModified('units');
@@ -1073,8 +1075,8 @@ export class SportsSyncStateService {
   }
 
   /**
-   * Returns incomplete Summary event IDs from a persistent
-   * SUMMARY_REFRESH state.
+   * Returns Summary event IDs that still require work and have not
+   * exhausted the configured total-attempt budget.
    */
   async getIncompleteSummaryEvents(
     stateKey: string,
@@ -1089,7 +1091,35 @@ export class SportsSyncStateService {
           typeof unit.stepKey === 'string' &&
           unit.stepKey.startsWith('SUMMARY:') &&
           (unit.status === SportsSyncUnitStatus.PENDING ||
-            unit.status === SportsSyncUnitStatus.FAILED),
+            unit.status === SportsSyncUnitStatus.FAILED) &&
+          unit.attempts < this.summaryTotalAttempts,
+      )
+      .map((unit) => String(unit.stepKey).slice('SUMMARY:'.length))
+      .filter(Boolean)
+      .sort();
+
+    return limit && limit > 0 ? events.slice(0, limit) : events;
+  }
+
+  /**
+   * Returns Summary event IDs that have never been attempted.
+   *
+   * Startup uses this to guarantee exactly one initial attempt.
+   */
+  async getInitialSummaryEvents(
+    stateKey: string,
+    limit?: number,
+  ): Promise<string[]> {
+    const state = await this.requireState(stateKey);
+
+    const events = state.units
+      .filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.STEP &&
+          typeof unit.stepKey === 'string' &&
+          unit.stepKey.startsWith('SUMMARY:') &&
+          unit.status === SportsSyncUnitStatus.PENDING &&
+          unit.attempts === 0,
       )
       .map((unit) => String(unit.stepKey).slice('SUMMARY:'.length))
       .filter(Boolean)
@@ -1113,7 +1143,8 @@ export class SportsSyncStateService {
           typeof unit.stepKey === 'string' &&
           unit.stepKey.startsWith('SUMMARY:') &&
           (unit.status === SportsSyncUnitStatus.PENDING ||
-            unit.status === SportsSyncUnitStatus.FAILED),
+            unit.status === SportsSyncUnitStatus.FAILED) &&
+          unit.attempts < this.summaryTotalAttempts,
       )
       .filter((unit) => {
         if (!unit.nextAttemptAt) {
@@ -1135,7 +1166,6 @@ export class SportsSyncStateService {
     const state = await this.requireState(stateKey);
 
     const now = Date.now();
-
     let earliest: number | null = null;
 
     for (const unit of state.units) {
@@ -1145,6 +1175,7 @@ export class SportsSyncStateService {
         !unit.stepKey.startsWith('SUMMARY:') ||
         (unit.status !== SportsSyncUnitStatus.PENDING &&
           unit.status !== SportsSyncUnitStatus.FAILED) ||
+        unit.attempts >= this.summaryTotalAttempts ||
         !unit.nextAttemptAt
       ) {
         continue;
@@ -1175,7 +1206,9 @@ export class SportsSyncStateService {
     );
 
     return summaryUnits.every(
-      (unit) => unit.status === SportsSyncUnitStatus.SUCCESS,
+      (unit) =>
+        unit.status === SportsSyncUnitStatus.SUCCESS ||
+        unit.attempts >= this.summaryTotalAttempts,
     );
   }
 
@@ -1198,7 +1231,13 @@ export class SportsSyncStateService {
       .lean()
       .exec();
 
-    return state?.units?.[0]?.status === SportsSyncUnitStatus.SUCCESS;
+    const unit = state?.units?.[0];
+
+    return Boolean(
+      unit &&
+      (unit.status === SportsSyncUnitStatus.SUCCESS ||
+        unit.attempts >= this.summaryTotalAttempts),
+    );
   }
 
   // ============================================================

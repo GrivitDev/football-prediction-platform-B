@@ -245,7 +245,7 @@ export class SportsDataReadService {
   ) {}
 
   // ============================================================
-  // PUBLIC / APPLICATION READS
+  // PUBLIC / APPLICATION SPORTS DATA
   // ============================================================
 
   async getLive(): Promise<unknown[]> {
@@ -260,12 +260,6 @@ export class SportsDataReadService {
     return this.getFinishedFixtures(undefined, undefined, competitionId);
   }
 
-  /**
-   * Emergency/fallback standings read.
-   *
-   * Normal application presentation should use ESPN Summary data
-   * stored inside the canonical fixture payload.
-   */
   async getStandings(
     competitionId: string,
     season?: number,
@@ -274,25 +268,17 @@ export class SportsDataReadService {
   }
 
   async getTeams(competitionId: string): Promise<unknown[]> {
-    const competition = competitionId?.trim().toLowerCase();
+    const normalizedCompetitionId = String(competitionId ?? '')
+      .trim()
+      .toLowerCase();
 
-    const espnTeams = await this.espnTeamModel
-      .find({
-        leagueId: competition,
-      })
-      .sort({
-        name: 1,
-      })
-      .lean()
-      .exec();
-
-    if (espnTeams.length > 0) {
-      return espnTeams;
+    if (!normalizedCompetitionId) {
+      return [];
     }
 
-    return this.footballDataTeamModel
+    return this.espnTeamModel
       .find({
-        competitionCode: competitionId?.trim().toUpperCase(),
+        leagueId: normalizedCompetitionId,
       })
       .sort({
         name: 1,
@@ -395,6 +381,27 @@ export class SportsDataReadService {
 
     return this.espnFixtureModel
       .find(filter)
+      .select({
+        _id: 0,
+        eventId: 1,
+        leagueId: 1,
+        season: 1,
+        fixtureDate: 1,
+        status: 1,
+        statusDetail: 1,
+        statusShortDetail: 1,
+        period: 1,
+        completed: 1,
+        live: 1,
+        displayClock: 1,
+        homeTeamId: 1,
+        awayTeamId: 1,
+        homeScore: 1,
+        awayScore: 1,
+        venueId: 1,
+        venueName: 1,
+        collectedAt: 1,
+      })
       .sort({
         fixtureDate: 1,
       })
@@ -413,6 +420,27 @@ export class SportsDataReadService {
 
     return this.espnFixtureModel
       .find(filter)
+      .select({
+        _id: 0,
+        eventId: 1,
+        leagueId: 1,
+        season: 1,
+        fixtureDate: 1,
+        status: 1,
+        statusDetail: 1,
+        statusShortDetail: 1,
+        period: 1,
+        completed: 1,
+        live: 1,
+        displayClock: 1,
+        homeTeamId: 1,
+        awayTeamId: 1,
+        homeScore: 1,
+        awayScore: 1,
+        venueId: 1,
+        venueName: 1,
+        collectedAt: 1,
+      })
       .sort({
         fixtureDate: 1,
       })
@@ -447,6 +475,27 @@ export class SportsDataReadService {
 
     return this.espnFixtureModel
       .find(filter)
+      .select({
+        _id: 0,
+        eventId: 1,
+        leagueId: 1,
+        season: 1,
+        fixtureDate: 1,
+        status: 1,
+        statusDetail: 1,
+        statusShortDetail: 1,
+        period: 1,
+        completed: 1,
+        live: 1,
+        displayClock: 1,
+        homeTeamId: 1,
+        awayTeamId: 1,
+        homeScore: 1,
+        awayScore: 1,
+        venueId: 1,
+        venueName: 1,
+        collectedAt: 1,
+      })
       .sort({
         fixtureDate: -1,
       })
@@ -455,70 +504,431 @@ export class SportsDataReadService {
   }
 
   // ============================================================
-  // ESPN SUMMARY
+  // ESPN FIXTURE PAYLOAD — SINGULAR READS
   // ============================================================
 
-  /**
-   * Returns the canonical ESPN Summary stored inside the
-   * corresponding fixture document.
-   */
-  async getFixtureSummary(eventId: string): Promise<unknown> {
-    const normalizedEventId = eventId.trim();
-
-    if (!normalizedEventId) {
-      return null;
-    }
-
+  async getFixtureId(eventId: string): Promise<unknown> {
     const fixture = await this.espnFixtureModel
-      .findOne({
-        eventId: normalizedEventId,
-      })
+      .findOne({ eventId: eventId.trim() })
       .select({
-        eventId: 1,
-        leagueId: 1,
-        season: 1,
-        fixtureDate: 1,
-        completed: 1,
-        'payload.summary': 1,
-        'payload.summaryCollectedAt': 1,
+        _id: 0,
+        'payload.id': 1,
       })
       .lean()
       .exec();
 
-    if (!fixture) {
-      return null;
-    }
+    return fixture?.payload?.id ?? null;
+  }
 
-    const payload =
-      fixture.payload && typeof fixture.payload === 'object'
-        ? fixture.payload
-        : undefined;
+  async getFixtureUid(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.uid': 1,
+      })
+      .lean()
+      .exec();
 
-    const summary = payload?.summary;
+    return fixture?.payload?.uid ?? null;
+  }
 
-    if (!summary || typeof summary !== 'object') {
-      return null;
-    }
+  async getFixtureDate(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.date': 1,
+      })
+      .lean()
+      .exec();
 
-    return {
-      eventId: fixture.eventId,
+    return fixture?.payload?.date ?? null;
+  }
 
-      leagueId: fixture.leagueId,
+  async getFixtureName(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.name': 1,
+      })
+      .lean()
+      .exec();
 
-      season: fixture.season,
+    return fixture?.payload?.name ?? null;
+  }
 
-      fixtureDate: fixture.fixtureDate,
+  async getFixtureShortName(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.shortName': 1,
+      })
+      .lean()
+      .exec();
 
-      completed: fixture.completed,
+    return fixture?.payload?.shortName ?? null;
+  }
 
-      summary,
+  async getFixtureTimeValid(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.timeValid': 1,
+      })
+      .lean()
+      .exec();
 
-      summaryCollectedAt: payload?.summaryCollectedAt ?? null,
-    };
+    return fixture?.payload?.timeValid ?? null;
+  }
+
+  async getFixtureSeason(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.season': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.season ?? null;
+  }
+
+  async getFixtureSeasonType(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.seasonType': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.seasonType ?? null;
+  }
+
+  async getFixtureCompetitions(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.competitions': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.competitions ?? null;
+  }
+
+  async getFixtureLinks(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.links': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.links ?? null;
+  }
+
+  async getFixtureLeague(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.league': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.league ?? null;
+  }
+
+  async getFixtureStatus(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.status': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.status ?? null;
+  }
+
+  async getFixtureVenue(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.venue': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.venue ?? null;
   }
 
   // ============================================================
-  // LEAGUE TABLE — FALLBACK
+  // ESPN SUMMARY — SINGULAR READS
+  // ============================================================
+
+  async getFixtureSummaryBoxscore(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.boxscore': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.boxscore ?? null;
+  }
+
+  async getFixtureSummaryFormat(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.format': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.format ?? null;
+  }
+
+  async getFixtureSummaryGameInfo(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.gameInfo': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.gameInfo ?? null;
+  }
+
+  async getFixtureSummaryLastFiveGames(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.lastFiveGames': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.lastFiveGames ?? null;
+  }
+
+  async getFixtureSummaryLeaders(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.leaders': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.leaders ?? null;
+  }
+
+  async getFixtureSummaryBroadcasts(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.broadcasts': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.broadcasts ?? null;
+  }
+
+  async getFixtureSummaryPickcenter(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.pickcenter': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.pickcenter ?? null;
+  }
+
+  async getFixtureSummaryOdds(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.odds': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.odds ?? null;
+  }
+
+  async getFixtureSummaryHasOdds(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.hasOdds': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.hasOdds ?? null;
+  }
+
+  async getFixtureSummaryRosters(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.rosters': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.rosters ?? null;
+  }
+
+  async getFixtureSummaryNews(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.news': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.news ?? null;
+  }
+
+  async getFixtureSummarySeasonSeries(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.seasonseries': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.seasonseries ?? null;
+  }
+
+  async getFixtureSummaryVideos(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.videos': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.videos ?? null;
+  }
+
+  async getFixtureSummaryHeader(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.header': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.header ?? null;
+  }
+
+  async getFixtureSummaryKeyEvents(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.keyEvents': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.keyEvents ?? null;
+  }
+
+  async getFixtureSummaryCommentary(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.commentary': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.commentary ?? null;
+  }
+
+  async getFixtureSummaryWallclockAvailable(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.wallclockAvailable': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.wallclockAvailable ?? null;
+  }
+
+  async getFixtureSummaryMeta(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.meta': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.meta ?? null;
+  }
+
+  async getFixtureSummaryStandings(eventId: string): Promise<unknown> {
+    const fixture = await this.espnFixtureModel
+      .findOne({ eventId: eventId.trim() })
+      .select({
+        _id: 0,
+        'payload.summary.standings': 1,
+      })
+      .lean()
+      .exec();
+
+    return fixture?.payload?.summary?.standings ?? null;
+  }
+
+  // ============================================================
+  // LEAGUE TABLE — DIRECT STORED DATA
   // ============================================================
 
   async getLeagueTable(
@@ -732,7 +1142,7 @@ export class SportsDataReadService {
       filter.eventId = query.eventId.trim();
     }
 
-    const result = await this.paginateModel(
+    const result = await this.paginateModel<SportsSyncStateDocument>(
       this.sportsSyncStateModel,
       {
         ...query,
@@ -1551,9 +1961,35 @@ export class SportsDataReadService {
       return null;
     }
 
+    /*
+     * Prediction calculation must never hydrate the complete ESPN fixture
+     * document or complete Summary payload.
+     *
+     * Only the fixture identity/state fields, prediction-relevant Summary
+     * sections, active competition metadata, and the two participating teams
+     * are loaded.
+     */
     const fixture = await this.espnFixtureModel
       .findOne({
         eventId: normalizedEventId,
+      })
+      .select({
+        _id: 0,
+        eventId: 1,
+        leagueId: 1,
+        season: 1,
+        fixtureDate: 1,
+        live: 1,
+        completed: 1,
+        homeTeamId: 1,
+        awayTeamId: 1,
+        collectedAt: 1,
+        'payload.summary.predictor': 1,
+        'payload.summary.winprobability': 1,
+        'payload.summary.winProbability': 1,
+        'payload.summary.pickcenter': 1,
+        'payload.summary.odds': 1,
+        'payload.summaryCollectedAt': 1,
       })
       .lean()
       .exec();
@@ -1567,6 +2003,14 @@ export class SportsDataReadService {
         .findOne({
           competitionId: fixture.leagueId,
         })
+        .select({
+          _id: 0,
+          competitionId: 1,
+          name: 1,
+          status: 1,
+          season: 1,
+          espnPayload: 1,
+        })
         .lean()
         .exec(),
 
@@ -1578,6 +2022,7 @@ export class SportsDataReadService {
           },
         })
         .select({
+          _id: 0,
           teamId: 1,
           leagueId: 1,
           name: 1,
@@ -1592,30 +2037,40 @@ export class SportsDataReadService {
 
     const payload =
       fixture.payload && typeof fixture.payload === 'object'
-        ? fixture.payload
-        : undefined;
+        ? (fixture.payload as Record<string, unknown>)
+        : {};
 
-    const summary =
-      payload?.summary && typeof payload.summary === 'object'
+    const storedSummary =
+      payload.summary && typeof payload.summary === 'object'
         ? (payload.summary as Record<string, unknown>)
-        : null;
+        : {};
 
-    const summaryCollectedAt = payload?.summaryCollectedAt ?? null;
+    const summary: SportsPredictionData['summary'] = {
+      predictor: storedSummary.predictor,
+      winprobability: storedSummary.winprobability,
+      winProbability: storedSummary.winProbability,
+      pickcenter: storedSummary.pickcenter,
+      odds: storedSummary.odds,
+    };
+
+    const summaryAvailable = Object.values(summary).some(
+      (section) => section !== undefined && section !== null,
+    );
+
+    const summaryCollectedAt = payload.summaryCollectedAt ?? null;
 
     const now = new Date();
 
     const fixtureIsFuture = fixture.fixtureDate > now;
     const fixtureIsNotLive = fixture.live !== true;
     const fixtureIsNotCompleted = fixture.completed !== true;
-    const summaryAvailable = Boolean(summary);
     const summaryTimestampAvailable = Boolean(summaryCollectedAt);
     const competitionAvailable = Boolean(competition);
     const competitionOperational = Boolean(
       competition &&
-      [
-        ActiveCompetitionStatus.ACTIVE,
-        ActiveCompetitionStatus.UPCOMING,
-      ].includes(competition.status),
+        [ActiveCompetitionStatus.ACTIVE, ActiveCompetitionStatus.UPCOMING].includes(
+          competition.status,
+        ),
     );
     const seasonMatches = Boolean(
       !competition?.season || competition.season === fixture.season,
@@ -1664,21 +2119,44 @@ export class SportsDataReadService {
       notReadyReasons.push('TEAMS_MISSING');
     }
 
+    const fixtureSnapshot: SportsPredictionData['fixture'] = {
+      eventId: fixture.eventId,
+      leagueId: fixture.leagueId,
+      season: fixture.season,
+      fixtureDate: fixture.fixtureDate,
+      live: fixture.live,
+      completed: fixture.completed,
+      homeTeamId: fixture.homeTeamId,
+      awayTeamId: fixture.awayTeamId,
+      collectedAt: fixture.collectedAt,
+    };
+
+    const competitionSnapshot: SportsPredictionData['competition'] =
+      competition
+        ? {
+            competitionId: competition.competitionId,
+            name: competition.name,
+            status: competition.status,
+            season: competition.season,
+            espnPayload: competition.espnPayload,
+          }
+        : null;
+
     return {
       ready: notReadyReasons.length === 0,
       reason: notReadyReasons[0] ?? null,
       reasons: notReadyReasons,
 
-      fixture,
+      fixture: fixtureSnapshot,
 
       summary,
 
-      competition,
+      competition: competitionSnapshot,
 
       homeTeam: homeTeam ?? null,
       awayTeam: awayTeam ?? null,
 
-      fixtureCollectedAt: fixture.collectedAt ?? null,
+      fixtureCollectedAt: fixture.collectedAt,
       summaryCollectedAt,
     };
   }

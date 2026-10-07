@@ -1,6 +1,49 @@
-import type { ActiveCompetitionDocument } from '../schemas/active-competition.schema';
-import type { EspnFixtureDocument } from '../schemas/espn/espn-fixture.schema';
+import type { ActiveCompetitionStatus } from './active-competition.interface';
 import type { EspnTeamDocument } from '../schemas/espn/espn-team.schema';
+
+export interface SportsPredictionFixture {
+  eventId: string;
+
+  leagueId: string;
+
+  season: number;
+
+  fixtureDate: Date;
+
+  live: boolean;
+
+  completed?: boolean;
+
+  homeTeamId: string;
+
+  awayTeamId: string;
+
+  collectedAt: Date;
+}
+
+export interface SportsPredictionSummary {
+  predictor?: unknown;
+
+  winprobability?: unknown;
+
+  winProbability?: unknown;
+
+  pickcenter?: unknown;
+
+  odds?: unknown;
+}
+
+export interface SportsPredictionCompetition {
+  competitionId: string;
+
+  name: string;
+
+  status: ActiveCompetitionStatus;
+
+  season?: number;
+
+  espnPayload?: Record<string, unknown>;
+}
 
 export interface SportsPredictionData {
   ready: boolean;
@@ -9,11 +52,21 @@ export interface SportsPredictionData {
 
   reasons: string[];
 
-  fixture: EspnFixtureDocument;
+  /**
+   * Only the fixture fields required by prediction calculation.
+   *
+   * The complete ESPN fixture document is intentionally not loaded here.
+   */
+  fixture: SportsPredictionFixture;
 
-  summary: Record<string, unknown> | null;
+  /**
+   * Only probability/odds Summary sections required by the prediction
+   * calculation are returned. The full ESPN Summary is never loaded into
+   * the prediction read contract.
+   */
+  summary: SportsPredictionSummary | null;
 
-  competition: ActiveCompetitionDocument | null;
+  competition: SportsPredictionCompetition | null;
 
   homeTeam: Pick<
     EspnTeamDocument,
@@ -43,7 +96,7 @@ export interface SportsPredictionData {
 }
 
 export interface SportsSettlementData {
-  fixture: EspnFixtureDocument;
+  fixture: import('../schemas/espn/espn-fixture.schema').EspnFixtureDocument;
 
   summary: Record<string, unknown> | null;
 

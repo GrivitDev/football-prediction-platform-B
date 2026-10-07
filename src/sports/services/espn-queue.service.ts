@@ -13,6 +13,8 @@ import { SportsSyncUnitStatus } from '../schemas/sports-sync-state.schema';
 
 import { SportsSyncStateService } from './sports-sync-state.service';
 
+import { SPORTS_DATA_COLLECTION_CONFIG } from '../config/sports-data-collection.config';
+
 @Injectable()
 export class EspnQueueService {
   private startupReady = false;
@@ -257,6 +259,17 @@ export class EspnQueueService {
     // ==========================================================
 
     if (existing) {
+      if (
+        existing.type === EspnQueueJobType.SUMMARY_REFRESH &&
+        existing.maxAttempts <
+          SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts + 1
+      ) {
+        existing.maxAttempts =
+          SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts + 1;
+
+        await existing.save();
+      }
+
       if (stateComplete) {
         if (existing.status !== EspnQueueStatus.COMPLETED) {
           existing.status = EspnQueueStatus.COMPLETED;
@@ -288,6 +301,38 @@ export class EspnQueueService {
         return existing;
       }
 
+      if (existing.status === EspnQueueStatus.FAILED) {
+        const now = new Date();
+
+        if (existing.type === EspnQueueJobType.SUMMARY_REFRESH) {
+          existing.maxAttempts = Math.max(
+            existing.maxAttempts,
+            SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts + 1,
+          );
+        }
+
+        if (existing.attempts >= existing.maxAttempts) {
+          return existing;
+        }
+
+        if (
+          existing.nextAttemptAt &&
+          existing.nextAttemptAt.getTime() > now.getTime()
+        ) {
+          return existing;
+        }
+
+        existing.status = EspnQueueStatus.PENDING;
+        existing.priority = params.priority;
+        existing.scheduledFor = params.scheduledFor;
+        existing.startedAt = undefined;
+        existing.completedAt = undefined;
+        existing.failedAt = undefined;
+        existing.nextAttemptAt = undefined;
+
+        return existing.save();
+      }
+
       return this.reopenJob(existing, params);
     }
 
@@ -315,7 +360,10 @@ export class EspnQueueService {
 
         attempts: 0,
 
-        maxAttempts: 3,
+        maxAttempts:
+          params.jobType === EspnQueueJobType.SUMMARY_REFRESH
+            ? SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts + 1
+            : SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts,
 
         scheduledFor: params.scheduledFor,
       });
@@ -332,6 +380,17 @@ export class EspnQueueService {
 
       if (!existing) {
         throw error;
+      }
+
+      if (
+        existing.type === EspnQueueJobType.SUMMARY_REFRESH &&
+        existing.maxAttempts <
+          SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts + 1
+      ) {
+        existing.maxAttempts =
+          SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts + 1;
+
+        await existing.save();
       }
 
       if (stateComplete) {
@@ -359,6 +418,38 @@ export class EspnQueueService {
         existing.status === EspnQueueStatus.PROCESSING
       ) {
         return existing;
+      }
+
+      if (existing.status === EspnQueueStatus.FAILED) {
+        const now = new Date();
+
+        if (existing.type === EspnQueueJobType.SUMMARY_REFRESH) {
+          existing.maxAttempts = Math.max(
+            existing.maxAttempts,
+            SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts + 1,
+          );
+        }
+
+        if (existing.attempts >= existing.maxAttempts) {
+          return existing;
+        }
+
+        if (
+          existing.nextAttemptAt &&
+          existing.nextAttemptAt.getTime() > now.getTime()
+        ) {
+          return existing;
+        }
+
+        existing.status = EspnQueueStatus.PENDING;
+        existing.priority = params.priority;
+        existing.scheduledFor = params.scheduledFor;
+        existing.startedAt = undefined;
+        existing.completedAt = undefined;
+        existing.failedAt = undefined;
+        existing.nextAttemptAt = undefined;
+
+        return existing.save();
       }
 
       return this.reopenJob(existing, params);
@@ -512,18 +603,42 @@ export class EspnQueueService {
         {
           $set: {
             status: EspnQueueStatus.FAILED,
-
             lastError: message,
-
             failedAt: new Date(),
-
             nextAttemptAt: new Date(Date.now() + retryDelayMs),
           },
-
           $unset: {
             startedAt: 1,
-
             completedAt: 1,
+          },
+        },
+      );
+
+      return;
+    }
+
+    /*
+     * SUMMARY_REFRESH uses one startup attempt plus the configured
+     * number of background retries. Once maxAttempts is reached,
+     * the queue job is terminal and must never be reopened by the
+     * continuous Summary queue builder unless a genuinely new
+     * operational condition creates a new job key.
+     */
+    if (job.type === EspnQueueJobType.SUMMARY_REFRESH) {
+      await this.queueModel.updateOne(
+        {
+          _id: job._id,
+        },
+        {
+          $set: {
+            status: EspnQueueStatus.COMPLETED,
+            lastError: message,
+            failedAt: new Date(),
+            completedAt: new Date(),
+          },
+          $unset: {
+            nextAttemptAt: 1,
+            startedAt: 1,
           },
         },
       );
@@ -538,17 +653,12 @@ export class EspnQueueService {
       {
         $set: {
           status: EspnQueueStatus.FAILED,
-
           lastError: message,
-
           failedAt: new Date(),
-
           completedAt: new Date(),
         },
-
         $unset: {
           nextAttemptAt: 1,
-
           startedAt: 1,
         },
       },

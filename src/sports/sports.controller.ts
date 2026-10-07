@@ -42,6 +42,22 @@ export class SportsController {
     );
   }
 
+  @Get('competitions/:competitionId/standings')
+  async getCompetitionStandings(
+    @Param('competitionId') competitionId: string,
+    @Query('season') season?: string,
+  ) {
+    return this.sportsDataReadService.getLeagueTable(
+      competitionId,
+      season ? Number(season) : undefined,
+    );
+  }
+
+  @Get('competitions/:competitionId/teams')
+  async getCompetitionTeams(@Param('competitionId') competitionId: string) {
+    return this.sportsDataReadService.getTeams(competitionId);
+  }
+
   @Get('fixtures/upcoming')
   async getUpcomingFixtures(
     @Query('from') from?: string,
@@ -73,25 +89,174 @@ export class SportsController {
     );
   }
 
-  @Get('fixtures/:eventId/summary')
-  async getFixtureSummary(@Param('eventId') eventId: string) {
-    return this.sportsDataReadService.getFixtureSummary(eventId);
+  // ============================================================
+  // PUBLIC / ESPN FIXTURE PAYLOAD
+  // ============================================================
+
+  @Get('fixtures/:eventId/id')
+  async getFixtureId(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureId(eventId);
   }
 
-  @Get('competitions/:competitionId/table')
-  async getLeagueTable(
-    @Param('competitionId') competitionId: string,
-    @Query('season') season?: string,
-  ) {
-    return this.sportsDataReadService.getLeagueTable(
-      competitionId,
-      season ? Number(season) : undefined,
+  @Get('fixtures/:eventId/uid')
+  async getFixtureUid(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureUid(eventId);
+  }
+
+  @Get('fixtures/:eventId/date')
+  async getFixtureDate(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureDate(eventId);
+  }
+
+  @Get('fixtures/:eventId/name')
+  async getFixtureName(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureName(eventId);
+  }
+
+  @Get('fixtures/:eventId/short-name')
+  async getFixtureShortName(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureShortName(eventId);
+  }
+
+  @Get('fixtures/:eventId/time-valid')
+  async getFixtureTimeValid(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureTimeValid(eventId);
+  }
+
+  @Get('fixtures/:eventId/season')
+  async getFixtureSeason(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSeason(eventId);
+  }
+
+  @Get('fixtures/:eventId/season-type')
+  async getFixtureSeasonType(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSeasonType(eventId);
+  }
+
+  @Get('fixtures/:eventId/competitions')
+  async getFixtureCompetitions(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureCompetitions(eventId);
+  }
+
+  @Get('fixtures/:eventId/links')
+  async getFixtureLinks(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureLinks(eventId);
+  }
+
+  @Get('fixtures/:eventId/league')
+  async getFixtureLeague(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureLeague(eventId);
+  }
+
+  @Get('fixtures/:eventId/status')
+  async getFixtureStatus(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureStatus(eventId);
+  }
+
+  @Get('fixtures/:eventId/venue')
+  async getFixtureVenue(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureVenue(eventId);
+  }
+
+  // ============================================================
+  // PUBLIC / ESPN MATCH SUMMARY
+  // ============================================================
+
+  @Get('fixtures/:eventId/summary/boxscore')
+  async getFixtureSummaryBoxscore(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryBoxscore(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/format')
+  async getFixtureSummaryFormat(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryFormat(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/game-info')
+  async getFixtureSummaryGameInfo(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryGameInfo(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/last-five-games')
+  async getFixtureSummaryLastFiveGames(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryLastFiveGames(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/leaders')
+  async getFixtureSummaryLeaders(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryLeaders(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/broadcasts')
+  async getFixtureSummaryBroadcasts(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryBroadcasts(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/pickcenter')
+  async getFixtureSummaryPickcenter(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryPickcenter(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/odds')
+  async getFixtureSummaryOdds(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryOdds(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/has-odds')
+  async getFixtureSummaryHasOdds(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryHasOdds(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/rosters')
+  async getFixtureSummaryRosters(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryRosters(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/news')
+  async getFixtureSummaryNews(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryNews(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/season-series')
+  async getFixtureSummarySeasonSeries(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummarySeasonSeries(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/videos')
+  async getFixtureSummaryVideos(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryVideos(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/header')
+  async getFixtureSummaryHeader(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryHeader(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/key-events')
+  async getFixtureSummaryKeyEvents(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryKeyEvents(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/commentary')
+  async getFixtureSummaryCommentary(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryCommentary(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/wallclock-available')
+  async getFixtureSummaryWallclockAvailable(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryWallclockAvailable(
+      eventId,
     );
   }
 
-  @Get('competitions/:competitionId/teams')
-  async getTeams(@Param('competitionId') competitionId: string) {
-    return this.sportsDataReadService.getTeams(competitionId);
+  @Get('fixtures/:eventId/summary/meta')
+  async getFixtureSummaryMeta(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryMeta(eventId);
+  }
+
+  @Get('fixtures/:eventId/summary/standings')
+  async getFixtureSummaryStandings(@Param('eventId') eventId: string) {
+    return this.sportsDataReadService.getFixtureSummaryStandings(eventId);
   }
 
   // ============================================================

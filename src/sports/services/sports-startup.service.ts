@@ -9,6 +9,11 @@ import { SportsSyncStateService } from './sports-sync-state.service';
 import { CompetitionPriority } from '../enums/competition-priority.enum';
 import { EspnQueueJobType } from '../interfaces/espn-queue.interface';
 
+import {
+  SportsSyncUnitStatus,
+  SportsSyncUnitType,
+} from '../schemas/sports-sync-state.schema';
+
 import { EspnService } from '../providers/espn.service';
 
 import { SportsCollectionService } from './sports-collection.service';
@@ -185,17 +190,6 @@ export class SportsStartupService implements OnModuleInit {
           context.leagueId,
           context.season,
         );
-
-        const summaryComplete =
-          await this.sportsSyncStateService.isSummaryComplete(
-            context.summaryStateKey,
-          );
-
-        if (!summaryComplete) {
-          throw new Error(
-            `Summary synchronization state ${context.summaryStateKey} is not complete`,
-          );
-        }
       }
 
       // --------------------------------------------------------
@@ -589,9 +583,9 @@ export class SportsStartupService implements OnModuleInit {
     }
 
     /*
-     * Reconcile Summary state from the canonical fixture collection. This is
-     * the only point at which existing Summary presence is inspected.
-     * ESPN responses themselves are accepted as-is once fetched.
+     * Reconcile the persistent Summary ledger against the canonical
+     * fixture collection. Existing failed/partial work is not attempted
+     * again inside startup; it is handed to the normal queue.
      */
     for (const context of contexts) {
       const state = await this.sportsSyncStateService.ensureSummaryRefreshState(
@@ -605,19 +599,68 @@ export class SportsStartupService implements OnModuleInit {
 
       await this.sportsSyncStateService.resetInterruptedUnits(state.stateKey);
 
-      const incompleteEvents =
-        await this.sportsSyncStateService.getIncompleteSummaryEvents(
-          state.stateKey,
-        );
+      const refreshedState = await this.sportsSyncStateService.requireState(
+        state.stateKey,
+      );
 
-      checked += state.units.length;
-      missingSummary += incompleteEvents.length;
+      const summaryUnits = refreshedState.units.filter(
+        (unit) =>
+          unit.type === SportsSyncUnitType.STEP &&
+          typeof unit.stepKey === 'string' &&
+          unit.stepKey.startsWith('SUMMARY:'),
+      );
+
+      const summaryTotalAttempts =
+        SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.maxAttempts + 1;
+
+      const retryableUnits = summaryUnits.filter(
+        (unit) =>
+          (unit.status === SportsSyncUnitStatus.PENDING ||
+            unit.status === SportsSyncUnitStatus.FAILED) &&
+          unit.attempts > 0 &&
+          unit.attempts < summaryTotalAttempts,
+      );
+
+      const initialUnits = summaryUnits.filter(
+        (unit) =>
+          unit.status === SportsSyncUnitStatus.PENDING && unit.attempts === 0,
+      );
+
+      checked += summaryUnits.length;
+      missingSummary += retryableUnits.length + initialUnits.length;
 
       this.logger.log(
         `Summary state prepared for ${context.leagueId}: ` +
-          `fixtures=${state.units.length}, ` +
-          `missing=${incompleteEvents.length}`,
+          `fixtures=${summaryUnits.length}, ` +
+          `initial=${initialUnits.length}, ` +
+          `background=${retryableUnits.length}`,
       );
+
+      /*
+       * Existing background work is simply restored into the normal queue.
+       * The queue service preserves attempts and backoff for an existing
+       * FAILED job, so startup does not reset its retry budget.
+       */
+      const retryScheduledFor = new Date(
+        Date.now() +
+          SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.retryDelayMinutes * 60_000,
+      );
+
+      for (const unit of retryableUnits) {
+        const eventId = String(unit.stepKey).slice('SUMMARY:'.length);
+
+        if (!eventId) {
+          continue;
+        }
+
+        await this.espnQueueService.addSummaryRefreshJob({
+          leagueId: context.leagueId,
+          eventId,
+          season: context.season,
+          priority: context.priority,
+          scheduledFor: retryScheduledFor,
+        });
+      }
     }
 
     while (true) {
@@ -626,200 +669,36 @@ export class SportsStartupService implements OnModuleInit {
         eventId: string;
       }> = [];
 
-      /*
-       * Pull a bounded number of missing events across the active leagues.
-       * This keeps memory flat and still gives the global 20-worker pool
-       * enough work to remain saturated.
-       */
       for (const context of contexts) {
         if (work.length >= this.startupSummaryBatchSize) {
           break;
         }
 
         const remaining = this.startupSummaryBatchSize - work.length;
-        const dueEvents =
-          await this.sportsSyncStateService.getDueIncompleteSummaryEvents(
+
+        const initialEvents =
+          await this.sportsSyncStateService.getInitialSummaryEvents(
             context.summaryStateKey,
             remaining,
           );
 
-        if (dueEvents.length === 0) {
-          continue;
-        }
-
-        await this.sportsSyncStateService.markSummaryEventsProcessing(
-          context.summaryStateKey,
-          dueEvents,
-        );
-
-        for (const eventId of dueEvents) {
+        for (const eventId of initialEvents) {
           work.push({
             context,
             eventId,
           });
-        }
-      }
 
-      if (work.length > 0) {
-        const startedAt = Date.now();
-        const batchResults = await this.processSummaryBatch(
-          work.map((item) => ({
-            context: item.context,
-            eventId: item.eventId,
-          })),
-        );
-
-        const successfulResults = batchResults.filter(
-          (result) => result.success,
-        );
-
-        const failedResults = batchResults.filter((result) => !result.success);
-
-        failedAttempts += failedResults.length;
-
-        let persistenceFailed = 0;
-
-        for (
-          let index = 0;
-          index < successfulResults.length;
-          index += this.startupSummaryPersistenceBatchSize
-        ) {
-          const persistenceBatch = successfulResults.slice(
-            index,
-            index + this.startupSummaryPersistenceBatchSize,
-          );
-
-          try {
-            const bulkResult =
-              await this.sportsCollectionService.collectEspnMatchSummariesBulk(
-                persistenceBatch.map((result) => ({
-                  leagueId: result.context.leagueId,
-                  eventId: result.eventId,
-                  summary: result.summary,
-                })),
-              );
-
-            const groupedSuccess = new Map<string, string[]>();
-
-            for (const result of persistenceBatch) {
-              const ids = groupedSuccess.get(result.stateKey) ?? [];
-              ids.push(result.eventId);
-              groupedSuccess.set(result.stateKey, ids);
-            }
-
-            await Promise.all(
-              [...groupedSuccess.entries()].map(([stateKey, eventIds]) =>
-                this.sportsSyncStateService.markSummaryEventFetchSuccessBatch(
-                  stateKey,
-                  eventIds,
-                ),
-              ),
-            );
-
-            processed += persistenceBatch.length;
-
-            this.logger.log(
-              `SUMMARY persistence batch completed: ` +
-                `requested=${bulkResult.requested}, ` +
-                `matched=${bulkResult.matched}, ` +
-                `modified=${bulkResult.modified}`,
-            );
-          } catch (error) {
-            persistenceFailed += persistenceBatch.length;
-            failedAttempts += persistenceBatch.length;
-
-            const groupedFailure = new Map<string, string[]>();
-
-            for (const result of persistenceBatch) {
-              const ids = groupedFailure.get(result.stateKey) ?? [];
-              ids.push(result.eventId);
-              groupedFailure.set(result.stateKey, ids);
-            }
-
-            await Promise.all(
-              [...groupedFailure.entries()].map(([stateKey, eventIds]) =>
-                this.sportsSyncStateService.markSummaryBulkWriteFailed(
-                  stateKey,
-                  eventIds,
-                  error,
-                ),
-              ),
-            );
-
-            this.logger.error(
-              `SUMMARY persistence batch FAILED: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
+          if (work.length >= this.startupSummaryBatchSize) {
+            break;
           }
         }
+      }
 
-        await Promise.all(
-          failedResults.map((result) =>
-            this.sportsSyncStateService.markSummaryEventFetchFailed(
-              result.stateKey,
-              result.eventId,
-              result.error,
-            ),
-          ),
-        );
-
-        const touchedStateKeys = new Set<string>(
-          work.map((item) =>
-            this.sportsSyncStateService.getQueueStateKey({
-              jobType: EspnQueueJobType.SUMMARY_REFRESH,
-              leagueId: item.context.leagueId,
-              season: item.context.season,
-            }),
-          ),
-        );
-
-        await Promise.all(
-          [...touchedStateKeys].map((stateKey) =>
-            this.sportsSyncStateService.refreshOverallStatus(stateKey),
-          ),
-        );
-
+      if (work.length === 0) {
         this.logger.log(
-          `SUMMARY startup batch completed: ` +
-            `requested=${batchResults.length}, ` +
-            `successful=${successfulResults.length}, ` +
-            `persisted=${successfulResults.length - persistenceFailed}, ` +
-            `failed=${failedResults.length}, ` +
-            `duration=${Date.now() - startedAt}ms`,
+          'ESPN STARTUP SUMMARY PHASE completed initial pass. ' +
+            'Any failed Summary attempts are now background queue work.',
         );
-
-        continue;
-      }
-
-      let allComplete = true;
-      let earliestRetryAt: Date | null = null;
-
-      for (const context of contexts) {
-        const complete = await this.sportsSyncStateService.isSummaryComplete(
-          context.summaryStateKey,
-        );
-
-        if (!complete) {
-          allComplete = false;
-        }
-
-        const nextRetryAt =
-          await this.sportsSyncStateService.getNextIncompleteSummaryRetryAt(
-            context.summaryStateKey,
-          );
-
-        if (
-          nextRetryAt &&
-          (!earliestRetryAt ||
-            nextRetryAt.getTime() < earliestRetryAt.getTime())
-        ) {
-          earliestRetryAt = nextRetryAt;
-        }
-      }
-
-      if (allComplete) {
-        this.logger.log('ESPN STARTUP SUMMARY PHASE completed successfully');
 
         return {
           checked,
@@ -829,19 +708,185 @@ export class SportsStartupService implements OnModuleInit {
         };
       }
 
-      if (earliestRetryAt) {
-        const delay = Math.max(0, earliestRetryAt.getTime() - Date.now());
+      const startedAt = Date.now();
 
-        this.logger.warn(
-          `Summary startup waiting for next retry at ` +
-            `${earliestRetryAt.toISOString()} (wait=${delay}ms)`,
-        );
+      const processingByStateKey = new Map<string, string[]>();
 
-        await this.sleep(delay);
-        continue;
+      for (const item of work) {
+        const eventIds =
+          processingByStateKey.get(item.context.summaryStateKey) ?? [];
+        eventIds.push(item.eventId);
+        processingByStateKey.set(item.context.summaryStateKey, eventIds);
       }
 
-      await this.sleep(1000);
+      await Promise.all(
+        [...processingByStateKey.entries()].map(([stateKey, eventIds]) =>
+          this.sportsSyncStateService.markSummaryEventsProcessing(
+            stateKey,
+            eventIds,
+          ),
+        ),
+      );
+
+      const batchResults = await this.processSummaryBatch(
+        work.map((item) => ({
+          context: item.context,
+          eventId: item.eventId,
+        })),
+      );
+
+      const successfulResults = batchResults.filter((result) => result.success);
+
+      const failedResults = batchResults.filter((result) => !result.success);
+
+      failedAttempts += failedResults.length;
+
+      const failedForBackgroundQueue = new Map<
+        string,
+        {
+          context: StartupLeagueContext;
+          eventId: string;
+        }
+      >();
+
+      for (const result of failedResults) {
+        failedForBackgroundQueue.set(
+          `${result.context.summaryStateKey}:${result.eventId}`,
+          {
+            context: result.context,
+            eventId: result.eventId,
+          },
+        );
+      }
+
+      let persistenceFailed = 0;
+
+      for (
+        let index = 0;
+        index < successfulResults.length;
+        index += this.startupSummaryPersistenceBatchSize
+      ) {
+        const persistenceBatch = successfulResults.slice(
+          index,
+          index + this.startupSummaryPersistenceBatchSize,
+        );
+
+        try {
+          const bulkResult =
+            await this.sportsCollectionService.collectEspnMatchSummariesBulk(
+              persistenceBatch.map((result) => ({
+                leagueId: result.context.leagueId,
+                eventId: result.eventId,
+                summary: result.summary,
+              })),
+            );
+
+          const groupedSuccess = new Map<string, string[]>();
+
+          for (const result of persistenceBatch) {
+            const ids = groupedSuccess.get(result.stateKey) ?? [];
+            ids.push(result.eventId);
+            groupedSuccess.set(result.stateKey, ids);
+          }
+
+          await Promise.all(
+            [...groupedSuccess.entries()].map(([stateKey, eventIds]) =>
+              this.sportsSyncStateService.markSummaryEventFetchSuccessBatch(
+                stateKey,
+                eventIds,
+              ),
+            ),
+          );
+
+          processed += persistenceBatch.length;
+
+          this.logger.log(
+            `SUMMARY persistence batch completed: ` +
+              `requested=${bulkResult.requested}, ` +
+              `matched=${bulkResult.matched}, ` +
+              `modified=${bulkResult.modified}`,
+          );
+        } catch (error) {
+          persistenceFailed += persistenceBatch.length;
+          failedAttempts += persistenceBatch.length;
+
+          const groupedFailure = new Map<string, string[]>();
+
+          for (const result of persistenceBatch) {
+            failedForBackgroundQueue.set(
+              `${result.stateKey}:${result.eventId}`,
+              {
+                context: result.context,
+                eventId: result.eventId,
+              },
+            );
+
+            const ids = groupedFailure.get(result.stateKey) ?? [];
+            ids.push(result.eventId);
+            groupedFailure.set(result.stateKey, ids);
+          }
+
+          await Promise.all(
+            [...groupedFailure.entries()].map(([stateKey, eventIds]) =>
+              this.sportsSyncStateService.markSummaryBulkWriteFailed(
+                stateKey,
+                eventIds,
+                error,
+              ),
+            ),
+          );
+
+          this.logger.error(
+            `SUMMARY persistence batch FAILED: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
+      await Promise.all(
+        failedResults.map((result) =>
+          this.sportsSyncStateService.markSummaryEventFetchFailed(
+            result.stateKey,
+            result.eventId,
+            result.error,
+          ),
+        ),
+      );
+
+      const backgroundScheduledFor = new Date(
+        Date.now() +
+          SPORTS_DATA_COLLECTION_CONFIG.ESPN.queue.retryDelayMinutes * 60_000,
+      );
+
+      for (const item of failedForBackgroundQueue.values()) {
+        await this.espnQueueService.addSummaryRefreshJob({
+          leagueId: item.context.leagueId,
+          eventId: item.eventId,
+          season: item.context.season,
+          priority: item.context.priority,
+          scheduledFor: backgroundScheduledFor,
+        });
+      }
+
+      const touchedStateKeys = new Set(
+        work.map((item) => item.context.summaryStateKey),
+      );
+
+      await Promise.all(
+        [...touchedStateKeys].map((stateKey) =>
+          this.sportsSyncStateService.refreshOverallStatus(stateKey),
+        ),
+      );
+
+      this.logger.log(
+        `SUMMARY startup batch completed: ` +
+          `requested=${batchResults.length}, ` +
+          `successful=${successfulResults.length}, ` +
+          `persisted=${successfulResults.length - persistenceFailed}, ` +
+          `failed=${failedResults.length}, ` +
+          `duration=${Date.now() - startedAt}ms`,
+      );
     }
   }
 

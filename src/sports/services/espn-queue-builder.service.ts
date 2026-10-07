@@ -10,6 +10,7 @@ import {
 } from '../schemas/espn/espn-fixture.schema';
 
 import { CompetitionPriority } from '../enums/competition-priority.enum';
+import { EspnQueueJobType } from '../interfaces/espn-queue.interface';
 
 import { EspnQueueService } from './espn-queue.service';
 import { EspnActiveCompetitionService } from './espn-active-competition.service';
@@ -19,7 +20,7 @@ import { SportsSyncStateService } from './sports-sync-state.service';
 export class EspnQueueBuilderService {
   private readonly logger = new Logger(EspnQueueBuilderService.name);
 
-  private readonly upcomingWindowDays = 4;
+  private readonly upcomingWindowDays = 8;
   private readonly fixtureRefreshForwardDays = 8;
   private readonly staleFixtureRefreshHours = 48;
   private readonly recentFinishedWindowHours = 48;
@@ -382,6 +383,22 @@ export class EspnQueueBuilderService {
         continue;
       }
 
+      const summaryStateKey = this.sportsSyncStateService.getQueueStateKey({
+        jobType: EspnQueueJobType.SUMMARY_REFRESH,
+        leagueId: fixture.leagueId,
+        season: fixture.season,
+      });
+
+      const summaryAlreadyHandled =
+        await this.sportsSyncStateService.isSummaryEventSuccessful(
+          summaryStateKey,
+          fixture.eventId,
+        );
+
+      if (summaryAlreadyHandled) {
+        continue;
+      }
+
       const fixtureDate = fixture.fixtureDate
         ? new Date(fixture.fixtureDate)
         : undefined;
@@ -651,15 +668,29 @@ export class EspnQueueBuilderService {
     let summaryRefreshQueued = false;
 
     if (fixture && !this.hasSummary(fixture)) {
-      const summaryJob = await this.espnQueueService.addSummaryRefreshJob({
+      const summaryStateKey = this.sportsSyncStateService.getQueueStateKey({
+        jobType: EspnQueueJobType.SUMMARY_REFRESH,
         leagueId: fixture.leagueId || leagueId,
-        eventId,
         season: typeof fixture.season === 'number' ? fixture.season : season,
-        priority,
-        scheduledFor: new Date(),
       });
 
-      summaryRefreshQueued = this.isFreshPendingJob(summaryJob);
+      const summaryAlreadyHandled =
+        await this.sportsSyncStateService.isSummaryEventSuccessful(
+          summaryStateKey,
+          eventId,
+        );
+
+      if (!summaryAlreadyHandled) {
+        const summaryJob = await this.espnQueueService.addSummaryRefreshJob({
+          leagueId: fixture.leagueId || leagueId,
+          eventId,
+          season: typeof fixture.season === 'number' ? fixture.season : season,
+          priority,
+          scheduledFor: new Date(),
+        });
+
+        summaryRefreshQueued = this.isFreshPendingJob(summaryJob);
+      }
     }
 
     return {

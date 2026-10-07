@@ -260,7 +260,7 @@ export interface MonitorExpectedWork {
   finishedFixturesMissingSummary: number;
 
   /**
-   * Upcoming fixtures inside the normal four-day Summary
+   * Upcoming fixtures inside the normal eight-day Summary
    * window that do not yet contain payload.summary.
    */
   upcomingFixturesMissingSummary: number;
