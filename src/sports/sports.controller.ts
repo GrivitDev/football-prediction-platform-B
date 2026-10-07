@@ -106,17 +106,8 @@ export class SportsController {
     @Query('date') date: string | undefined,
     @Query('from') from: string | undefined,
     @Query('to') to: string | undefined,
-    @Query('competitionId') competitionId: string | undefined,
-    @Query('teamId') teamId: string | undefined,
-    @Query('limit') limit: string | undefined,
     @Res() response: Response,
   ): Promise<void> {
-    const parsedLimit = limit !== undefined ? Number(limit) : 30;
-
-    if (!Number.isFinite(parsedLimit) || parsedLimit < 1) {
-      throw new BadRequestException('Invalid limit.');
-    }
-
     response.status(200);
     response.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
     response.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -131,19 +122,13 @@ export class SportsController {
           date,
           from,
           to,
-          competitionId,
-          teamId,
         }),
-        parsedLimit,
       )) {
         if (response.writableEnded || response.destroyed) {
           break;
         }
 
-        response.write(
-          `${JSON.stringify({ type: 'item', item })}\
-`,
-        );
+        response.write(`${JSON.stringify({ type: 'item', item })}\n`);
 
         const flushableResponse = response as Response & {
           flush?: () => void;
@@ -153,10 +138,7 @@ export class SportsController {
       }
 
       if (!response.writableEnded) {
-        response.write(
-          `${JSON.stringify({ type: 'complete' })}\
-`,
-        );
+        response.write(`${JSON.stringify({ type: 'complete' })}\n`);
         response.end();
       }
     } catch (error) {
@@ -165,8 +147,7 @@ export class SportsController {
           `${JSON.stringify({
             type: 'error',
             message: 'Football news stream failed.',
-          })}\
-`,
+          })}\n`,
         );
         response.end();
       }

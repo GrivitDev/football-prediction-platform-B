@@ -273,19 +273,20 @@ export class YoutubeHighlightService {
       return null;
     }
 
-    const payload =
+    const payload: Record<string, unknown> =
       fixture.payload && typeof fixture.payload === 'object'
         ? fixture.payload
         : {};
 
-    const event =
+    const event: Record<string, unknown> =
       payload['event'] && typeof payload['event'] === 'object'
         ? (payload['event'] as Record<string, unknown>)
         : payload;
 
-    const competitionsValue = event['competitions'] ?? payload['competitions'];
+    const competitionsValue: unknown =
+      event['competitions'] ?? payload['competitions'];
 
-    const competitions = Array.isArray(competitionsValue)
+    const competitions: unknown[] = Array.isArray(competitionsValue)
       ? competitionsValue
       : [];
 
@@ -296,7 +297,8 @@ export class YoutubeHighlightService {
         ? (competitions[0] as Record<string, unknown>)
         : undefined;
 
-    const competitionValue = payload['competition'] ?? event['competition'];
+    const competitionValue: unknown =
+      payload['competition'] ?? event['competition'];
 
     const competition =
       competitionValue && typeof competitionValue === 'object'
@@ -344,7 +346,7 @@ export class YoutubeHighlightService {
      * Prefer the original event date, then the competition date,
      * then the normalized fixtureDate stored in MongoDB.
      */
-    const dateValue =
+    const dateValue: unknown =
       event['date'] ?? firstCompetition?.['date'] ?? fixture.fixtureDate;
 
     if (!homeName || !awayName || !dateValue) {
