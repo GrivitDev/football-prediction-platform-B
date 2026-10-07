@@ -98,6 +98,41 @@ export class SportsController {
     );
   }
 
+  @Get('news-feed')
+  async getFootballNews(
+    @Query('date') date?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('competitionId') competitionId?: string,
+    @Query('teamId') teamId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsedPage = page !== undefined ? Number(page) : 1;
+
+    const parsedLimit = limit !== undefined ? Number(limit) : 30;
+
+    if (!Number.isFinite(parsedPage) || parsedPage < 1) {
+      throw new BadRequestException('Invalid page.');
+    }
+
+    if (!Number.isFinite(parsedLimit) || parsedLimit < 1) {
+      throw new BadRequestException('Invalid limit.');
+    }
+
+    return this.sportsDataReadService.getFootballNews(
+      this.buildSportsDataFilter({
+        date,
+        from,
+        to,
+        competitionId,
+        teamId,
+      }),
+      parsedPage,
+      parsedLimit,
+    );
+  }
+
   @Get('fixtures/finished')
   async getFinishedFixtures(
     @Query('date') date?: string,
@@ -830,9 +865,7 @@ export class SportsController {
     teamId?: string;
   }): SportsDataFilter {
     if (input.date && (input.from || input.to)) {
-      throw new BadRequestException(
-        'Use either date or from/to, not both.',
-      );
+      throw new BadRequestException('Use either date or from/to, not both.');
     }
 
     const date = this.parseDate(input.date, 'date');
@@ -872,5 +905,4 @@ export class SportsController {
 
     return parsed;
   }
-
 }

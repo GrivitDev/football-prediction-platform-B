@@ -2,7 +2,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, PipelineStage } from 'mongoose';
 
 // ============================================================
 // ACTIVE COMPETITION
@@ -150,12 +150,21 @@ export interface SportsAdminQuery {
   to?: Date;
 }
 
-interface PaginatedResult<T> {
+export interface PaginatedResult<T> {
   data: T[];
   page: number;
   limit: number;
   total: number;
   totalPages: number;
+}
+
+export interface FootballNewsFeedItem {
+  kind: 'NEWS' | 'VIDEO';
+  eventId: string;
+  leagueId: string;
+  fixtureDate: Date;
+  publishedAt?: string;
+  payload: Record<string, unknown>;
 }
 
 // ============================================================
@@ -269,10 +278,7 @@ export class SportsDataReadService {
     return this.getLeagueTable(competitionId, teamId);
   }
 
-  async getTeams(
-    competitionId: string,
-    teamId?: string,
-  ): Promise<unknown[]> {
+  async getTeams(competitionId: string, teamId?: string): Promise<unknown[]> {
     const normalizedCompetitionId = this.normalizeCompetitionId(competitionId);
 
     if (!normalizedCompetitionId) {
@@ -412,9 +418,7 @@ export class SportsDataReadService {
       .exec();
   }
 
-  async getLiveFixtures(
-    filters: SportsDataFilter = {},
-  ): Promise<unknown[]> {
+  async getLiveFixtures(filters: SportsDataFilter = {}): Promise<unknown[]> {
     const mongoFilter: Record<string, unknown> = {
       live: true,
     };
@@ -449,6 +453,149 @@ export class SportsDataReadService {
       })
       .lean()
       .exec();
+  }
+
+  // ============================================================
+  // FOOTBALL NEWS FEED
+  //
+  // Reads the stored ESPN Summary fragments directly from the
+  // canonical sports_espn_fixtures documents.
+  //
+  // News source:
+  //   payload.summary.news.articles
+  //
+  // Video source:
+  //   payload.summary.videos
+  //
+  // The two sources are deliberately merged into one feed.
+  // ============================================================
+
+  async getFootballNews(
+    filters: SportsDataFilter = {},
+    page = 1,
+    limit = 30,
+  ): Promise<PaginatedResult<FootballNewsFeedItem>> {
+    const mongoFilter: Record<string, unknown> = {
+      completed: true,
+    };
+
+    this.applyFixtureFilters(mongoFilter, filters);
+
+    const normalizedPage = Number.isFinite(page)
+      ? Math.max(Math.floor(page), 1)
+      : 1;
+
+    const normalizedLimit = Number.isFinite(limit)
+      ? Math.min(Math.max(Math.floor(limit), 1), 100)
+      : 30;
+
+    const skip = (normalizedPage - 1) * normalizedLimit;
+
+    const pipeline: PipelineStage[] = [
+      {
+        $match: mongoFilter,
+      },
+      {
+        $project: {
+          eventId: 1,
+          leagueId: 1,
+          fixtureDate: 1,
+          feedItems: {
+            $concatArrays: [
+              {
+                $map: {
+                  input: {
+                    $ifNull: ['$payload.summary.news.articles', []],
+                  },
+                  as: 'article',
+                  in: {
+                    kind: 'NEWS',
+                    payload: '$$article',
+                    publishedAt: '$$article.published',
+                  },
+                },
+              },
+              {
+                $map: {
+                  input: {
+                    $ifNull: ['$payload.summary.videos', []],
+                  },
+                  as: 'video',
+                  in: {
+                    kind: 'VIDEO',
+                    payload: '$$video',
+                    publishedAt: '$$video.originalPublishDate',
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+      {
+        $unwind: '$feedItems',
+      },
+      {
+        $project: {
+          _id: 0,
+          kind: '$feedItems.kind',
+          eventId: 1,
+          leagueId: 1,
+          fixtureDate: 1,
+          publishedAt: '$feedItems.publishedAt',
+          payload: '$feedItems.payload',
+          sortAt: {
+            $convert: {
+              input: '$feedItems.publishedAt',
+              to: 'date',
+              onError: '$fixtureDate',
+              onNull: '$fixtureDate',
+            },
+          },
+        },
+      },
+      {
+        $sort: {
+          sortAt: -1,
+          fixtureDate: -1,
+          eventId: 1,
+        },
+      },
+      {
+        $facet: {
+          data: [
+            {
+              $skip: skip,
+            },
+            {
+              $limit: normalizedLimit,
+            },
+          ],
+          meta: [
+            {
+              $count: 'total',
+            },
+          ],
+        },
+      },
+    ];
+
+    const [result] = await this.espnFixtureModel
+      .aggregate(pipeline)
+      .allowDiskUse(true)
+      .exec();
+
+    const total = result?.meta?.[0]?.total ?? 0;
+
+    const data = Array.isArray(result?.data) ? result.data : [];
+
+    return {
+      data,
+      page: normalizedPage,
+      limit: normalizedLimit,
+      total,
+      totalPages: total > 0 ? Math.ceil(total / normalizedLimit) : 0,
+    };
   }
 
   async getFinishedFixtures(
@@ -1055,11 +1202,7 @@ export class SportsDataReadService {
 
   private startOfUtcDay(value: Date): Date {
     return new Date(
-      Date.UTC(
-        value.getUTCFullYear(),
-        value.getUTCMonth(),
-        value.getUTCDate(),
-      ),
+      Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()),
     );
   }
 
@@ -2151,9 +2294,10 @@ export class SportsDataReadService {
     const competitionAvailable = Boolean(competition);
     const competitionOperational = Boolean(
       competition &&
-        [ActiveCompetitionStatus.ACTIVE, ActiveCompetitionStatus.UPCOMING].includes(
-          competition.status,
-        ),
+      [
+        ActiveCompetitionStatus.ACTIVE,
+        ActiveCompetitionStatus.UPCOMING,
+      ].includes(competition.status),
     );
     const seasonMatches = Boolean(
       !competition?.season || competition.season === fixture.season,
@@ -2214,16 +2358,15 @@ export class SportsDataReadService {
       collectedAt: fixture.collectedAt,
     };
 
-    const competitionSnapshot: SportsPredictionData['competition'] =
-      competition
-        ? {
-            competitionId: competition.competitionId,
-            name: competition.name,
-            status: competition.status,
-            season: competition.season,
-            espnPayload: competition.espnPayload,
-          }
-        : null;
+    const competitionSnapshot: SportsPredictionData['competition'] = competition
+      ? {
+          competitionId: competition.competitionId,
+          name: competition.name,
+          status: competition.status,
+          season: competition.season,
+          espnPayload: competition.espnPayload,
+        }
+      : null;
 
     return {
       ready: notReadyReasons.length === 0,
