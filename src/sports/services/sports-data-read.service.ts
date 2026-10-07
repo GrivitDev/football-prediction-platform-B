@@ -15,6 +15,8 @@ import {
 
 import { ActiveCompetitionStatus } from '../interfaces/active-competition.interface';
 
+import { SportsDataFilter } from '../interfaces/sports-data-filter.interface';
+
 import {
   SportsPredictionData,
   SportsSettlementData,
@@ -252,34 +254,43 @@ export class SportsDataReadService {
     return this.getLiveFixtures();
   }
 
-  async getFixtures(competitionId?: string): Promise<unknown[]> {
-    return this.getUpcomingFixtures(undefined, undefined, competitionId);
+  async getFixtures(filters: SportsDataFilter = {}): Promise<unknown[]> {
+    return this.getUpcomingFixtures(filters);
   }
 
-  async getResults(competitionId?: string): Promise<unknown[]> {
-    return this.getFinishedFixtures(undefined, undefined, competitionId);
+  async getResults(filters: SportsDataFilter = {}): Promise<unknown[]> {
+    return this.getFinishedFixtures(filters);
   }
 
   async getStandings(
     competitionId: string,
-    season?: number,
+    teamId?: string,
   ): Promise<unknown[]> {
-    return this.getLeagueTable(competitionId, season);
+    return this.getLeagueTable(competitionId, teamId);
   }
 
-  async getTeams(competitionId: string): Promise<unknown[]> {
-    const normalizedCompetitionId = String(competitionId ?? '')
-      .trim()
-      .toLowerCase();
+  async getTeams(
+    competitionId: string,
+    teamId?: string,
+  ): Promise<unknown[]> {
+    const normalizedCompetitionId = this.normalizeCompetitionId(competitionId);
 
     if (!normalizedCompetitionId) {
       return [];
     }
 
+    const filter: Record<string, unknown> = {
+      leagueId: normalizedCompetitionId,
+    };
+
+    const normalizedTeamId = this.normalizeTeamId(teamId);
+
+    if (normalizedTeamId) {
+      filter.teamId = normalizedTeamId;
+    }
+
     return this.espnTeamModel
-      .find({
-        leagueId: normalizedCompetitionId,
-      })
+      .find(filter)
       .sort({
         name: 1,
       })
@@ -341,17 +352,13 @@ export class SportsDataReadService {
 
   async getCompetition(
     competitionId: string,
-    season?: number,
   ): Promise<ActiveCompetitionDocument | null> {
-    const filter: Record<string, unknown> = {
-      competitionId: String(competitionId).trim().toLowerCase(),
-    };
-
-    if (typeof season === 'number' && Number.isFinite(season)) {
-      filter.season = season;
-    }
-
-    return this.activeCompetitionModel.findOne(filter).lean().exec();
+    return this.activeCompetitionModel
+      .findOne({
+        competitionId: this.normalizeCompetitionId(competitionId),
+      })
+      .lean()
+      .exec();
   }
 
   // ============================================================
@@ -359,28 +366,24 @@ export class SportsDataReadService {
   // ============================================================
 
   async getUpcomingFixtures(
-    from?: Date,
-    to?: Date,
-    competitionId?: string,
+    filters: SportsDataFilter = {},
   ): Promise<unknown[]> {
-    const start = from ?? new Date();
+    const mongoFilter: Record<string, unknown> = {};
 
-    const filter: Record<string, unknown> = {
-      fixtureDate: {
-        $gte: start,
-      },
-    };
+    this.applyFixtureFilters(mongoFilter, filters);
 
-    if (to) {
-      (filter.fixtureDate as Record<string, Date>).$lt = to;
-    }
-
-    if (competitionId) {
-      filter.leagueId = String(competitionId).trim().toLowerCase();
+    /*
+     * Preserve the old public behavior:
+     * upcoming fixtures without an explicit date/range start from "now".
+     */
+    if (!filters.date && !filters.from && !filters.to) {
+      mongoFilter.fixtureDate = {
+        $gte: new Date(),
+      };
     }
 
     return this.espnFixtureModel
-      .find(filter)
+      .find(mongoFilter)
       .select({
         _id: 0,
         eventId: 1,
@@ -409,17 +412,17 @@ export class SportsDataReadService {
       .exec();
   }
 
-  async getLiveFixtures(competitionId?: string): Promise<unknown[]> {
-    const filter: Record<string, unknown> = {
+  async getLiveFixtures(
+    filters: SportsDataFilter = {},
+  ): Promise<unknown[]> {
+    const mongoFilter: Record<string, unknown> = {
       live: true,
     };
 
-    if (competitionId) {
-      filter.leagueId = competitionId.trim().toLowerCase();
-    }
+    this.applyFixtureFilters(mongoFilter, filters);
 
     return this.espnFixtureModel
-      .find(filter)
+      .find(mongoFilter)
       .select({
         _id: 0,
         eventId: 1,
@@ -449,32 +452,16 @@ export class SportsDataReadService {
   }
 
   async getFinishedFixtures(
-    from?: Date,
-    to?: Date,
-    competitionId?: string,
+    filters: SportsDataFilter = {},
   ): Promise<unknown[]> {
-    const filter: Record<string, unknown> = {
+    const mongoFilter: Record<string, unknown> = {
       completed: true,
     };
 
-    if (competitionId) {
-      filter.leagueId = competitionId.trim().toLowerCase();
-    }
-
-    if (from || to) {
-      filter.fixtureDate = {};
-
-      if (from) {
-        (filter.fixtureDate as Record<string, Date>).$gte = from;
-      }
-
-      if (to) {
-        (filter.fixtureDate as Record<string, Date>).$lt = to;
-      }
-    }
+    this.applyFixtureFilters(mongoFilter, filters);
 
     return this.espnFixtureModel
-      .find(filter)
+      .find(mongoFilter)
       .select({
         _id: 0,
         eventId: 1,
@@ -933,14 +920,16 @@ export class SportsDataReadService {
 
   async getLeagueTable(
     competitionId: string,
-    season?: number,
+    teamId?: string,
   ): Promise<unknown[]> {
     const filter: Record<string, unknown> = {
-      leagueId: competitionId.trim().toLowerCase(),
+      leagueId: this.normalizeCompetitionId(competitionId),
     };
 
-    if (typeof season === 'number' && Number.isFinite(season)) {
-      filter.season = season;
+    const normalizedTeamId = this.normalizeTeamId(teamId);
+
+    if (normalizedTeamId) {
+      filter.teamId = normalizedTeamId;
     }
 
     return this.espnStandingModel
@@ -986,6 +975,100 @@ export class SportsDataReadService {
       })
       .lean()
       .exec();
+  }
+
+  // ============================================================
+  // STANDARD SPORTS FILTERS
+  // ============================================================
+
+  /**
+   * Applies the standard public sports filter contract:
+   *
+   * - date OR from/to
+   * - competitionId
+   * - teamId
+   *
+   * The date filter is always applied against the canonical
+   * fixtureDate field. Team matching includes either home or away.
+   */
+  private applyFixtureFilters(
+    filter: Record<string, unknown>,
+    filters: SportsDataFilter,
+  ): void {
+    const normalizedCompetitionId = this.normalizeCompetitionId(
+      filters.competitionId,
+    );
+
+    if (normalizedCompetitionId) {
+      filter.leagueId = normalizedCompetitionId;
+    }
+
+    const normalizedTeamId = this.normalizeTeamId(filters.teamId);
+
+    if (normalizedTeamId) {
+      filter.$or = [
+        {
+          homeTeamId: normalizedTeamId,
+        },
+        {
+          awayTeamId: normalizedTeamId,
+        },
+      ];
+    }
+
+    const dateRange = this.resolveSportsDateRange(filters);
+
+    if (dateRange) {
+      filter.fixtureDate = dateRange;
+    }
+  }
+
+  private resolveSportsDateRange(
+    filters: SportsDataFilter,
+  ): { $gte?: Date; $lt?: Date } | undefined {
+    if (filters.date) {
+      const start = this.startOfUtcDay(filters.date);
+      const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+
+      return {
+        $gte: start,
+        $lt: end,
+      };
+    }
+
+    if (!filters.from && !filters.to) {
+      return undefined;
+    }
+
+    const range: { $gte?: Date; $lt?: Date } = {};
+
+    if (filters.from) {
+      range.$gte = filters.from;
+    }
+
+    if (filters.to) {
+      range.$lt = filters.to;
+    }
+
+    return range;
+  }
+
+  private startOfUtcDay(value: Date): Date {
+    return new Date(
+      Date.UTC(
+        value.getUTCFullYear(),
+        value.getUTCMonth(),
+        value.getUTCDate(),
+      ),
+    );
+  }
+
+  private normalizeCompetitionId(value?: string): string {
+    return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  }
+
+  private normalizeTeamId(value?: string): string {
+    return typeof value === 'string' ? value.trim() : '';
   }
 
   // ============================================================

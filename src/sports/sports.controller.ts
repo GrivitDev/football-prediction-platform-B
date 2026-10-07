@@ -1,4 +1,11 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Param,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 
 import { SportsDataReadService } from './services/sports-data-read.service';
 import { SportsSystemMonitorService } from './services/sports-system-monitor.service';
@@ -8,6 +15,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 
 import { SportsSystemMonitorResponse } from './interfaces/sports-system-monitor.interface';
+import { SportsDataFilter } from './interfaces/sports-data-filter.interface';
 
 @Controller('sports')
 export class SportsController {
@@ -32,60 +40,80 @@ export class SportsController {
   }
 
   @Get('competitions/:competitionId')
-  async getCompetition(
-    @Param('competitionId') competitionId: string,
-    @Query('season') season?: string,
-  ) {
-    return this.sportsDataReadService.getCompetition(
-      competitionId,
-      season ? Number(season) : undefined,
-    );
+  async getCompetition(@Param('competitionId') competitionId: string) {
+    return this.sportsDataReadService.getCompetition(competitionId);
   }
 
   @Get('competitions/:competitionId/standings')
   async getCompetitionStandings(
     @Param('competitionId') competitionId: string,
-    @Query('season') season?: string,
+    @Query('teamId') teamId?: string,
   ) {
-    return this.sportsDataReadService.getLeagueTable(
-      competitionId,
-      season ? Number(season) : undefined,
-    );
+    return this.sportsDataReadService.getLeagueTable(competitionId, teamId);
   }
 
   @Get('competitions/:competitionId/teams')
-  async getCompetitionTeams(@Param('competitionId') competitionId: string) {
-    return this.sportsDataReadService.getTeams(competitionId);
+  async getCompetitionTeams(
+    @Param('competitionId') competitionId: string,
+    @Query('teamId') teamId?: string,
+  ) {
+    return this.sportsDataReadService.getTeams(competitionId, teamId);
   }
 
   @Get('fixtures/upcoming')
   async getUpcomingFixtures(
+    @Query('date') date?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('competitionId') competitionId?: string,
+    @Query('teamId') teamId?: string,
   ) {
     return this.sportsDataReadService.getUpcomingFixtures(
-      from ? new Date(from) : undefined,
-      to ? new Date(to) : undefined,
-      competitionId,
+      this.buildSportsDataFilter({
+        date,
+        from,
+        to,
+        competitionId,
+        teamId,
+      }),
     );
   }
 
   @Get('fixtures/live')
-  async getLiveFixtures(@Query('competitionId') competitionId?: string) {
-    return this.sportsDataReadService.getLiveFixtures(competitionId);
+  async getLiveFixtures(
+    @Query('date') date?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('competitionId') competitionId?: string,
+    @Query('teamId') teamId?: string,
+  ) {
+    return this.sportsDataReadService.getLiveFixtures(
+      this.buildSportsDataFilter({
+        date,
+        from,
+        to,
+        competitionId,
+        teamId,
+      }),
+    );
   }
 
   @Get('fixtures/finished')
   async getFinishedFixtures(
+    @Query('date') date?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('competitionId') competitionId?: string,
+    @Query('teamId') teamId?: string,
   ) {
     return this.sportsDataReadService.getFinishedFixtures(
-      from ? new Date(from) : undefined,
-      to ? new Date(to) : undefined,
-      competitionId,
+      this.buildSportsDataFilter({
+        date,
+        from,
+        to,
+        competitionId,
+        teamId,
+      }),
     );
   }
 
@@ -782,4 +810,67 @@ export class SportsController {
   ): Promise<unknown> {
     return this.sportsDataReadService.getAdminSportsSyncState(stateKey);
   }
+  /**
+   * Standard public sports filter parser.
+   *
+   * Use either:
+   *   date=YYYY-MM-DD
+   *
+   * or:
+   *   from=<ISO date>
+   *   to=<ISO date>
+   *
+   * plus optional competitionId/teamId.
+   */
+  private buildSportsDataFilter(input: {
+    date?: string;
+    from?: string;
+    to?: string;
+    competitionId?: string;
+    teamId?: string;
+  }): SportsDataFilter {
+    if (input.date && (input.from || input.to)) {
+      throw new BadRequestException(
+        'Use either date or from/to, not both.',
+      );
+    }
+
+    const date = this.parseDate(input.date, 'date');
+    const from = this.parseDate(input.from, 'from');
+    const to = this.parseDate(input.to, 'to');
+
+    if (from && to && from.getTime() >= to.getTime()) {
+      throw new BadRequestException(
+        'The from date must be earlier than the to date.',
+      );
+    }
+
+    return {
+      date,
+      from,
+      to,
+      competitionId: input.competitionId?.trim() || undefined,
+      teamId: input.teamId?.trim() || undefined,
+    };
+  }
+
+  private parseDate(
+    value: string | undefined,
+    field: 'date' | 'from' | 'to',
+  ): Date | undefined {
+    if (!value?.trim()) {
+      return undefined;
+    }
+
+    const parsed = new Date(value);
+
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException(
+        `Invalid ${field} date. Use an ISO date or YYYY-MM-DD.`,
+      );
+    }
+
+    return parsed;
+  }
+
 }
